@@ -10,7 +10,7 @@ Everything runs in the browser. No build step, no server, no API keys.
 
 ## Put it on GitHub Pages
 
-1. Create a repo and drop `index.html`, `styles.css`, `app.js` into the root.
+1. Create a repo and drop `index.html`, `styles.css`, `app.js` and `data.js` into the root.
 2. **Settings → Pages → Source: Deploy from a branch**, branch `main`, folder `/ (root)`.
 3. Wait a minute. It's live at `https://<you>.github.io/<repo>/`.
 
@@ -47,6 +47,7 @@ together, and whatever survives is the bright area.
 |---|---|
 | **Radar** — "are you within ___ of me?" | A circle. *Yes* keeps the inside, *no* keeps the outside. |
 | **Bus route** — "will my bus stop at your station?" | A corridor along the selected route. Default is ¼ mile either side, since the hider has to be at a stop, not on the tarmac. |
+| **Zone** — "same district as me?" | The district polygon, from any of the four zone levels. |
 | **Thermometer** — "after travelling ___, am I hotter or colder?" | The perpendicular bisector between your start and end point. *Hotter* keeps the half nearer the end point. |
 | **Measuring** — "compared to me, are you closer to or further from ___?" | A circle centred on the thing, with a radius equal to *your* distance from it. |
 | **Matching** — "is your nearest ___ the same as mine?" | Drop a pin on every candidate in the play area and tap the one nearest you. The map splits into nearest-point territories; you keep yours, or everything but yours. |
@@ -79,59 +80,64 @@ is a ten-second fix on your phone instead of a commit. Your edits travel in the 
 
 ### The four administrative zone levels
 
-Each level is a **toggle**. Tap once to fetch and show it, tap again to hide it — the data stays in
-memory, so toggling is instant afterwards and tapping repeatedly never stacks duplicate copies.
+Each level is a **toggle**. Tap once to turn it on, tap again to turn it off — nothing ever stacks a
+second copy, and nothing is one-way.
 
-| Level | Your KortInfo layer | What it shows | Source |
-|---|---|---|---|
-| 1 | Zonekort (By / Land) | byzone vs landzone | Plandata, preset |
-| 2 | Kommuneplanområder | Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg | Plandata, **guess** |
-| 3 | By- og bydele | Hasseris, Vejgård, Gug, Klarup… | **needs configuring** |
-| 4 | Kommuneplanrammer | land-use areas | Plandata, confirmed |
+| Level | Shows | Source |
+|---|---|---|
+| 1 | Byzone (**red**) vs landzone (**green**) | Plandata WFS |
+| 2 | Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg | **built in** (`data.js`) |
+| 3 | Hasseris, Vejgård, Gug, Klarup… 31 districts | **built in** (`data.js`) |
+| 4 | Land-use areas in the municipality's own colours | Plandata WFS |
 
-**Zones 2 and 3 aren't hard-coded, because they can't be.** Level 3 is an Aalborg-only layer with no
-national feed — Aalborg publishes nothing to opendata.dk — and its KortInfo service needs a
-per-site generated link plus the administrator's permission. So instead of me guessing:
+**Zones 2 and 3 are now built in and need no network at all.** They are approximations of your
+KortInfo layers, and `data.js` explains exactly how they're made:
 
-> Tap **⚙** on a zone level → paste the service URL → **Browse layers on this server**.
+Rather than hand-trace 31 district outlines from a screenshot — which invents precision that isn't
+there — each district is one **centre point**, and the polygons are generated as nearest-centre
+territories clipped to the play area. That gets the layout right and leaves only the exact borders
+fuzzy, which is the honest version. Zone 2 is the union of those districts by group, so **zones 2 and
+3 can never disagree with each other.**
 
-That reads the service's own capabilities document and lists every layer it offers, with a filter
-box. Type "bydel" and pick the match. It works against any OGC WFS — Plandata, KortInfo, GC2 — so
-you never have to guess a `typeName` again. Your choice is saved into the game link.
+`zones.test.mjs` checks the result against twelve real Aalborg locations — Nytorv, Hasseris Villaby,
+Lindholm station, AAU campus, Klarup, Gistrup and so on all land in the district you'd expect.
 
-To get a KortInfo URL: open the Aalborg map, turn on the layer, and use KortInfo's own
-Linkgenerator to produce a WFS link (swap `services.drift.kortinfo.net/kortinfo/services/Wfs.ashx?`
-for `drift.kortinfo.net/Wfs.aspx?` if your page is https). For level 2, also try Browse against
-Plandata and filter for "kommuneplanomraade".
+**To sharpen it:** nudge a coordinate in `data.js`, or delete a district and draw it by hand in the
+Layers tab. To regroup, change the `area` number (1–4). Run `node zones.test.mjs` afterwards.
 
-If neither works, draw the districts by hand once and export the GeoJSON into the repo. Tedious,
-but permanent.
+If you ever get the official layer — via KortInfo's Linkgenerator, say — tap **⚙** on the level,
+switch the type to WFS, paste the URL and hit **Browse layers on this server**. That reads the
+service's own layer list so you never have to guess a `typeName`.
 
-### Colours
+### Zone 1: why landzone was invisible
 
-**Zone 1** paints byzone red and landzone green so you can tell them apart at a glance.
-**Zone 4** uses the municipality's own land-use legend — B Boligområde salmon, C Centerområde
-purple, I Industriområde blue, R Rekreativt green, and so on for all twelve categories. A legend
-appears under the layer list showing only the categories actually present in the data.
-
-Services disagree on field names, so the category is worked out from the Danish land-use words in
-any property, falling back to the letter inside Aalborg's plan numbers (`1.1.C2` → C).
+Plandata's zonekort usually ships only byzone and sommerhus polygons — landzone is Denmark's default
+status, so it simply isn't drawn. The app now fills the rest of the play area in as landzone, and
+anything it can't classify counts as landzone too. So byzone is red, sommerhusområde orange, and
+everything else green, which is what you actually wanted to see. The green backdrop is drawn
+underneath so the red city zones stay on top, and landzone is tappable for zone questions.
 
 ### The play area
 
-The four Kommuneplanområder outline the whole play area, so there's a **⛶** button on any loaded
-zone layer: it merges every polygon in that layer into one boundary and makes it the play area. Turn
-on zone 2, tap ⛶, and the map is bounded exactly by Midtbyen + Nørresundby + Vest + Øst Aalborg.
+Defaults to the **convex hull of the four play zones** — no more 6-mile circle. It's a three-way
+picker in the **Game** tab (four play zones / circle / Aalborg Kommune), so every choice is
+reversible. Roughly 310 km², about 20 × 19 km.
+
+Built-in zone layers are clipped to the play area, so they rebuild automatically when you change it.
 
 ### Bus and train routes
 
-Also toggles. Each route set is tried against two GC2 endpoints — the SQL API first, then the WFS —
-because which one is open varies, and a route layer that won't load is the difference between
-playing and not playing. Loaded routes are **tappable**: tap one while the Bus route question is
-open and it becomes a corridor.
+**NT's own feed needs credentials we don't have**, which is why it kept failing. The routes now come
+from **OpenStreetMap via Overpass**, where Aalborg's buses are mapped as route relations carrying the
+line number — real geometry, live, no key. Bus routes and train lines are separate toggles, and both
+are tappable for the Bus route question.
 
-If both endpoints fail, turn on the **NT route map** picture overlay in the same tab. You'll still
-see every route and can trace yours with the Bus route question's trace-by-hand button.
+Two details handled: stops and platforms are stripped out so you get the road the bus drives, not a
+scatter of shelters; and the two direction relations per line are folded into one feature, so tapping
+"2" gives you the whole line rather than half of it. Two Overpass mirrors are tried in turn.
+
+The NT feed is still there as a third row in case you get access, and the NT route map picture
+overlay remains as a visual fallback.
 
 ### Also available
 
@@ -189,8 +195,9 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
-node geometry.test.mjs   # 33 checks — the constraint maths
-node ui.test.mjs         # 136 checks — the app, driven headlessly
+node geometry.test.mjs   # 33 checks  — the constraint maths
+node ui.test.mjs         # 168 checks — the app, driven headlessly
+node zones.test.mjs      # the Aalborg zone data vs. real locations
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
@@ -199,7 +206,11 @@ contradictory answers are detected.
 
 `ui.test.mjs` boots the real `index.html` in a fake DOM and clicks through it — logging a radar,
 switching units, selecting a bus route, verifying every entry in the land-use legend, checking that
-toggling a layer four times doesn't stack four copies, that a dead endpoint falls through to the
-backup, and that UTM32 coordinates land in Aalborg rather than the North Sea.
+toggling a layer four times doesn't stack four copies, that a dead Overpass mirror falls through to
+the backup, that zone 2 tiles exactly the same ground as zone 3, and that UTM32 coordinates land in
+Aalborg rather than the North Sea.
+
+`zones.test.mjs` probes the generated districts with twelve known Aalborg addresses and sanity-checks
+the play-area size.
 
 Worth running if you change how a question type works. Both caught real bugs while this was built.

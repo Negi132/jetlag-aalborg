@@ -48,17 +48,15 @@ const DEFAULT_SOURCES = {
   },
   zone2: {
     name: 'Zone 2 · Kommuneplanområder',
-    note: 'The four big areas: Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg. ' +
-          'Tap Browse and search for "kommuneplanomraade" or point this at Aalborg\'s KortInfo WFS.',
-    kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_kommuneplanomraade_vedtaget_v', cql: 'komnr=851',
-    nameField: '', style: 'plain'
+    note: 'Built in: the four play zones, merged from the districts in data.js. ' +
+          'Approximate. Switch to WFS here if you get hold of the official layer.',
+    kind: 'areas', url: '', typeName: '', cql: '', nameField: 'navn', style: 'areas'
   },
   zone3: {
     name: 'Zone 3 · By- og bydele',
-    note: 'Aalborg-only layer — no national feed. Paste the KortInfo WFS URL, then tap Browse ' +
-          'and search for "bydel".',
-    kind: 'wfs', url: '', typeName: '', cql: '', nameField: '', style: 'plain'
+    note: 'Built in: nearest-centre territories around each district in data.js. ' +
+          'Approximate — edit the coordinates in data.js to sharpen it.',
+    kind: 'districts', url: '', typeName: '', cql: '', nameField: 'navn', style: 'plain'
   },
   zone4: {
     name: 'Zone 4 · Kommuneplanrammer',
@@ -74,10 +72,11 @@ const DEFAULT_SOURCES = {
    zone 4 uses the municipality's own land-use legend.                */
 
 const ZONEKORT_STYLE = [
-  { key: 'byzone',           label: 'Byzone',           color: '#e0554f' },
-  { key: 'landzone',         label: 'Landzone',         color: '#4fae5a' },
+  { key: 'byzone',           label: 'Byzone (city)',    color: '#e0554f' },
+  { key: 'landzone',         label: 'Landzone (rural)', color: '#4fae5a' },
   { key: 'sommerhusområde',  label: 'Sommerhusområde',  color: '#e8a33d' }
 ];
+const ZONEKORT_LAND = ZONEKORT_STYLE[1];
 
 const RAMME_STYLE = [
   { key: 'D', match: 'blandet bolig',        label: 'D · Blandet bolig og erhverv', color: '#f0c4df' },
@@ -119,27 +118,44 @@ function rammeCategory(props) {
 function zonekortCategory(props) {
   const hay = Object.values(props || {}).filter((v) => typeof v === 'string')
     .join(' | ').toLowerCase();
-  for (const c of ZONEKORT_STYLE) if (hay.includes(c.key)) return c;
+  // Check byzone and sommerhus first; anything else is landzone.
+  for (const c of ZONEKORT_STYLE) if (c.key !== 'landzone' && hay.includes(c.key)) return c;
+  if (hay.includes('landzone')) return ZONEKORT_LAND;
   const z = props && (props.zone ?? props.zonekode);
-  if (z != null) return ZONEKORT_STYLE[Number(z) - 1] || null;
-  return null;
+  if (z != null && ZONEKORT_STYLE[Number(z) - 1]) return ZONEKORT_STYLE[Number(z) - 1];
+  // Plandata's zonekort often ships only byzone and sommerhus polygons —
+  // landzone is the default status, so treat unlabelled areas as landzone
+  // rather than leaving them uncoloured.
+  return ZONEKORT_LAND;
 }
 
 function categoryFor(styleKey, props) {
   if (styleKey === 'rammer') return rammeCategory(props);
   if (styleKey === 'zonekort') return zonekortCategory(props);
+  if (styleKey === 'areas') return areaCategory(props);
   return null;
 }
 
 /* NT's route map runs on GC2, which exposes every layer over SQL and WMS. */
 const GC2 = 'https://nt.vidi.gc2.io';
+
+/* NT's own feed needs credentials we don't have, so the routes that
+   actually load come from OpenStreetMap via Overpass. Aalborg's city and
+   regional buses are mapped there as route relations with a `ref` (the
+   line number), which is exactly what the transit question needs. */
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter'
+];
+const OVERPASS_BBOX = [56.94, 9.70, 57.18, 10.25];   // S, W, N, E — greater Aalborg
+
 const ROUTE_SOURCES = {
-  bybus:       { name: 'City buses (bybus)',        table: 'rutekortweb.ntmap_bybus_murl' },
-  regionalbus: { name: 'Regional buses',            table: 'rutekortweb.ntmap_regionalbus_murl' },
-  xbus:        { name: 'X Bus',                     table: 'rutekortweb.ntmap_xbus_murl' },
-  lokalbus:    { name: 'Local buses',               table: 'rutekortweb.ntmap_lokalbus_murl' },
-  telebus:     { name: 'Telebus',                   table: 'rutekortweb.ntmap_telebus_murl' },
-  tog:         { name: 'Trains',                    table: 'rutekortweb.ntmap_tog_murl' }
+  bus:   { name: 'Bus routes', meta: 'OpenStreetMap · tappable', kind: 'overpass',
+           filter: '["route"="bus"]' },
+  train: { name: 'Train lines', meta: 'OpenStreetMap · tappable', kind: 'overpass',
+           filter: '["route"~"^(train|light_rail)$"]' },
+  ntgc2: { name: 'NT route data (if open)', meta: 'rutekortweb · often needs a login',
+           kind: 'gc2', table: 'rutekortweb.ntmap_bybus_murl' }
 };
 
 const WMS_PRESETS = [
@@ -394,14 +410,45 @@ function setCircularPlayArea(centerLatLng, radiusKm) {
   const c = [centerLatLng.lng ?? centerLatLng[1], centerLatLng.lat ?? centerLatLng[0]];
   S.playArea = turf.circle(c, radiusKm, { steps: 256, units: 'kilometers' });
   S.playAreaMeta = { type: 'circle', center: c, radiusKm };
+  refreshDerivedLayers();
   recompute();
 }
 
 function setCustomPlayArea(feature, name) {
   S.playArea = turf.feature(feature.geometry);
   S.playAreaMeta = { type: 'custom', name, geometry: feature.geometry };
+  refreshDerivedLayers();
   recompute();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [30, 30] }); } catch (_) {}
+}
+
+/* The default: convex hull of the four play zones. */
+function setZonesPlayArea(fit) {
+  const hull = districtHull();
+  if (!hull) return false;
+  S.playArea = turf.feature(hull.geometry);
+  S.playAreaMeta = { type: 'zones' };
+  refreshDerivedLayers();
+  recompute();
+  if (fit !== false) {
+    try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [20, 20] }); } catch (_) {}
+  }
+  return true;
+}
+
+/* Built-in zone layers are clipped to the play area, so they must be
+   rebuilt whenever it moves. Same for the landzone backdrop. */
+function refreshDerivedLayers() {
+  for (const rec of S.layers.slice()) {
+    if (!rec.derived) continue;
+    const gj = rec.derived === 'areas' ? buildAreaZones() : buildDistrictZones();
+    if (!gj) continue;
+    const wasVisible = rec.visible;
+    const fresh = addLayer(rec.name, gj, {
+      key: rec.key, nameField: rec.nameField, style: rec.style, derived: rec.derived
+    });
+    if (fresh && !wasVisible) setLayerVisible(fresh, false);
+  }
 }
 
 /* ---------- the core ------------------------------------------------ */
@@ -1079,6 +1126,75 @@ function featureName(ft, layer) {
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
 
+/* ---------- built-in Aalborg zones ----------------------------------
+   Districts are stored as centre points (see data.js); the polygons are
+   built here as nearest-centre territories clipped to the play area, so
+   zone 2 and zone 3 are guaranteed to agree with each other.          */
+
+function districtPoints() {
+  return (window.AALBORG_DISTRICTS || []).map(([name, lat, lng, area]) =>
+    turf.point([lng, lat], { navn: name, area, omraade: (window.AALBORG_AREAS[area] || {}).name }));
+}
+
+/* Convex hull of every district centre, padded so edge districts are not
+   sliced through the middle. This is the default play area. */
+function districtHull() {
+  const pts = districtPoints();
+  if (pts.length < 3) return null;
+  const hull = turf.convex(turf.featureCollection(pts));
+  if (!hull) return null;
+  const pad = window.AALBORG_HULL_PAD_KM ?? 2;
+  return turf.buffer(hull, pad, { units: 'kilometers', steps: 12 }) || hull;
+}
+
+function buildDistrictZones(boundary) {
+  const bound = boundary || S.playArea || districtHull();
+  if (!bound) return null;
+  const pts = districtPoints();
+  if (!pts.length) return null;
+
+  const pad = turf.buffer(bound, 12, { units: 'kilometers' }) || bound;
+  let cells;
+  try { cells = turf.voronoi(turf.featureCollection(pts), { bbox: turf.bbox(pad) }); }
+  catch (_) { return null; }
+  if (!cells) return null;
+
+  const out = [];
+  cells.features.forEach((cell, i) => {
+    if (!cell || !cell.geometry) return;
+    const clipped = gIntersect(cell, bound);
+    if (!clipped) return;
+    clipped.properties = Object.assign({}, pts[i].properties);
+    out.push(clipped);
+  });
+  return out.length ? { type: 'FeatureCollection', features: out } : null;
+}
+
+function buildAreaZones(boundary) {
+  const districts = buildDistrictZones(boundary);
+  if (!districts) return null;
+  const out = [];
+  Object.keys(window.AALBORG_AREAS || {}).forEach((k) => {
+    const mine = districts.features.filter((f) => String(f.properties.area) === String(k));
+    if (!mine.length) return;
+    const merged = unionAll(mine);
+    if (!merged) return;
+    merged.properties = { navn: `${k}. ${window.AALBORG_AREAS[k].name}`, area: Number(k) };
+    out.push(merged);
+  });
+  return out.length ? { type: 'FeatureCollection', features: out } : null;
+}
+
+const AREA_STYLE = () => Object.entries(window.AALBORG_AREAS || {})
+  .map(([k, v]) => ({ key: k, label: `${k}. ${v.name}`, color: v.color }));
+
+function areaCategory(props) {
+  const k = props && props.area;
+  if (k == null) return null;
+  const a = (window.AALBORG_AREAS || {})[k];
+  return a ? { key: String(k), label: `${k}. ${a.name}`, color: a.color } : null;
+}
+
 function unionAll(features) {
   const polys = features.filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
   if (!polys.length) return null;
@@ -1111,16 +1227,28 @@ function addLayer(name, geojson, opts = {}) {
 
   const color = LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
   const fcol = { type: 'FeatureCollection', features: feats };
+  // Plandata's zonekort usually ships only byzone and sommerhus polygons,
+  // which left landzone invisible. Fill the rest of the play area in as
+  // landzone so it renders green and can be picked for zone questions.
+  if ((opts.style === 'zonekort') && kind === 'poly' && S.playArea) {
+    const covered = unionAll(feats);
+    const rest = covered ? gDifference(S.playArea, covered) : turf.clone(S.playArea);
+    if (rest) {
+      rest.properties = { navn: 'Landzone', zonestatus: 'Landzone' };
+      feats.unshift(rest);   // first = drawn first = underneath the byzones
+    }
+  }
+
   const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
                 nameField: opts.nameField || '', style: opts.style || 'plain',
-                visible: true, layer: null };
+                derived: opts.derived || null, visible: true, layer: null };
 
   const styleOf = (ft) => {
     const cat = categoryFor(rec.style, ft.properties);
     const c = cat ? cat.color : color;
     return kind === 'line'
       ? { color: c, weight: 3, opacity: .85 }
-      : { color: c, weight: 1.3, opacity: .9, fillColor: c, fillOpacity: cat ? .45 : .05 };
+      : { color: c, weight: 1.3, opacity: .9, fillColor: c, fillOpacity: cat ? .35 : .05 };
   };
 
   rec.layer = L.geoJSON(fcol, {
@@ -1208,7 +1336,9 @@ function renderLegend() {
 
   box.hidden = false;
   box.innerHTML = active.map((l) => {
-    const cats = l.style === 'rammer' ? RAMME_STYLE : ZONEKORT_STYLE;
+    const cats = l.style === 'rammer' ? RAMME_STYLE
+              : l.style === 'areas' ? AREA_STYLE()
+              : ZONEKORT_STYLE;
     const used = cats.filter((c) =>
       l.geojson.features.some((ft) => {
         const got = categoryFor(l.style, ft.properties);
@@ -1315,12 +1445,90 @@ async function browseLayers(url) {
   return list;
 }
 
+/* ---------- OpenStreetMap routes via Overpass -------------------------- */
+
+function overpassQuery(filter) {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  return `[out:json][timeout:90];relation(${s2},${w},${n},${e})["type"="route"]${filter};out geom;`;
+}
+
+/* Route relations list the roads they run along as `way` members with no
+   role; stops and platforms carry roles starting "stop" or "platform".
+   Keep the roads, drop the stops. */
+function parseOverpassRoutes(json) {
+  const feats = [];
+  for (const el of (json && json.elements) || []) {
+    if (el.type !== 'relation') continue;
+    const lines = [];
+    for (const m of el.members || []) {
+      if (m.type !== 'way' || !Array.isArray(m.geometry)) continue;
+      if (m.role && /^(stop|platform)/.test(m.role)) continue;
+      const coords = m.geometry.filter((p) => p && p.lon != null).map((p) => [p.lon, p.lat]);
+      if (coords.length >= 2) lines.push(coords);
+    }
+    if (!lines.length) continue;
+    const t = el.tags || {};
+    const label = t.ref ? (t.name ? `${t.ref} · ${t.name}` : String(t.ref)) : (t.name || `Route ${el.id}`);
+    feats.push({
+      type: 'Feature',
+      properties: { navn: label, ref: t.ref || '', operator: t.operator || t.network || '' },
+      geometry: lines.length === 1
+        ? { type: 'LineString', coordinates: lines[0] }
+        : { type: 'MultiLineString', coordinates: lines }
+    });
+  }
+  // One relation per direction is normal; fold them together by label so
+  // tapping "2" gives you the whole line rather than one half of it.
+  const byLabel = new Map();
+  for (const f of feats) {
+    const k = f.properties.navn;
+    if (!byLabel.has(k)) { byLabel.set(k, f); continue; }
+    const a = byLabel.get(k);
+    const grab = (g) => g.type === 'LineString' ? [g.coordinates] : g.coordinates;
+    a.geometry = { type: 'MultiLineString', coordinates: grab(a.geometry).concat(grab(f.geometry)) };
+  }
+  const merged = Array.from(byLabel.values())
+    .sort((a, b) => String(a.properties.ref).localeCompare(String(b.properties.ref), 'da', { numeric: true }));
+  return { type: 'FeatureCollection', features: merged };
+}
+
+async function fetchOverpass(filter) {
+  const body = 'data=' + encodeURIComponent(overpassQuery(filter));
+  const problems = [];
+  for (const url of OVERPASS) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = JSON.parse(await res.text());
+      const gj = parseOverpassRoutes(json);
+      if (!gj.features.length) throw new Error('no routes in the reply');
+      return gj;
+    } catch (err) { problems.push(err.message); }
+  }
+  throw new Error(problems.join(' / '));
+}
+
 /* ---------- toggling sources ----------------------------------------- */
 
 async function toggleSource(key, btn) {
   const src = S.sources[key];
   const ex = layerByKey('src:' + key);
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
+
+  // Built-in zones need no network at all.
+  if (src.kind === 'areas' || src.kind === 'districts') {
+    const gj = src.kind === 'areas' ? buildAreaZones() : buildDistrictZones();
+    if (!gj) { setStatus(`${src.name}: could not build the zones — check data.js.`, true); return; }
+    const rec = addLayer(src.name, gj, {
+      key: 'src:' + key, nameField: 'navn', style: src.style, derived: src.kind
+    });
+    if (rec) setStatus(`${src.name}: ${rec.geojson.features.length} zones on (approximate — built from data.js).`);
+    return;
+  }
 
   if (!src.url || (src.kind === 'wfs' && !src.typeName)) {
     setStatus(`${src.name}: no source set yet. Tap ⚙, paste the service URL, then Browse for the layer.`, true);
@@ -1349,10 +1557,12 @@ async function toggleRoute(key, btn) {
   const ex = layerByKey('route:' + key);
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
 
-  btn.classList.add('is-busy');
+  if (btn) btn.classList.add('is-busy');
   setStatus(`Loading ${r.name}…`);
   try {
-    const gj = await fetchFirst(gc2Urls(r.table));
+    const gj = r.kind === 'overpass'
+      ? await fetchOverpass(r.filter)
+      : await fetchFirst(gc2Urls(r.table));
     const { note } = normaliseCoords(gj);
     const rec = addLayer(r.name, gj, { key: 'route:' + key, kind: 'line' });
     if (rec) {
@@ -1363,7 +1573,7 @@ async function toggleRoute(key, btn) {
     setStatus(`${r.name} failed — ${err.message}. Turn on the NT route map picture overlay instead ` +
               `and trace your route with the Bus route question's trace button.`, true);
   } finally {
-    btn.classList.remove('is-busy');
+    if (btn) btn.classList.remove('is-busy');
   }
 }
 
@@ -1394,14 +1604,6 @@ function renderSourceRows() {
                      : (src.url ? (src.typeName || src.url) : 'not configured — tap ⚙');
     const row = sourceRow(src.name, meta, state,
       (btn) => toggleSource(key, btn), () => openSourceEditor(key));
-    if (rec) {
-      const b = document.createElement('button');
-      b.className = 'icon-btn';
-      b.title = 'Use as play area';
-      b.textContent = '⛶';
-      b.addEventListener('click', () => usePlayAreaFromLayer(rec));
-      row.insertBefore(b, row.querySelector('.src-gear'));
-    }
     zbox.appendChild(row);
   });
 
@@ -1410,7 +1612,8 @@ function renderSourceRows() {
   Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
     const rec = layerByKey('route:' + key);
     const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
-    const meta = rec ? `${rec.geojson.features.length} lines${state === 'on' ? '' : ' · hidden'}` : r.table;
+    const meta = rec ? `${rec.geojson.features.length} routes${state === 'on' ? '' : ' · hidden'}`
+                     : (r.meta || r.table);
     rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
   });
 }
@@ -1617,23 +1820,55 @@ $('#unitSeg').addEventListener('click', (e) => {
   applyUnits();
 });
 
-$('#applyRadius').addEventListener('click', () => {
-  const n = Number($('#playRadius').value);
-  if (!n || n <= 0) return;
-  setCircularPlayArea(map.getCenter(), bigToM(n) / 1000);
-  toast(`Play area set: ${trimNum(n.toString())} ${bigUnit()} around the map centre.`);
-});
+const PLAY_NOTES = {
+  zones:   'Convex hull of Midtbyen, Nørresundby, Vest and Øst Aalborg.',
+  circle:  'A plain circle, if you want a smaller game.',
+  kommune: 'The whole municipality — much bigger than the four play zones.'
+};
 
-$('#playAreaKommune').addEventListener('click', async () => {
+function markPlayMode(mode) {
+  $$('#playSeg button').forEach((b) => b.classList.toggle('is-active', b.dataset.area === mode));
+  $('#radiusField').hidden = mode !== 'circle';
+  $('#playNote').textContent = PLAY_NOTES[mode] || '';
+}
+
+async function setPlayMode(mode) {
+  if (mode === 'zones') {
+    if (setZonesPlayArea()) { markPlayMode('zones'); toast('Play area: the four play zones.'); }
+    else toast('Could not build the play zones — check data.js.', true);
+    return;
+  }
+  if (mode === 'circle') {
+    markPlayMode('circle');
+    const n = Number($('#playRadius').value) || CONFIG.playRadiusMi;
+    setCircularPlayArea(map.getCenter(), bigToM(n) / 1000);
+    return;
+  }
+  markPlayMode('kommune');
   try {
     const gj = await fetchGeoJson(`${CONFIG.dawa}/kommuner/0${CONFIG.kommunekode}?format=geojson`);
     normaliseCoords(gj);
     const ft = gj.type === 'FeatureCollection' ? gj.features[0] : gj;
     setCustomPlayArea(ft, 'Aalborg Kommune');
-    toast('Play area set to Aalborg Kommune.');
+    S.playAreaMeta.mode = 'kommune';
+    toast('Play area: Aalborg Kommune.');
   } catch (err) {
     toast('Could not fetch the municipality outline: ' + err.message, true);
+    markPlayMode(S.playAreaMeta && S.playAreaMeta.type === 'zones' ? 'zones' : 'circle');
   }
+}
+
+$('#playSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) setPlayMode(b.dataset.area);
+});
+
+$('#applyRadius').addEventListener('click', () => {
+  const n = Number($('#playRadius').value);
+  if (!n || n <= 0) return;
+  setCircularPlayArea(map.getCenter(), bigToM(n) / 1000);
+  markPlayMode('circle');
+  toast(`Play area: ${trimNum(n.toString())} ${bigUnit()} around the map centre.`);
 });
 
 $('#baseSeg').addEventListener('click', (e) => {
@@ -1691,12 +1926,17 @@ function deserialize(data) {
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
 
   const m = data.playAreaMeta;
-  if (m && m.type === 'circle') {
+  if (m && m.type === 'zones') {
+    setZonesPlayArea(false);
+    markPlayMode('zones');
+  } else if (m && m.type === 'circle') {
     S.playArea = turf.circle(m.center, m.radiusKm, { steps: 256, units: 'kilometers' });
     S.playAreaMeta = m;
+    markPlayMode('circle');
   } else if (m && m.type === 'custom' && m.geometry) {
     S.playArea = turf.feature(m.geometry);
     S.playAreaMeta = m;
+    markPlayMode(m.mode === 'kommune' ? 'kommune' : 'circle');
   }
   (data.wms || []).forEach((w) => { if (w.visible) addWms(w.name, w.url, w.layers); });
   renderWmsList();
@@ -1772,7 +2012,13 @@ document.addEventListener('keydown', (e) => {
   if (activeTool) selectTool(activeTool);
 });
 
-setCircularPlayArea(L.latLng(CONFIG.center[0], CONFIG.center[1]), CONFIG.playRadiusMi * MI / 1000);
+if (!setZonesPlayArea(false)) {
+  setCircularPlayArea(L.latLng(CONFIG.center[0], CONFIG.center[1]), CONFIG.playRadiusMi * MI / 1000);
+  markPlayMode('circle');
+} else {
+  markPlayMode('zones');
+  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [16, 16] }); } catch (_) {}
+}
 renderSourceRows();
 renderWmsList();
 renderLayerList();
@@ -1785,6 +2031,9 @@ window.HS = {
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
+  districtHull, districtPoints, buildDistrictZones, buildAreaZones,
+  setZonesPlayArea, setPlayMode, refreshDerivedLayers,
+  parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
   serialize, deserialize, b64encode, b64decode,

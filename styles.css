@@ -537,3 +537,8 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
   font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--text-dim);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
+
+/* Play-area picker stacks so the option names stay readable */
+.seg.seg-stack{ flex-direction:column; }
+.seg.seg-stack button{ border-right:0; border-bottom:1px solid var(--line); text-align:left; padding:10px 12px; }
+.seg.seg-stack button:last-child{ border-bottom:0; }
