@@ -72,45 +72,66 @@ Two things worth knowing:
 
 ## Zones and routes
 
-**Every data source in the Layers tab is editable.** Tap the ⚙ next to a zone level to change the
-service URL, layer name or filter. Nothing is baked into the code, so when a layer gets renamed you
-fix it on your phone in ten seconds instead of pushing a commit. Your edits travel in the game link.
+**Every data source in the Layers tab is editable, and every layer is a toggle.** Tap the ⚙ next to
+a zone level to change the service URL, layer name or filter — and use **Browse layers** to have the
+server list its own layers rather than guessing. Nothing is baked into the code, so a renamed layer
+is a ten-second fix on your phone instead of a commit. Your edits travel in the game link.
 
 ### The four administrative zone levels
 
-Your KortInfo layers come from Aalborg's own WebGIS, which needs a per-site generated link and
-the administrator's permission to expose data as a service — so it can't be hard-coded. Three of
-the four are national planning themes available from **Plandata.dk**, which is preconfigured:
+Each level is a **toggle**. Tap once to fetch and show it, tap again to hide it — the data stays in
+memory, so toggling is instant afterwards and tapping repeatedly never stacks duplicate copies.
 
-| Level | Your KortInfo layer | Preconfigured source |
-|---|---|---|
-| 1 | Zonekort (By / Land) | Plandata `theme_pdk_zonekort_samlet_v`, filtered `komnr=851` |
-| 2 | Kommuneplanområder | Plandata `theme_pdk_kommuneplanomraade_vedtaget_v` |
-| 3 | By- og bydele | **Not configured** — Aalborg-only, no national feed |
-| 4 | Kommuneplanrammer | Plandata `theme_pdk_kommuneplanramme_alle_vedtaget_v` |
+| Level | Your KortInfo layer | What it shows | Source |
+|---|---|---|---|
+| 1 | Zonekort (By / Land) | byzone vs landzone | Plandata, preset |
+| 2 | Kommuneplanområder | Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg | Plandata, **guess** |
+| 3 | By- og bydele | Hasseris, Vejgård, Gug, Klarup… | **needs configuring** |
+| 4 | Kommuneplanrammer | land-use areas | Plandata, confirmed |
 
-Level 4 is the one I could confirm exists by that exact name. **Levels 1 and 2 are educated
-guesses** — if they fail, the app tells you so and you correct the `typeName` behind the ⚙. You can
-list the real names by opening
-`https://geoserver.plandata.dk/geoserver/wfs?request=GetCapabilities` and searching for `zonekort`.
+**Zones 2 and 3 aren't hard-coded, because they can't be.** Level 3 is an Aalborg-only layer with no
+national feed — Aalborg publishes nothing to opendata.dk — and its KortInfo service needs a
+per-site generated link plus the administrator's permission. So instead of me guessing:
 
-For **level 3**, the reliable options are: generate a WFS link from KortInfo's own Linkgenerator and
-paste it in, or draw the districts by hand once and export the GeoJSON into the repo. Once drawn,
-it's yours forever.
+> Tap **⚙** on a zone level → paste the service URL → **Browse layers on this server**.
 
-Coordinates get normalised on arrival. Plandata publishes in UTM zone 32, and some services return
-lat/lng in the wrong order — both would silently drop your zones in the North Sea, so the app
-detects and fixes each case, then tells you it did.
+That reads the service's own capabilities document and lists every layer it offers, with a filter
+box. Type "bydel" and pick the match. It works against any OGC WFS — Plandata, KortInfo, GC2 — so
+you never have to guess a `typeName` again. Your choice is saved into the game link.
+
+To get a KortInfo URL: open the Aalborg map, turn on the layer, and use KortInfo's own
+Linkgenerator to produce a WFS link (swap `services.drift.kortinfo.net/kortinfo/services/Wfs.ashx?`
+for `drift.kortinfo.net/Wfs.aspx?` if your page is https). For level 2, also try Browse against
+Plandata and filter for "kommuneplanomraade".
+
+If neither works, draw the districts by hand once and export the GeoJSON into the repo. Tedious,
+but permanent.
+
+### Colours
+
+**Zone 1** paints byzone red and landzone green so you can tell them apart at a glance.
+**Zone 4** uses the municipality's own land-use legend — B Boligområde salmon, C Centerområde
+purple, I Industriområde blue, R Rekreativt green, and so on for all twelve categories. A legend
+appears under the layer list showing only the categories actually present in the data.
+
+Services disagree on field names, so the category is worked out from the Danish land-use words in
+any property, falling back to the letter inside Aalborg's plan numbers (`1.1.C2` → C).
+
+### The play area
+
+The four Kommuneplanområder outline the whole play area, so there's a **⛶** button on any loaded
+zone layer: it merges every polygon in that layer into one boundary and makes it the play area. Turn
+on zone 2, tap ⛶, and the map is bounded exactly by Midtbyen + Nørresundby + Vest + Øst Aalborg.
 
 ### Bus and train routes
 
-NT's route map runs on GC2, which exposes every layer over SQL and WMS. The Layers tab loads six
-route sets — city, regional, X Bus, local, telebus and trains — as **tappable lines**. Tap a route
-while the Bus route question is open and it becomes a corridor.
+Also toggles. Each route set is tried against two GC2 endpoints — the SQL API first, then the WFS —
+because which one is open varies, and a route layer that won't load is the difference between
+playing and not playing. Loaded routes are **tappable**: tap one while the Bus route question is
+open and it becomes a corridor.
 
-If the vector feed doesn't respond, turn on the **NT route map picture overlay** in the same tab.
-You'll still see every route on the map and can trace the one you're on by hand — the Bus route
-question has a "trace by hand" button for exactly this.
+If both endpoints fail, turn on the **NT route map** picture overlay in the same tab. You'll still
+see every route and can trace yours with the Bus route question's trace-by-hand button.
 
 ### Also available
 
@@ -169,7 +190,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks — the constraint maths
-node ui.test.mjs         # 72 checks — the app, driven headlessly
+node ui.test.mjs         # 136 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
@@ -177,6 +198,8 @@ exactly the play area minus the circle, that the thermometer bisector lands on t
 contradictory answers are detected.
 
 `ui.test.mjs` boots the real `index.html` in a fake DOM and clicks through it — logging a radar,
-switching units, selecting a bus route, checking that UTM32 coordinates land in Aalborg.
+switching units, selecting a bus route, verifying every entry in the land-use legend, checking that
+toggling a layer four times doesn't stack four copies, that a dead endpoint falls through to the
+backup, and that UTM32 coordinates land in Aalborg rather than the North Sea.
 
 Worth running if you change how a question type works. Both caught real bugs while this was built.

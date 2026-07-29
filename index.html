@@ -104,20 +104,20 @@
 
     <!-- LAYERS -->
     <section class="tabpane" data-pane="layers">
+      <p class="hint">Tap to turn a layer on. Tap again to turn it off — it stays loaded, so
+        toggling is instant after the first time.</p>
+
       <p class="section-label">Administrative zones</p>
       <div class="stack" id="zoneSources"></div>
 
       <p class="section-label">Bus &amp; train routes</p>
       <div class="stack" id="routeSources"></div>
-      <p class="hint">Routes load as lines you can tap. If the vector feed is down, turn on the
-        picture overlay below — you can still read the map and trace a route by hand.</p>
 
       <p class="section-label">Picture overlays</p>
       <div class="stack" id="wmsList"></div>
-      <button class="ghost-btn wide" id="addWmsBtn">Add a WMS overlay</button>
 
       <p class="section-label">Your own data</p>
-      <div class="stack">
+      <div class="stack" id="ownData">
         <label class="row-btn as-label">
           <span class="row-title">Load a GeoJSON file</span>
           <span class="row-meta">Anything you exported or drew earlier</span>
@@ -128,10 +128,9 @@
           <span class="row-meta">Tap corners on the map</span>
         </button>
       </div>
-
-      <p class="section-label">Loaded</p>
       <div id="zoneLayers" class="zone-layers"></div>
-      <p id="layersEmpty" class="empty">Nothing loaded yet.</p>
+
+      <div id="legend" class="legend" hidden></div>
       <div id="zoneStatus" class="status" hidden></div>
     </section>
 
@@ -210,6 +209,11 @@
     <div class="field" data-wfs-only>
       <label for="srcType">Layer / typeName</label>
       <input type="text" id="srcType" placeholder="pdk:theme_pdk_…">
+      <button class="ghost-btn wide" id="srcBrowse" style="margin-top:7px">Browse layers on this server</button>
+      <div id="srcBrowseBox" hidden>
+        <input type="text" id="srcFilter" placeholder="filter, e.g. bydel" style="margin-top:8px">
+        <div id="srcList" class="src-list"></div>
+      </div>
     </div>
     <div class="field" data-wfs-only>
       <label for="srcCql">Filter (CQL, optional)</label>

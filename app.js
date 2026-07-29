@@ -41,28 +41,95 @@ const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
 const DEFAULT_SOURCES = {
   zone1: {
     name: 'Zone 1 · Byzone / Landzone',
-    note: 'Plandata "Zonekort". Layer name unverified — edit if it fails.',
+    note: 'Plandata "Zonekort". If it fails, tap Browse and search for "zonekort".',
     kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_zonekort_samlet_v', cql: 'komnr=851', nameField: 'zonestatus'
+    typeName: 'pdk:theme_pdk_zonekort_samlet_v', cql: 'komnr=851',
+    nameField: 'zonestatus', style: 'zonekort'
   },
   zone2: {
     name: 'Zone 2 · Kommuneplanområder',
-    note: 'Plandata municipal plan areas. Layer name unverified.',
+    note: 'The four big areas: Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg. ' +
+          'Tap Browse and search for "kommuneplanomraade" or point this at Aalborg\'s KortInfo WFS.',
     kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_kommuneplanomraade_vedtaget_v', cql: 'komnr=851', nameField: ''
+    typeName: 'pdk:theme_pdk_kommuneplanomraade_vedtaget_v', cql: 'komnr=851',
+    nameField: '', style: 'plain'
   },
   zone3: {
     name: 'Zone 3 · By- og bydele',
-    note: 'Aalborg-only layer, no national feed. Paste a KortInfo link, or draw it once and export.',
-    kind: 'wfs', url: '', typeName: '', cql: '', nameField: ''
+    note: 'Aalborg-only layer — no national feed. Paste the KortInfo WFS URL, then tap Browse ' +
+          'and search for "bydel".',
+    kind: 'wfs', url: '', typeName: '', cql: '', nameField: '', style: 'plain'
   },
   zone4: {
     name: 'Zone 4 · Kommuneplanrammer',
-    note: 'Plandata framework areas — the finest grid.',
+    note: 'Plandata framework areas, coloured by land-use category.',
     kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_kommuneplanramme_alle_vedtaget_v', cql: 'komnr=851', nameField: 'plannr'
+    typeName: 'pdk:theme_pdk_kommuneplanramme_alle_vedtaget_v', cql: 'komnr=851',
+    nameField: 'plannr', style: 'rammer'
   }
 };
+
+/* ---------- categorical styling ------------------------------------
+   Zone 1 needs byzone and landzone to be told apart at a glance, and
+   zone 4 uses the municipality's own land-use legend.                */
+
+const ZONEKORT_STYLE = [
+  { key: 'byzone',           label: 'Byzone',           color: '#e0554f' },
+  { key: 'landzone',         label: 'Landzone',         color: '#4fae5a' },
+  { key: 'sommerhusområde',  label: 'Sommerhusområde',  color: '#e8a33d' }
+];
+
+const RAMME_STYLE = [
+  { key: 'D', match: 'blandet bolig',        label: 'D · Blandet bolig og erhverv', color: '#f0c4df' },
+  { key: 'H', match: 'let erhverv',          label: 'H · Let erhvervsområde',       color: '#c0c1de' },
+  { key: 'M', match: 'særlige virksomheder', label: 'M · Særlige virksomheder',     color: '#5757a5' },
+  { key: 'O', match: 'offentlig service',    label: 'O · Offentlig service',        color: '#f2efa2' },
+  { key: 'T', match: 'tekniske anlæg',       label: 'T · Tekniske anlæg',           color: '#c9c9c9' },
+  { key: 'S', match: 'sommerhus',            label: 'S · Sommerhusområde',          color: '#f5dcc7' },
+  { key: 'G', match: 'råstof',               label: 'G · Råstofområde',             color: '#f0da9a' },
+  { key: 'R', match: 'rekreativt',           label: 'R · Rekreativt område',        color: '#7cbd6d' },
+  { key: 'C', match: 'centerområde',         label: 'C · Centerområde',             color: '#8e5fa8' },
+  { key: 'I', match: 'industriområde',       label: 'I · Industriområde',           color: '#4a93d2' },
+  { key: 'L', match: 'landsby',              label: 'L · Landsby',                  color: '#a5714e' },
+  { key: 'B', match: 'boligområde',          label: 'B · Boligområde',              color: '#f0a184' }
+];
+
+/* Which land-use category a kommuneplanramme belongs to. Services differ on
+   field names, so try the words first, then the letter buried in the plan
+   number (Aalborg numbers rammer like "1.1.C2"). */
+function rammeCategory(props) {
+  const vals = Object.values(props || {}).filter((v) => typeof v === 'string');
+  const hay = vals.join(' | ').toLowerCase();
+  for (const c of RAMME_STYLE) if (hay.includes(c.match)) return c;
+
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null) continue;
+    const str = String(v).trim();
+    if (/^[BCDGHILMORST]$/.test(str) && /anvend|kategori|type|ramme/i.test(k)) {
+      return RAMME_STYLE.find((c) => c.key === str) || null;
+    }
+  }
+  for (const v of vals) {
+    const m = v.match(/(?:^|[.\s_-])([BCDGHILMORST])\s?\d/);
+    if (m) return RAMME_STYLE.find((c) => c.key === m[1]) || null;
+  }
+  return null;
+}
+
+function zonekortCategory(props) {
+  const hay = Object.values(props || {}).filter((v) => typeof v === 'string')
+    .join(' | ').toLowerCase();
+  for (const c of ZONEKORT_STYLE) if (hay.includes(c.key)) return c;
+  const z = props && (props.zone ?? props.zonekode);
+  if (z != null) return ZONEKORT_STYLE[Number(z) - 1] || null;
+  return null;
+}
+
+function categoryFor(styleKey, props) {
+  if (styleKey === 'rammer') return rammeCategory(props);
+  if (styleKey === 'zonekort') return zonekortCategory(props);
+  return null;
+}
 
 /* NT's route map runs on GC2, which exposes every layer over SQL and WMS. */
 const GC2 = 'https://nt.vidi.gc2.io';
@@ -1012,6 +1079,21 @@ function featureName(ft, layer) {
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
 
+function unionAll(features) {
+  const polys = features.filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
+  if (!polys.length) return null;
+  if (polys.length === 1) return turf.clone(polys[0]);
+  try {
+    const u = turf.union(turf.featureCollection(polys));
+    if (u) return u;
+  } catch (_) { /* fall back to pairwise */ }
+  let acc = turf.clone(polys[0]);
+  for (let i = 1; i < polys.length; i++) acc = boolOp(turf.union, acc, polys[i]) || acc;
+  return acc;
+}
+
+/* A layer is created once and then toggled. `key` keeps a source from
+   loading twice — tapping Zone 4 five times must not stack five copies. */
 function addLayer(name, geojson, opts = {}) {
   const raw = geojson.type === 'FeatureCollection' ? geojson.features
             : geojson.type === 'Feature' ? [geojson] : [];
@@ -1020,18 +1102,30 @@ function addLayer(name, geojson, opts = {}) {
 
   const kind = opts.kind || (lines.length > polys.length ? 'line' : 'poly');
   const feats = kind === 'line' ? lines : polys;
-  if (!feats.length) { toast(`${name}: no ${kind === 'line' ? 'lines' : 'polygons'} in that data.`, true); return null; }
+  if (!feats.length) {
+    toast(`${name}: no ${kind === 'line' ? 'lines' : 'polygons'} in that data.`, true);
+    return null;
+  }
+
+  if (opts.key) removeLayerByKey(opts.key);
 
   const color = LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
   const fcol = { type: 'FeatureCollection', features: feats };
-  const rec = { id: uid(), name, color, kind, geojson: fcol,
-                nameField: opts.nameField || '', visible: true, layer: null };
+  const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
+                nameField: opts.nameField || '', style: opts.style || 'plain',
+                visible: true, layer: null };
+
+  const styleOf = (ft) => {
+    const cat = categoryFor(rec.style, ft.properties);
+    const c = cat ? cat.color : color;
+    return kind === 'line'
+      ? { color: c, weight: 3, opacity: .85 }
+      : { color: c, weight: 1.3, opacity: .9, fillColor: c, fillOpacity: cat ? .45 : .05 };
+  };
 
   rec.layer = L.geoJSON(fcol, {
     pane: 'zonePane',
-    style: kind === 'line'
-      ? { color, weight: 3, opacity: .85 }
-      : { color, weight: 1.4, opacity: .85, fillColor: color, fillOpacity: .05 },
+    style: styleOf,
     onEachFeature: (ft, lyr) => {
       lyr.bindTooltip(featureName(ft, rec), { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
@@ -1055,34 +1149,77 @@ function addLayer(name, geojson, opts = {}) {
 
   S.layers.push(rec);
   renderLayerList();
+  renderSourceRows();
+  renderLegend();
   return rec;
 }
 
+function layerByKey(key) { return S.layers.find((l) => l.key === key) || null; }
+
+function removeLayerByKey(key) {
+  const ex = layerByKey(key);
+  if (!ex) return;
+  map.removeLayer(ex.layer);
+  S.layers = S.layers.filter((l) => l !== ex);
+}
+
+function setLayerVisible(rec, on) {
+  rec.visible = on;
+  if (on) rec.layer.addTo(map); else map.removeLayer(rec.layer);
+  renderLayerList(); renderSourceRows(); renderLegend();
+}
+
+function usePlayAreaFromLayer(rec) {
+  const u = unionAll(rec.geojson.features);
+  if (!u) { toast('That layer has no areas to merge.', true); return; }
+  setCustomPlayArea(u, rec.name);
+  toast(`Play area is now the outline of ${rec.name}.`);
+}
+
+/* Only layers loaded by hand appear here; the four zone levels and the
+   route sets are toggled from their own rows. */
 function renderLayerList() {
   const box = $('#zoneLayers');
   box.innerHTML = '';
-  $('#layersEmpty').hidden = S.layers.length > 0;
-
-  S.layers.forEach((zl) => {
+  S.layers.filter((l) => !l.key).forEach((zl) => {
     const row = document.createElement('div');
     row.className = 'zone-row';
     row.innerHTML = `<span class="zone-swatch" style="background:${zl.color}"></span>
       <span class="zone-name">${escapeHtml(zl.name)}</span>
       <span class="zone-count">${zl.geojson.features.length}${zl.kind === 'line' ? ' ln' : ''}</span>
+      <button class="icon-btn" data-act="area" title="Use as play area">⛶</button>
       <button class="icon-btn" data-act="vis">${zl.visible ? '◉' : '○'}</button>
       <button class="icon-btn del" data-act="del">✕</button>`;
-    row.querySelector('[data-act=vis]').addEventListener('click', () => {
-      zl.visible = !zl.visible;
-      if (zl.visible) zl.layer.addTo(map); else map.removeLayer(zl.layer);
-      renderLayerList();
-    });
+    row.querySelector('[data-act=vis]').addEventListener('click', () => setLayerVisible(zl, !zl.visible));
+    row.querySelector('[data-act=area]').addEventListener('click', () => usePlayAreaFromLayer(zl));
     row.querySelector('[data-act=del]').addEventListener('click', () => {
       map.removeLayer(zl.layer);
       S.layers = S.layers.filter((x) => x.id !== zl.id);
-      renderLayerList();
+      renderLayerList(); renderLegend();
     });
     box.appendChild(row);
   });
+}
+
+function renderLegend() {
+  const box = $('#legend');
+  const active = S.layers.filter((l) => l.visible && l.style !== 'plain');
+  if (!active.length) { box.hidden = true; box.innerHTML = ''; return; }
+
+  box.hidden = false;
+  box.innerHTML = active.map((l) => {
+    const cats = l.style === 'rammer' ? RAMME_STYLE : ZONEKORT_STYLE;
+    const used = cats.filter((c) =>
+      l.geojson.features.some((ft) => {
+        const got = categoryFor(l.style, ft.properties);
+        return got && got.key === c.key;
+      }));
+    const show = used.length ? used : cats;
+    return `<p class="legend-title">${escapeHtml(l.name)}</p>` +
+      show.map((c) => `<div class="legend-row">
+        <span class="legend-swatch" style="background:${c.color}"></span>
+        <span>${escapeHtml(c.label)}</span></div>`).join('');
+  }).join('');
 }
 
 function setStatus(msg, bad) {
@@ -1104,12 +1241,27 @@ function wfsUrl(src) {
   return src.url + (src.url.includes('?') ? '&' : '?') + p.toString();
 }
 
-function gc2Url(table) {
-  const p = new URLSearchParams({
-    q: `SELECT * FROM ${table}`, format: 'geojson', srs: '4326'
-  });
-  return `${GC2}/api/v2/sql/nt?${p.toString()}`;
+function capsUrl(url) {
+  const p = new URLSearchParams({ service: 'WFS', version: '1.1.0', request: 'GetCapabilities' });
+  return url + (url.includes('?') ? '&' : '?') + p.toString();
 }
+
+/* GC2 serves the same table over a SQL endpoint and a WFS endpoint. Try both:
+   which one is open varies, and a route layer that will not load is the
+   difference between playing and not playing. */
+function gc2Urls(table) {
+  const [schema, tbl] = table.includes('.') ? table.split('.') : ['public', table];
+  const sql = new URLSearchParams({ q: `SELECT * FROM ${table}`, format: 'geojson', srs: '4326' });
+  const wfs = new URLSearchParams({
+    service: 'WFS', version: '1.0.0', request: 'GetFeature',
+    typeName: tbl, outputFormat: 'application/json', srsName: 'EPSG:4326'
+  });
+  return [
+    `${GC2}/api/v2/sql/nt?${sql.toString()}`,
+    `${GC2}/wfs/nt/${schema}/4326?${wfs.toString()}`
+  ];
+}
+const gc2Url = (table) => gc2Urls(table)[0];
 
 async function fetchGeoJson(url) {
   const res = await fetch(url);
@@ -1117,49 +1269,99 @@ async function fetchGeoJson(url) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let gj;
   try { gj = JSON.parse(text); }
-  catch (_) { throw new Error('The service replied with something that is not JSON — check the layer name.'); }
-  if (gj.exceptions || gj.success === false) throw new Error(gj.message || 'The service reported an error.');
+  catch (_) { throw new Error('Reply was not JSON — the layer name is probably wrong.'); }
+  if (gj.exceptions || gj.success === false) throw new Error(gj.message || 'Service reported an error.');
   if (!gj.type) throw new Error('No GeoJSON in the reply.');
+  if (!(gj.features || []).length && gj.type === 'FeatureCollection') {
+    throw new Error('The service answered, but with zero features — check the filter.');
+  }
   return gj;
 }
 
-async function loadSource(key, src, btn) {
+/* Try each URL in turn, keep the first that yields features. */
+async function fetchFirst(urls) {
+  const problems = [];
+  for (const u of urls) {
+    try { return await fetchGeoJson(u); }
+    catch (err) { problems.push(err.message); }
+  }
+  throw new Error(problems.join(' / '));
+}
+
+/* ---------- layer capability browser ---------------------------------
+   Reads the service's own list of layers so you never have to guess a
+   typeName again. Works on any OGC WFS: Plandata, KortInfo, GC2.       */
+
+function parseWfsCapabilities(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  const nodes = Array.from(doc.getElementsByTagNameNS('*', 'FeatureType'));
+  const out = [];
+  for (const n of nodes) {
+    const pick = (tag) => {
+      const e = n.getElementsByTagNameNS('*', tag)[0];
+      return e && e.textContent ? e.textContent.trim() : '';
+    };
+    const name = pick('Name');
+    if (name) out.push({ name, title: pick('Title') || name, abstract: pick('Abstract') });
+  }
+  return out;
+}
+
+async function browseLayers(url) {
+  const res = await fetch(capsUrl(url));
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const list = parseWfsCapabilities(await res.text());
+  if (!list.length) throw new Error('No layers listed — is that a WFS endpoint?');
+  return list;
+}
+
+/* ---------- toggling sources ----------------------------------------- */
+
+async function toggleSource(key, btn) {
+  const src = S.sources[key];
+  const ex = layerByKey('src:' + key);
+  if (ex) { setLayerVisible(ex, !ex.visible); return; }
+
   if (!src.url || (src.kind === 'wfs' && !src.typeName)) {
-    setStatus(`${src.name}: no source configured yet. Tap the gear to add one.`, true);
+    setStatus(`${src.name}: no source set yet. Tap ⚙, paste the service URL, then Browse for the layer.`, true);
     return;
   }
   if (btn) btn.classList.add('is-busy');
   setStatus(`Loading ${src.name}…`);
   try {
-    const url = src.kind === 'wfs' ? wfsUrl(src) : src.url;
-    const gj = await fetchGeoJson(url);
+    const gj = await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]);
     const { note } = normaliseCoords(gj);
-    const rec = addLayer(src.name, gj, { nameField: src.nameField, kind: src.kind === 'line' ? 'line' : undefined });
+    const rec = addLayer(src.name, gj, {
+      key: 'src:' + key, nameField: src.nameField, style: src.style
+    });
     if (rec) {
-      setStatus(`${src.name}: ${rec.geojson.features.length} loaded${note ? ' (' + note + ')' : ''}.`);
-      toast(`${src.name} loaded.`);
+      setStatus(`${src.name}: ${rec.geojson.features.length} zones on${note ? ' (' + note + ')' : ''}.`);
     }
   } catch (err) {
-    setStatus(`${src.name} failed: ${err.message} — tap the gear to correct the layer name or URL, or load a file instead.`, true);
+    setStatus(`${src.name} failed — ${err.message}. Tap ⚙ and Browse to pick the right layer.`, true);
   } finally {
     if (btn) btn.classList.remove('is-busy');
   }
 }
 
-async function loadRoute(key, btn) {
+async function toggleRoute(key, btn) {
   const r = ROUTE_SOURCES[key];
+  const ex = layerByKey('route:' + key);
+  if (ex) { setLayerVisible(ex, !ex.visible); return; }
+
   btn.classList.add('is-busy');
   setStatus(`Loading ${r.name}…`);
   try {
-    const gj = await fetchGeoJson(gc2Url(r.table));
+    const gj = await fetchFirst(gc2Urls(r.table));
     const { note } = normaliseCoords(gj);
-    const rec = addLayer(r.name, gj, { kind: 'line' });
+    const rec = addLayer(r.name, gj, { key: 'route:' + key, kind: 'line' });
     if (rec) {
-      setStatus(`${r.name}: ${rec.geojson.features.length} route lines${note ? ' (' + note + ')' : ''}. Tap one on the map when using the Bus route question.`);
-      toast(`${r.name} loaded.`);
+      setStatus(`${r.name}: ${rec.geojson.features.length} route lines on${note ? ' (' + note + ')' : ''}. ` +
+                `Tap one on the map while the Bus route question is open.`);
     }
   } catch (err) {
-    setStatus(`${r.name} failed: ${err.message} — turn on the NT picture overlay instead and trace the route by hand.`, true);
+    setStatus(`${r.name} failed — ${err.message}. Turn on the NT route map picture overlay instead ` +
+              `and trace your route with the Bus route question's trace button.`, true);
   } finally {
     btn.classList.remove('is-busy');
   }
@@ -1167,87 +1369,91 @@ async function loadRoute(key, btn) {
 
 /* ---------- layers tab UI --------------------------------------------- */
 
+function sourceRow(label, meta, state, onTap, onGear) {
+  const row = document.createElement('div');
+  row.className = 'src-row';
+  const dot = state === 'on' ? '◉' : state === 'off' ? '○' : '·';
+  row.innerHTML = `
+    <button class="row-btn src-main${state === 'on' ? ' is-on' : ''}">
+      <span class="row-title"><span class="src-dot">${dot}</span>${escapeHtml(label)}</span>
+      <span class="row-meta">${escapeHtml(meta)}</span>
+    </button>${onGear ? '<button class="icon-btn src-gear" title="Edit source">⚙</button>' : ''}`;
+  const main = row.querySelector('.src-main');
+  main.addEventListener('click', () => onTap(main));
+  if (onGear) row.querySelector('.src-gear').addEventListener('click', onGear);
+  return row;
+}
+
 function renderSourceRows() {
   const zbox = $('#zoneSources');
   zbox.innerHTML = '';
   Object.entries(S.sources).forEach(([key, src]) => {
-    const row = document.createElement('div');
-    row.className = 'src-row';
-    row.innerHTML = `
-      <button class="row-btn src-main">
-        <span class="row-title">${escapeHtml(src.name)}</span>
-        <span class="row-meta">${escapeHtml(src.url ? (src.typeName || src.url) : 'not configured')}</span>
-      </button>
-      <button class="icon-btn src-gear" title="Edit source">⚙</button>`;
-    const main = row.querySelector('.src-main');
-    main.addEventListener('click', () => loadSource(key, src, main));
-    row.querySelector('.src-gear').addEventListener('click', () => openSourceEditor(key));
+    const rec = layerByKey('src:' + key);
+    const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
+    const meta = rec ? `${rec.geojson.features.length} zones${state === 'on' ? '' : ' · hidden'}`
+                     : (src.url ? (src.typeName || src.url) : 'not configured — tap ⚙');
+    const row = sourceRow(src.name, meta, state,
+      (btn) => toggleSource(key, btn), () => openSourceEditor(key));
+    if (rec) {
+      const b = document.createElement('button');
+      b.className = 'icon-btn';
+      b.title = 'Use as play area';
+      b.textContent = '⛶';
+      b.addEventListener('click', () => usePlayAreaFromLayer(rec));
+      row.insertBefore(b, row.querySelector('.src-gear'));
+    }
     zbox.appendChild(row);
   });
 
   const rbox = $('#routeSources');
   rbox.innerHTML = '';
   Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
-    const b = document.createElement('button');
-    b.className = 'row-btn';
-    b.innerHTML = `<span class="row-title">${escapeHtml(r.name)}</span>
-                   <span class="row-meta">${escapeHtml(r.table)}</span>`;
-    b.addEventListener('click', () => loadRoute(key, b));
-    rbox.appendChild(b);
+    const rec = layerByKey('route:' + key);
+    const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
+    const meta = rec ? `${rec.geojson.features.length} lines${state === 'on' ? '' : ' · hidden'}` : r.table;
+    rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
   });
 }
 
 function renderWmsList() {
   const box = $('#wmsList');
   box.innerHTML = '';
-  S.wms.forEach((w) => {
-    const row = document.createElement('div');
-    row.className = 'zone-row';
-    row.innerHTML = `<span class="zone-name">${escapeHtml(w.name)}</span>
-      <button class="icon-btn" data-act="vis">${w.visible ? '◉' : '○'}</button>
-      <button class="icon-btn del" data-act="del">✕</button>`;
-    row.querySelector('[data-act=vis]').addEventListener('click', () => {
-      w.visible = !w.visible;
-      if (w.visible) w.leaflet.addTo(map); else map.removeLayer(w.leaflet);
-      renderWmsList();
-    });
-    row.querySelector('[data-act=del]').addEventListener('click', () => {
-      map.removeLayer(w.leaflet);
-      S.wms = S.wms.filter((x) => x.id !== w.id);
-      renderWmsList();
-    });
-    box.appendChild(row);
-  });
-
   WMS_PRESETS.forEach((p) => {
-    if (S.wms.some((w) => w.name === p.name)) return;
-    const b = document.createElement('button');
-    b.className = 'row-btn';
-    b.innerHTML = `<span class="row-title">Turn on ${escapeHtml(p.name)}</span>
-                   <span class="row-meta">Image overlay — always readable, not clickable</span>`;
-    b.addEventListener('click', () => { addWms(p.name, p.url, p.layers); });
-    box.appendChild(b);
+    const ex = S.wms.find((w) => w.name === p.name);
+    const state = !ex ? 'idle' : ex.visible ? 'on' : 'off';
+    box.appendChild(sourceRow(p.name,
+      state === 'idle' ? 'Picture overlay — readable, not tappable'
+                       : (state === 'on' ? 'on' : 'hidden'),
+      state, () => toggleWms(p), null));
   });
+}
+
+function toggleWms(preset) {
+  const ex = S.wms.find((w) => w.name === preset.name);
+  if (ex) {
+    ex.visible = !ex.visible;
+    if (ex.visible) ex.leaflet.addTo(map); else map.removeLayer(ex.leaflet);
+    renderWmsList();
+    return;
+  }
+  addWms(preset.name, preset.url, preset.layers);
 }
 
 function addWms(name, url, layers) {
   const lyr = L.tileLayer.wms(url, {
     layers, format: 'image/png', transparent: true, pane: 'wmsPane', opacity: 0.9
   });
-  lyr.on('tileerror', () => setStatus(`${name}: the image service did not respond. Check the URL.`, true));
+  let warned = false;
+  lyr.on('tileerror', () => {
+    if (warned) return;
+    warned = true;
+    setStatus(`${name}: the image service did not answer. Check the URL behind ⚙.`, true);
+  });
   lyr.addTo(map);
   S.wms.push({ id: uid(), name, url, layers, visible: true, leaflet: lyr });
   renderWmsList();
-  toast(`${name} on.`);
+  return lyr;
 }
-
-$('#addWmsBtn').addEventListener('click', () => {
-  const url = prompt('WMS service URL');
-  if (!url) return;
-  const layers = prompt('Layer name(s), comma separated');
-  if (!layers) return;
-  addWms(prompt('Give it a name', 'Overlay') || 'Overlay', url, layers);
-});
 
 /* --- source editor --- */
 let editingKey = null;
@@ -1263,6 +1469,8 @@ function openSourceEditor(key) {
   $('#srcCql').value = src.cql || '';
   $('#srcName').value = src.nameField || '';
   syncSrcKind();
+  $('#srcBrowseBox').hidden = true;
+  $('#srcFilter').value = '';
   $('#srcModal').hidden = false;
 }
 function syncSrcKind() {
@@ -1270,6 +1478,44 @@ function syncSrcKind() {
   $$('[data-wfs-only]').forEach((el) => { el.hidden = !wfs; });
 }
 $('#srcKind').addEventListener('change', syncSrcKind);
+
+let browsed = [];
+function renderBrowseList() {
+  const q = $('#srcFilter').value.trim().toLowerCase();
+  const hits = browsed.filter((l) =>
+    !q || l.name.toLowerCase().includes(q) || l.title.toLowerCase().includes(q));
+  $('#srcList').innerHTML = hits.slice(0, 60).map((l, i) =>
+    `<button class="src-item" data-i="${browsed.indexOf(l)}">
+       <span class="src-item-title">${escapeHtml(l.title)}</span>
+       <span class="src-item-name">${escapeHtml(l.name)}</span>
+     </button>`).join('') ||
+    '<p class="hint">Nothing matches that filter.</p>';
+  $$('#srcList .src-item').forEach((b) => b.addEventListener('click', () => {
+    $('#srcType').value = browsed[Number(b.dataset.i)].name;
+    $('#srcBrowseBox').hidden = true;
+  }));
+}
+$('#srcFilter').addEventListener('input', renderBrowseList);
+
+$('#srcBrowse').addEventListener('click', async () => {
+  const url = $('#srcUrl').value.trim();
+  if (!url) { toast('Put the service URL in first.', true); return; }
+  const btn = $('#srcBrowse');
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Asking the server…';
+  try {
+    browsed = await browseLayers(url);
+    $('#srcBrowseBox').hidden = false;
+    renderBrowseList();
+    btn.textContent = `${browsed.length} layers — filter below`;
+  } catch (err) {
+    btn.textContent = original;
+    toast('Could not list layers: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 $('#srcCancel').addEventListener('click', () => { $('#srcModal').hidden = true; });
 $('#srcSave').addEventListener('click', () => {
   const src = S.sources[editingKey];
@@ -1279,8 +1525,9 @@ $('#srcSave').addEventListener('click', () => {
   src.cql = $('#srcCql').value.trim();
   src.nameField = $('#srcName').value.trim();
   $('#srcModal').hidden = true;
+  removeLayerByKey('src:' + editingKey);   // force a refetch with the new settings
   renderSourceRows();
-  loadSource(editingKey, src, null);
+  toggleSource(editingKey, null);
 });
 
 /* --- file / draw --- */
@@ -1452,6 +1699,7 @@ function deserialize(data) {
     S.playAreaMeta = m;
   }
   (data.wms || []).forEach((w) => { if (w.visible) addWms(w.name, w.url, w.layers); });
+  renderWmsList();
 
   renderSourceRows();
   applyUnits();
@@ -1535,8 +1783,12 @@ renderToolForm();
 window.HS = {
   map, S, CONFIG, draft, drawing, RADAR_PRESETS,
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
+  toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
+  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
+  rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, ZONEKORT_STYLE,
+  renderSourceRows, renderLegend, gc2Urls,
   serialize, deserialize, b64encode, b64decode,
   constraintPolygon, halfPlane, voronoiCell, normaliseCoords, featureName,
   renderToolForm, selectTool, switchTab,
-  fmtDist, fmtArea, wfsUrl, gc2Url, loadSource, loadRoute
+  fmtDist, fmtArea, wfsUrl, gc2Url
 };

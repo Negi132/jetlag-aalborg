@@ -153,7 +153,7 @@ click(doc.querySelector('[data-tab="layers"]'));
 window.eval(`HS.addLayer('Test districts', {type:'FeatureCollection',features:[
   {type:'Feature',properties:{navn:'Vestbyen'},geometry:{type:'Polygon',coordinates:[[[9.88,57.03],[9.92,57.03],[9.92,57.06],[9.88,57.06],[9.88,57.03]]]}},
   {type:'Feature',properties:{navn:'Oestbyen'},geometry:{type:'Polygon',coordinates:[[[9.92,57.03],[9.97,57.03],[9.97,57.06],[9.92,57.06],[9.92,57.03]]]}}]})`);
-check('zone layer listed', doc.querySelectorAll('#zoneLayers .zone-row').length === 1);
+check('hand-loaded layer listed', doc.querySelectorAll('#zoneLayers .zone-row').length === 1);
 check('zone count shown', /2/.test(doc.querySelector('.zone-count').textContent));
 click(doc.querySelector('[data-tab="ask"]'));
 click(doc.querySelector('[data-tool="zone"]'));
@@ -230,6 +230,172 @@ check('WFS pins WGS84', /srsName=EPSG%3A4326/.test(wfs));
 check('WFS passes the CQL filter', /CQL_FILTER=komnr%3D851/.test(wfs));
 const gc2 = window.eval("HS.gc2Url('rutekortweb.ntmap_bybus_murl')");
 check('GC2 SQL url built', /api\/v2\/sql\/nt\?q=SELECT/.test(gc2) && /srs=4326/.test(gc2), gc2.slice(0,72)+'…');
+
+
+console.log('\n== zone 1: byzone red / landzone green ==');
+const zk = k => window.eval(`(HS.zonekortCategory(${k})||{}).color`);
+check('byzone is red', zk("{zonestatus:'Byzone'}") === '#e0554f', zk("{zonestatus:'Byzone'}"));
+check('landzone is green', zk("{zonestatus:'Landzone'}") === '#4fae5a', zk("{zonestatus:'Landzone'}"));
+check('summer-house zone distinct', zk("{zonestatus:'Sommerhusområde'}") === '#e8a33d');
+check('numeric zone code 1 = byzone', zk("{zone:1}") === '#e0554f');
+check('numeric zone code 2 = landzone', zk("{zone:2}") === '#4fae5a');
+check('unknown zone falls through', window.eval("HS.zonekortCategory({foo:'bar'})") === null);
+
+console.log('\n== zone 4: the municipality legend ==');
+const rc = k => window.eval(`(HS.rammeCategory(${k})||{}).key`);
+const rcol = k => window.eval(`(HS.rammeCategory(${k})||{}).color`);
+check('Boligområde -> B', rc("{anvendelsesnavn:'Boligområde'}") === 'B');
+check('B is salmon', rcol("{anvendelsesnavn:'Boligområde'}") === '#f0a184');
+check('Centerområde -> C', rc("{anvendelsesnavn:'Centerområde'}") === 'C');
+check('Blandet bolig beats Bolig', rc("{anvendelsesnavn:'Blandet bolig- og erhvervsområde'}") === 'D',
+      rc("{anvendelsesnavn:'Blandet bolig- og erhvervsområde'}"));
+check('Råstofområde -> G', rc("{anvendelsesnavn:'Råstofområde'}") === 'G');
+check('Let erhvervsområde -> H', rc("{anvendelsesnavn:'Let erhvervsområde'}") === 'H');
+check('Industriområde -> I', rc("{anvendelsesnavn:'Industriområde'}") === 'I');
+check('Landsby -> L', rc("{anvendelsesnavn:'Landsby'}") === 'L');
+check('Særlige virksomheder -> M', rc("{anvendelsesnavn:'Område til særlige virksomheder'}") === 'M');
+check('Offentlig service -> O', rc("{anvendelsesnavn:'Område til offentlig service'}") === 'O');
+check('Rekreativt område -> R', rc("{anvendelsesnavn:'Rekreativt område'}") === 'R');
+check('Sommerhusområde -> S', rc("{anvendelsesnavn:'Sommerhusområde'}") === 'S');
+check('Tekniske anlæg -> T', rc("{anvendelsesnavn:'Område til tekniske anlæg'}") === 'T');
+check('all twelve legend entries present', window.eval('HS.RAMME_STYLE.length') === 12);
+// fallback: letter buried in an Aalborg plan number
+check('plan number 1.1.C2 -> C', rc("{plannr:'1.1.C2'}") === 'C', rc("{plannr:'1.1.C2'}"));
+check('plan number 3.2.B1 -> B', rc("{plannr:'3.2.B1'}") === 'B');
+check('single-letter anvendelse field', rc("{anvendelse:'I'}") === 'I');
+check('unclassifiable returns null', window.eval("HS.rammeCategory({plannr:'zzz'})") === null);
+
+console.log('\n== toggling, not stacking ==');
+click(doc.querySelector('[data-tab="layers"]'));
+const zoneGJ = `{type:'FeatureCollection',features:[
+  {type:'Feature',properties:{zonestatus:'Byzone'},geometry:{type:'Polygon',coordinates:[[[9.88,57.03],[9.92,57.03],[9.92,57.06],[9.88,57.06],[9.88,57.03]]]}},
+  {type:'Feature',properties:{zonestatus:'Landzone'},geometry:{type:'Polygon',coordinates:[[[9.92,57.03],[9.97,57.03],[9.97,57.06],[9.92,57.06],[9.92,57.03]]]}}]}`;
+window.eval(`HS.addLayer('Zone 1 test', ${zoneGJ}, {key:'src:zone1', style:'zonekort'})`);
+check('keyed layer loaded once', window.eval("HS.S.layers.filter(l=>l.key==='src:zone1').length") === 1);
+// loading the same key again must replace, not append
+window.eval(`HS.addLayer('Zone 1 test', ${zoneGJ}, {key:'src:zone1', style:'zonekort'})`);
+check('reloading the same key does not stack', window.eval("HS.S.layers.filter(l=>l.key==='src:zone1').length") === 1);
+check('keyed layer hidden from the hand-loaded list',
+      window.eval("HS.S.layers.filter(l=>!l.key).length") === window.eval("document.querySelectorAll('#zoneLayers .zone-row').length"));
+const rec = () => window.eval("HS.layerByKey('src:zone1')");
+check('layer starts visible', window.eval("HS.layerByKey('src:zone1').visible") === true);
+window.eval("HS.setLayerVisible(HS.layerByKey('src:zone1'), false)");
+check('toggle off works', window.eval("HS.layerByKey('src:zone1').visible") === false);
+check('map no longer holds it', window.eval("HS.map.hasLayer(HS.layerByKey('src:zone1').layer)") === false);
+window.eval("HS.setLayerVisible(HS.layerByKey('src:zone1'), true)");
+check('toggle back on works', window.eval("HS.map.hasLayer(HS.layerByKey('src:zone1').layer)") === true);
+check('zone row shows the on state', /is-on/.test($('#zoneSources').innerHTML));
+
+console.log('\n== legend ==');
+check('legend appears for a styled layer', !$('#legend').hidden);
+check('legend names byzone', /Byzone/.test($('#legend').textContent));
+check('legend names landzone', /Landzone/.test($('#legend').textContent));
+check('legend omits categories not in the data', !/Sommerhus/.test($('#legend').textContent),
+      $('#legend').textContent.replace(/\s+/g,' ').slice(0,80));
+window.eval("HS.setLayerVisible(HS.layerByKey('src:zone1'), false)");
+check('legend hides with the layer', $('#legend').hidden);
+
+console.log('\n== play area from a zone layer ==');
+window.eval("HS.setLayerVisible(HS.layerByKey('src:zone1'), true)");
+const before = parseFloat($('#hudArea').textContent);
+window.eval("HS.usePlayAreaFromLayer(HS.layerByKey('src:zone1'))");
+const after = parseFloat($('#hudArea').textContent);
+check('play area shrank to the merged zones', after < before && after > 0, `${before} -> ${after} mi²`);
+check('the two touching squares merged into one ring',
+      window.eval("HS.unionAll(HS.layerByKey('src:zone1').geojson.features).geometry.coordinates.length") === 1);
+check('merged play area is stored as custom', window.eval("HS.S.playAreaMeta.type") === 'custom');
+// the union of two 0.04x0.03 and 0.05x0.03 deg boxes should be a single 0.09x0.03 box
+check('union area equals the sum of the parts', Math.abs(
+  window.eval("turf.area(HS.unionAll(HS.layerByKey('src:zone1').geojson.features))") -
+  window.eval("HS.layerByKey('src:zone1').geojson.features.reduce((a,f)=>a+turf.area(f),0)")) < 1000);
+
+console.log('\n== WFS capability browser ==');
+const caps = `<?xml version="1.0"?>
+<WFS_Capabilities xmlns="http://www.opengis.net/wfs" version="1.1.0">
+ <FeatureTypeList>
+  <FeatureType>
+    <Name>pdk:theme_pdk_zonekort_v</Name>
+    <Title>Zonekort</Title>
+    <Abstract>Byzone og landzone</Abstract>
+  </FeatureType>
+  <FeatureType>
+    <Name>pdk:theme_pdk_kommuneplanramme_alle_vedtaget_v</Name>
+    <Title>Kommuneplanrammer</Title>
+  </FeatureType>
+  <FeatureType>
+    <Name>aalborg:bydele</Name>
+    <Title>By- og bydele</Title>
+  </FeatureType>
+ </FeatureTypeList>
+</WFS_Capabilities>`;
+window.__caps = caps;
+const parsed = window.eval("HS.parseWfsCapabilities(window.__caps)");
+check('parses every FeatureType', parsed.length === 3, `got ${parsed.length}`);
+check('reads the typeName', parsed[0].name === 'pdk:theme_pdk_zonekort_v', parsed[0].name);
+check('reads the human title', parsed[2].title === 'By- og bydele', parsed[2].title);
+check('falls back to name when no title', window.eval(
+  "HS.parseWfsCapabilities('<WFS_Capabilities><FeatureTypeList><FeatureType><Name>x:y</Name></FeatureType></FeatureTypeList></WFS_Capabilities>')[0].title") === 'x:y');
+check('namespaced XML also parses', window.eval(
+  "HS.parseWfsCapabilities('<wfs:WFS_Capabilities xmlns:wfs=\\'http://www.opengis.net/wfs\\'><wfs:FeatureTypeList><wfs:FeatureType><wfs:Name>ns:layer</wfs:Name></wfs:FeatureType></wfs:FeatureTypeList></wfs:WFS_Capabilities>')[0].name") === 'ns:layer');
+check('garbage yields an empty list', window.eval("HS.parseWfsCapabilities('not xml at all').length") === 0);
+
+console.log('\n== route endpoints have a fallback ==');
+const urls = window.eval("JSON.stringify(HS.gc2Urls('rutekortweb.ntmap_bybus_murl'))");
+const u = JSON.parse(urls);
+check('two strategies offered', u.length === 2);
+check('first is the GC2 SQL API', /api\/v2\/sql\/nt/.test(u[0]));
+check('second is the GC2 WFS', /\/wfs\/nt\/rutekortweb\/4326/.test(u[1]), u[1].slice(0,60));
+check('WFS strategy strips the schema from typeName', /typeName=ntmap_bybus_murl/.test(u[1]));
+
+
+console.log('\n== route loading falls back when the first endpoint dies ==');
+// Fail the SQL API, answer on the WFS endpoint.
+window.__tried = [];
+window.fetch = async (url) => {
+  window.__tried.push(url);
+  if (url.includes('/api/v2/sql/')) return { ok: false, status: 403, text: async () => 'denied' };
+  return { ok: true, status: 200, text: async () => JSON.stringify({
+    type: 'FeatureCollection', features: [
+      { type: 'Feature', properties: { linjenavn: 'Line 2' },
+        geometry: { type: 'LineString', coordinates: [[9.88, 57.05], [9.96, 57.05]] } }]
+  }) };
+};
+click(doc.querySelector('[data-tab="layers"]'));
+const busRow = doc.querySelectorAll('#routeSources .src-main')[0];
+click(busRow);
+await new Promise(r => setTimeout(r, 60));
+check('both endpoints were attempted', window.__tried.length === 2, `tried ${window.__tried.length}`);
+check('route layer ended up loaded', window.eval("!!HS.layerByKey('route:bybus')"));
+check('loaded as lines', window.eval("(HS.layerByKey('route:bybus')||{}).kind") === 'line');
+check('route row now shows on', /is-on/.test($('#routeSources').innerHTML));
+check('status explains what happened', /route lines on/.test($('#zoneStatus').textContent),
+      $('#zoneStatus').textContent.slice(0, 70));
+// tapping again hides rather than reloading
+const callsBefore = window.__tried.length;
+click(doc.querySelectorAll('#routeSources .src-main')[0]);
+await new Promise(r => setTimeout(r, 30));
+check('second tap only toggles, no refetch', window.__tried.length === callsBefore);
+check('route hidden after second tap', window.eval("HS.layerByKey('route:bybus').visible") === false);
+click(doc.querySelectorAll('#routeSources .src-main')[0]);
+await new Promise(r => setTimeout(r, 30));
+check('third tap shows it again', window.eval("HS.layerByKey('route:bybus').visible") === true);
+
+console.log('\n== a dead source reports instead of failing silently ==');
+window.fetch = async () => ({ ok: false, status: 404, text: async () => 'nope' });
+const z3 = doc.querySelectorAll('#zoneSources .src-main')[2];
+click(z3);
+await new Promise(r => setTimeout(r, 60));
+check('unconfigured zone 3 tells you to use the gear', /tap ⚙/i.test($('#zoneStatus').textContent),
+      $('#zoneStatus').textContent.slice(0, 90));
+check('status is flagged as a problem', $('#zoneStatus').classList.contains('is-bad'));
+
+console.log('\n== picture overlay toggles ==');
+check('NT overlay offered as a row', /NT route map/.test($('#wmsList').textContent));
+click(doc.querySelector('#wmsList .src-main'));
+check('overlay turned on', window.eval("HS.S.wms.length") === 1 && window.eval("HS.S.wms[0].visible") === true);
+click(doc.querySelector('#wmsList .src-main'));
+check('overlay turned off, not duplicated',
+      window.eval("HS.S.wms.length") === 1 && window.eval("HS.S.wms[0].visible") === false);
 
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
