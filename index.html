@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0d141d">
+<title>Hide + Seek — Aalborg seeker map</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ───────────────────────── MAP ───────────────────────── -->
+  <div id="map"></div>
+
+  <!-- Live readout: the one number that tells you if you're winning -->
+  <div id="hud" class="hud">
+    <div class="hud-main">
+      <span class="hud-value" id="hudArea">—</span>
+      <span class="hud-unit">km²</span>
+    </div>
+    <div class="hud-sub"><span id="hudPct">100%</span> of play area left · <span id="hudCount">0</span> answers</div>
+  </div>
+
+  <button id="locateBtn" class="map-btn" title="Find my location" aria-label="Find my location">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5" fill="none"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
+  </button>
+
+  <div id="drawHint" class="draw-hint" hidden>
+    <span id="drawHintText">Tap the map</span>
+    <button id="drawUndo" class="ghost-btn">Undo point</button>
+    <button id="drawFinish" class="solid-btn">Finish shape</button>
+  </div>
+
+  <!-- ───────────────────────── PANEL ───────────────────────── -->
+  <button id="sheetToggle" class="sheet-toggle" aria-expanded="false">
+    <span class="grip"></span>
+    <span class="sheet-toggle-label">Questions</span>
+  </button>
+
+  <aside id="panel" class="panel">
+    <header class="panel-head">
+      <h1>Hide <span>+</span> Seek</h1>
+      <p class="sub">Aalborg seeker map</p>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="ask" role="tab">Ask</button>
+      <button class="tab" data-tab="log" role="tab">Log</button>
+      <button class="tab" data-tab="zones" role="tab">Zones</button>
+      <button class="tab" data-tab="game" role="tab">Game</button>
+    </nav>
+
+    <!-- ASK -->
+    <section class="tabpane is-active" data-pane="ask">
+      <div class="tool-grid">
+        <button class="tool" data-tool="radar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" class="fill"/></svg>
+          <span>Radar</span>
+        </button>
+        <button class="tool" data-tool="thermometer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 13.5V5a2 2 0 1 0-4 0v8.5a4 4 0 1 0 4 0Z"/><path d="M12 9v6"/></svg>
+          <span>Thermometer</span>
+        </button>
+        <button class="tool" data-tool="measuring">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18"/><path d="M6 9v6M12 8v8M18 9v6"/></svg>
+          <span>Measuring</span>
+        </button>
+        <button class="tool" data-tool="nearest">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 9v12h16V9Z" fill="none"/><path d="M12 21v-6"/></svg>
+          <span>Matching</span>
+        </button>
+        <button class="tool" data-tool="zone">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v7H4Z"/><path d="M13 12h7v7h-7Z"/></svg>
+          <span>Zone</span>
+        </button>
+        <button class="tool" data-tool="area">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6 12 3l7 4-2 12-9 2Z"/></svg>
+          <span>Free shape</span>
+        </button>
+      </div>
+
+      <div id="toolForm" class="tool-form" hidden></div>
+
+      <p id="askEmpty" class="empty">
+        Pick a question type. Each answer you log shades away the map the hider can't be in.
+      </p>
+    </section>
+
+    <!-- LOG -->
+    <section class="tabpane" data-pane="log">
+      <div id="logList" class="log-list"></div>
+      <p id="logEmpty" class="empty">No questions asked yet. The whole play area is live.</p>
+    </section>
+
+    <!-- ZONES -->
+    <section class="tabpane" data-pane="zones">
+      <p class="hint">Zone layers let you ask “are you in the same district as me?” and shade the answer in one tap.</p>
+      <div class="stack">
+        <button class="row-btn" data-load="postnumre">
+          <span class="row-title">Postal districts</span>
+          <span class="row-meta">Aalborg Kommune · Dataforsyningen</span>
+        </button>
+        <button class="row-btn" data-load="sogne">
+          <span class="row-title">Parishes (sogne)</span>
+          <span class="row-meta">Aalborg Kommune · finer grid</span>
+        </button>
+        <button class="row-btn" data-load="kommune">
+          <span class="row-title">Municipality outline</span>
+          <span class="row-meta">Aalborg Kommune boundary</span>
+        </button>
+        <label class="row-btn as-label">
+          <span class="row-title">Load a GeoJSON file</span>
+          <span class="row-meta">Bus zones, your own districts…</span>
+          <input type="file" id="zoneFile" accept=".geojson,.json" hidden>
+        </label>
+        <button class="row-btn" id="drawZoneBtn">
+          <span class="row-title">Draw a zone by hand</span>
+          <span class="row-meta">Tap corners on the map</span>
+        </button>
+      </div>
+      <div id="zoneLayers" class="zone-layers"></div>
+      <div id="zoneStatus" class="status" hidden></div>
+    </section>
+
+    <!-- GAME -->
+    <section class="tabpane" data-pane="game">
+      <div class="field">
+        <label for="playRadius">Play area radius</label>
+        <div class="inline">
+          <input type="number" id="playRadius" value="10" min="0.5" max="200" step="0.5">
+          <span class="unit">km</span>
+          <button class="ghost-btn" id="applyRadius">Apply</button>
+        </div>
+        <p class="hint">Centred on the map's current centre. Everything outside is out of bounds.</p>
+      </div>
+
+      <div class="field">
+        <button class="ghost-btn wide" id="playAreaKommune">Use Aalborg Kommune as the boundary</button>
+      </div>
+
+      <div class="field">
+        <label>Base map</label>
+        <div class="seg" id="baseSeg">
+          <button data-base="light" class="is-active">Plain</button>
+          <button data-base="streets">Streets</button>
+          <button data-base="satellite">Satellite</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="fogRange">Shading strength</label>
+        <input type="range" id="fogRange" min="0" max="90" value="62">
+      </div>
+
+      <div class="field">
+        <label>Save &amp; share</label>
+        <div class="inline wrap">
+          <button class="ghost-btn" id="copyLink">Copy game link</button>
+          <button class="ghost-btn" id="exportBtn">Export file</button>
+          <label class="ghost-btn as-label">Import file<input type="file" id="importFile" accept=".json" hidden></label>
+        </div>
+        <p class="hint">The link carries the whole game state — send it to your co-seeker and you both see the same map.</p>
+      </div>
+
+      <div class="field">
+        <button class="danger-btn wide" id="resetBtn">Clear all answers</button>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
