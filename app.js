@@ -6,29 +6,97 @@
 
 'use strict';
 
+const FT = 0.3048;          // metres per foot
+const MI = 1609.344;        // metres per mile
+
 const CONFIG = {
-  center: [57.0488, 9.9217],      // Aalborg, Nytorv-ish
+  center: [57.0488, 9.9217],
   zoom: 12,
-  playRadiusKm: 10,
-  kommunekode: '851',             // Aalborg Kommune
-  dawa: 'https://api.dataforsyningen.dk',
-  radarPresets: [100, 250, 500, 1000, 2000, 5000, 10000] // metres
+  playRadiusMi: 6,
+  kommunekode: '851',       // Aalborg
+  komnr: 851,
+  dawa: 'https://api.dataforsyningen.dk'
 };
+
+/* Radar values from the US deck, plus the short ones a city game needs.
+   Stored in metres; the label is what actually gets shown. */
+const RADAR_PRESETS = [
+  { label: '250 ft',  m: 250 * FT },
+  { label: '500 ft',  m: 500 * FT },
+  { label: '1000 ft', m: 1000 * FT },
+  { label: '1500 ft', m: 1500 * FT },
+  { label: '¼ mi',    m: 0.25 * MI },
+  { label: '½ mi',    m: 0.5 * MI },
+  { label: '1 mi',    m: 1 * MI },
+  { label: '3 mi',    m: 3 * MI },
+  { label: '5 mi',    m: 5 * MI }
+];
+
+/* ---------- data sources ------------------------------------------
+   All of these are editable in the Layers tab, because a service can
+   rename a layer and you do not want to be editing code on a bus.  */
+
+const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
+
+const DEFAULT_SOURCES = {
+  zone1: {
+    name: 'Zone 1 · Byzone / Landzone',
+    note: 'Plandata "Zonekort". Layer name unverified — edit if it fails.',
+    kind: 'wfs', url: PLANDATA,
+    typeName: 'pdk:theme_pdk_zonekort_samlet_v', cql: 'komnr=851', nameField: 'zonestatus'
+  },
+  zone2: {
+    name: 'Zone 2 · Kommuneplanområder',
+    note: 'Plandata municipal plan areas. Layer name unverified.',
+    kind: 'wfs', url: PLANDATA,
+    typeName: 'pdk:theme_pdk_kommuneplanomraade_vedtaget_v', cql: 'komnr=851', nameField: ''
+  },
+  zone3: {
+    name: 'Zone 3 · By- og bydele',
+    note: 'Aalborg-only layer, no national feed. Paste a KortInfo link, or draw it once and export.',
+    kind: 'wfs', url: '', typeName: '', cql: '', nameField: ''
+  },
+  zone4: {
+    name: 'Zone 4 · Kommuneplanrammer',
+    note: 'Plandata framework areas — the finest grid.',
+    kind: 'wfs', url: PLANDATA,
+    typeName: 'pdk:theme_pdk_kommuneplanramme_alle_vedtaget_v', cql: 'komnr=851', nameField: 'plannr'
+  }
+};
+
+/* NT's route map runs on GC2, which exposes every layer over SQL and WMS. */
+const GC2 = 'https://nt.vidi.gc2.io';
+const ROUTE_SOURCES = {
+  bybus:       { name: 'City buses (bybus)',        table: 'rutekortweb.ntmap_bybus_murl' },
+  regionalbus: { name: 'Regional buses',            table: 'rutekortweb.ntmap_regionalbus_murl' },
+  xbus:        { name: 'X Bus',                     table: 'rutekortweb.ntmap_xbus_murl' },
+  lokalbus:    { name: 'Local buses',               table: 'rutekortweb.ntmap_lokalbus_murl' },
+  telebus:     { name: 'Telebus',                   table: 'rutekortweb.ntmap_telebus_murl' },
+  tog:         { name: 'Trains',                    table: 'rutekortweb.ntmap_tog_murl' }
+};
+
+const WMS_PRESETS = [
+  { name: 'NT route map', url: `${GC2}/wms/nt/rutekortweb`,
+    layers: 'ntmap_bybus_murl,ntmap_regionalbus_murl,ntmap_xbus_murl,ntmap_lokalbus_murl,ntmap_tog_murl' }
+];
 
 /* ---------- state -------------------------------------------------- */
 
 const S = {
-  playArea: null,        // GeoJSON Feature<Polygon>
-  playAreaMeta: null,    // {type:'circle',center,radiusKm} | {type:'custom',name}
-  constraints: [],       // see makeConstraint()
-  zoneLayers: [],        // {id,name,color,geojson,layer,visible}
-  me: null,              // [lng,lat] from GPS
+  units: 'imperial',
+  playArea: null,
+  playAreaMeta: null,
+  constraints: [],
+  layers: [],            // {id,name,color,kind:'poly'|'line',geojson,layer,visible}
+  wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
+  sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
+  me: null,
   baseKey: 'light',
   fogOpacity: 0.62,
   seq: 1
 };
 
-/* ---------- tiny helpers ------------------------------------------- */
+/* ---------- helpers ------------------------------------------------ */
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -40,31 +108,59 @@ function toast(msg, bad) {
   t.classList.toggle('is-bad', !!bad);
   t.hidden = false;
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.hidden = true; }, 3600);
+  toast._t = setTimeout(() => { t.hidden = true; }, 4200);
 }
 
 const fmtLL = (c) => c ? `${c[1].toFixed(5)}, ${c[0].toFixed(5)}` : '';
 
-function fmtDist(m) {
-  if (m == null) return '';
-  return m >= 1000 ? `${(m / 1000).toString().replace(/\.0$/, '')} km` : `${Math.round(m)} m`;
+function trimNum(s) {
+  return s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
 }
 
-/* Turf 7 takes a FeatureCollection; older builds take two args.
-   Try both so a CDN version bump can't silently break the map. */
+/* Distance, in whatever units the deck uses. */
+function fmtDist(m) {
+  if (m == null) return '';
+  if (S.units === 'metric') {
+    return m < 1000 ? `${Math.round(m)} m` : `${trimNum((m / 1000).toFixed(2))} km`;
+  }
+  const ft = m / FT;
+  if (ft < 1000) return `${Math.round(ft / 5) * 5} ft`;
+  const mi = m / MI;
+  return `${trimNum(mi < 10 ? mi.toFixed(2) : mi.toFixed(1))} mi`;
+}
+
+/* Area for the headline readout: [number, unit label]. */
+function fmtArea(m2) {
+  const metric = S.units === 'metric';
+  const v = metric ? m2 / 1e6 : m2 / (MI * MI);
+  const unit = metric ? 'km²' : 'mi²';
+  if (v === 0) return ['0', unit];
+  const n = v >= 100 ? Math.round(v).toString()
+          : v >= 10 ? v.toFixed(1)
+          : v >= 1 ? v.toFixed(2)
+          : v.toFixed(3);
+  return [n, unit];
+}
+
+/* Text input → metres. Small box is feet (or metres); big box is miles (or km). */
+const smallToM = (n) => S.units === 'metric' ? n : n * FT;
+const mToSmall = (m) => S.units === 'metric' ? m : m / FT;
+const bigToM   = (n) => S.units === 'metric' ? n * 1000 : n * MI;
+const mToBig   = (m) => S.units === 'metric' ? m / 1000 : m / MI;
+const smallUnit = () => S.units === 'metric' ? 'm' : 'ft';
+const bigUnit   = () => S.units === 'metric' ? 'km' : 'mi';
+
 function boolOp(fn, a, b) {
   if (!a || !b) return null;
   try {
     const r = fn(turf.featureCollection([a, b]));
     if (r !== undefined) return r;
-  } catch (_) { /* fall through */ }
+  } catch (_) { /* older signature */ }
   try { return fn(a, b) || null; } catch (_) { return null; }
 }
 const gIntersect = (a, b) => boolOp(turf.intersect, a, b);
 const gDifference = (a, b) => boolOp(turf.difference, a, b);
 
-/* How far the play area reaches, in km. Everything oversized is scaled
-   from this so the app works just as well on a 1 km game as a 200 km one. */
 function playSpanKm() {
   if (!S.playArea) return 25;
   const bb = turf.bbox(S.playArea);
@@ -72,8 +168,6 @@ function playSpanKm() {
                                    { units: 'kilometers' }));
 }
 
-/* A rectangle big enough to stand in for "everything else". Built around
-   the play area rather than a fixed point, so this works in any city. */
 function worldRect() {
   const bb = turf.bbox(S.playArea || turf.point(CONFIG.center.slice().reverse()));
   const d = Math.max(1.5, (bb[2] - bb[0]), (bb[3] - bb[1])) * 2 + 1;
@@ -83,12 +177,9 @@ function worldRect() {
   ]]);
 }
 
-/* Half-plane on one side of the perpendicular bisector of AB —
-   the set of points nearer to B than to A (towardB = true).
-
-   The bisector is a great circle, so we walk it in steps rather than
-   drawing one long chord: over a few hundred km a chord bows away from
-   the true bisector badly enough to put the wrong half of the map in play. */
+/* The perpendicular bisector is a great circle, so walk it in steps.
+   Over a few hundred km a single chord bows far enough off the true
+   bisector to put the wrong half of the map back in play. */
 function halfPlane(a, b, towardB) {
   const mid = turf.midpoint(turf.point(a), turf.point(b)).geometry.coordinates;
   const brg = turf.bearing(turf.point(a), turf.point(b));
@@ -104,11 +195,9 @@ function halfPlane(a, b, towardB) {
   }
   const far = edge.slice().reverse()
     .map((p) => turf.destination(p, L * 2, dir).geometry.coordinates);
-
   return turf.polygon([[...edge, ...far, edge[0]]]);
 }
 
-/* Voronoi cell around points[i] — "my nearest X is this one". */
 function voronoiCell(points, i) {
   if (!points || points.length === 0) return null;
   if (points.length === 1) return turf.clone(S.playArea);
@@ -150,10 +239,18 @@ function constraintPolygon(c) {
       if (!cell) return null;
       let poly = c.answer === 'no' ? invert(cell) : cell;
       if (c.radiusM && c.seeker) {
-        const circle = turf.circle(c.seeker, c.radiusM / 1000, { steps: 180, units: 'kilometers' });
-        poly = gIntersect(poly, circle);
+        poly = gIntersect(poly, turf.circle(c.seeker, c.radiusM / 1000, { steps: 180, units: 'kilometers' }));
       }
       return poly;
+    }
+    case 'transit': {
+      let buf;
+      try {
+        buf = turf.buffer(turf.feature(c.geometry), c.bufferM / 1000,
+                          { units: 'kilometers', steps: 8 });
+      } catch (_) { return null; }
+      if (!buf) return null;
+      return c.answer === 'yes' ? buf : invert(buf);
     }
     case 'zone':
     case 'area': {
@@ -169,18 +266,28 @@ function constraintPolygon(c) {
 function constraintLabel(c) {
   switch (c.type) {
     case 'radar':
-      return { kind: 'Radar', text: `Within ${fmtDist(c.radiusM)} of the seeker`, ans: c.answer === 'yes' ? 'Yes' : 'No' };
+      return { kind: 'Radar', text: `Within ${c.label || fmtDist(c.radiusM)} of the seeker`,
+               ans: c.answer === 'yes' ? 'Yes' : 'No' };
     case 'thermometer':
-      return { kind: 'Thermometer', text: `Moved ${fmtDist(c.travelM)}`, ans: c.answer === 'hotter' ? 'Hotter' : 'Colder' };
+      return { kind: 'Thermometer', text: `Moved ${fmtDist(c.travelM)}`,
+               ans: c.answer === 'hotter' ? 'Hotter' : 'Colder' };
     case 'measuring':
-      return { kind: 'Measuring', text: `Compared to seeker, vs ${c.targetName || 'target'}`, ans: c.answer === 'closer' ? 'Closer' : 'Further' };
+      return { kind: 'Measuring', text: `Compared to seeker, vs ${c.targetName || 'target'}`,
+               ans: c.answer === 'closer' ? 'Closer' : 'Further' };
     case 'nearest':
-      if (c.answer === 'unreachable') return { kind: 'Tentacle', text: `Nothing within ${fmtDist(c.radiusM)}`, ans: 'Out of reach' };
-      return { kind: c.radiusM ? 'Tentacle' : 'Matching', text: c.categoryName || 'Nearest point', ans: c.answer === 'no' ? 'Not a match' : (c.pointName || 'Match') };
+      if (c.answer === 'unreachable')
+        return { kind: 'Tentacle', text: `Nothing within ${fmtDist(c.radiusM)}`, ans: 'Out of reach' };
+      return { kind: c.radiusM ? 'Tentacle' : 'Matching', text: c.categoryName || 'Nearest point',
+               ans: c.answer === 'no' ? 'Not a match' : (c.pointName || 'Match') };
+    case 'transit':
+      return { kind: 'Transit line', text: `${c.lineName || 'Route'} · ${fmtDist(c.bufferM)} either side`,
+               ans: c.answer === 'yes' ? 'Same route' : 'Different route' };
     case 'zone':
-      return { kind: 'Zone', text: c.zoneName || 'Zone', ans: c.answer === 'yes' ? 'Same zone' : 'Different zone' };
+      return { kind: 'Zone', text: c.zoneName || 'Zone',
+               ans: c.answer === 'yes' ? 'Same zone' : 'Different zone' };
     case 'area':
-      return { kind: 'Free shape', text: c.name || 'Hand-drawn area', ans: c.answer === 'yes' ? 'Inside' : 'Outside' };
+      return { kind: 'Free shape', text: c.name || 'Hand-drawn area',
+               ans: c.answer === 'yes' ? 'Inside' : 'Outside' };
     default:
       return { kind: '?', text: '', ans: '' };
   }
@@ -189,13 +296,11 @@ function constraintLabel(c) {
 /* ---------- map ---------------------------------------------------- */
 
 const map = L.map('map', {
-  center: CONFIG.center,
-  zoom: CONFIG.zoom,
-  zoomControl: false,
-  attributionControl: true
+  center: CONFIG.center, zoom: CONFIG.zoom, zoomControl: false
 });
 L.control.zoom({ position: 'topright' }).addTo(map);
 
+map.createPane('wmsPane');    map.getPane('wmsPane').style.zIndex = 350;
 map.createPane('zonePane');   map.getPane('zonePane').style.zIndex = 410;
 map.createPane('fogPane');    map.getPane('fogPane').style.zIndex = 430;
 map.createPane('evidPane');   map.getPane('evidPane').style.zIndex = 450;
@@ -203,14 +308,11 @@ map.createPane('drawPane');   map.getPane('drawPane').style.zIndex = 470;
 
 const BASES = {
   light: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
-  }),
+    maxZoom: 20, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }),
   streets: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-  }),
+    maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }),
   satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Imagery &copy; Esri'
-  })
+    maxZoom: 19, attribution: 'Imagery &copy; Esri' })
 };
 BASES.light.addTo(map);
 
@@ -232,10 +334,10 @@ function setCustomPlayArea(feature, name) {
   S.playArea = turf.feature(feature.geometry);
   S.playAreaMeta = { type: 'custom', name, geometry: feature.geometry };
   recompute();
-  map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [30, 30] });
+  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [30, 30] }); } catch (_) {}
 }
 
-/* ---------- the core: intersect everything, shade the rest ---------- */
+/* ---------- the core ------------------------------------------------ */
 
 function recompute() {
   if (!S.playArea) return;
@@ -264,84 +366,79 @@ function drawFog(possible) {
   const outside = possible ? gDifference(worldRect(), possible) : worldRect();
 
   if (outside) {
-    L.geoJSON(outside, {
-      pane: 'fogPane',
-      style: { color: 'transparent', weight: 0, fillColor: '#060c14', fillOpacity: S.fogOpacity, interactive: false }
-    }).addTo(fogLayer);
+    L.geoJSON(outside, { pane: 'fogPane',
+      style: { color: 'transparent', weight: 0, fillColor: '#060c14',
+               fillOpacity: S.fogOpacity, interactive: false } }).addTo(fogLayer);
   }
   if (possible) {
-    L.geoJSON(possible, {
-      pane: 'fogPane',
-      style: { color: '#2ee6a8', weight: 2.5, opacity: .95, fill: false, interactive: false }
-    }).addTo(fogLayer);
+    L.geoJSON(possible, { pane: 'fogPane',
+      style: { color: '#2ee6a8', weight: 2.5, opacity: .95, fill: false, interactive: false } })
+      .addTo(fogLayer);
   }
-  // play-area boundary, always visible as a faint hairline
-  L.geoJSON(S.playArea, {
-    pane: 'fogPane',
-    style: { color: '#ffffff', weight: 1, opacity: .35, dashArray: '3 5', fill: false, interactive: false }
-  }).addTo(fogLayer);
+  L.geoJSON(S.playArea, { pane: 'fogPane',
+    style: { color: '#ffffff', weight: 1, opacity: .35, dashArray: '3 5',
+             fill: false, interactive: false } }).addTo(fogLayer);
 }
 
-/* Thin outlines showing what each answer actually did. */
 function drawEvidence() {
   evidLayer.clearLayers();
   const A = '#ffb020';
+
+  const dot = (coord, color, hollow) => L.circleMarker([coord[1], coord[0]], {
+    pane: 'evidPane', radius: 4.5, color, weight: 2,
+    fillColor: hollow ? '#0d141d' : color, fillOpacity: 1, interactive: false
+  }).addTo(evidLayer);
 
   for (const c of S.constraints) {
     if (!c.active) continue;
 
     if (c.type === 'radar') {
-      L.circle([c.center[1], c.center[0]], {
-        pane: 'evidPane', radius: c.radiusM,
-        color: A, weight: 1.6, opacity: .9, dashArray: c.answer === 'yes' ? null : '5 4', fill: false, interactive: false
-      }).addTo(evidLayer);
+      L.circle([c.center[1], c.center[0]], { pane: 'evidPane', radius: c.radiusM,
+        color: A, weight: 1.6, opacity: .9,
+        dashArray: c.answer === 'yes' ? null : '5 4', fill: false, interactive: false })
+        .addTo(evidLayer);
       dot(c.center, A);
     }
     if (c.type === 'thermometer') {
-      L.polyline([[c.a[1], c.a[0]], [c.b[1], c.b[0]]], {
-        pane: 'evidPane', color: A, weight: 2, opacity: .9, interactive: false
-      }).addTo(evidLayer);
+      L.polyline([[c.a[1], c.a[0]], [c.b[1], c.b[0]]], { pane: 'evidPane',
+        color: A, weight: 2, opacity: .9, interactive: false }).addTo(evidLayer);
       dot(c.a, A, true); dot(c.b, A);
     }
     if (c.type === 'measuring') {
-      dot(c.target, A);
-      dot(c.seeker, A, true);
-      L.polyline([[c.seeker[1], c.seeker[0]], [c.target[1], c.target[0]]], {
-        pane: 'evidPane', color: A, weight: 1.2, opacity: .6, dashArray: '3 4', interactive: false
-      }).addTo(evidLayer);
+      dot(c.target, A); dot(c.seeker, A, true);
+      L.polyline([[c.seeker[1], c.seeker[0]], [c.target[1], c.target[0]]], { pane: 'evidPane',
+        color: A, weight: 1.2, opacity: .6, dashArray: '3 4', interactive: false }).addTo(evidLayer);
     }
     if (c.type === 'nearest' && c.points) {
       c.points.forEach((p, i) => dot(p, i === c.index && c.answer !== 'no' ? '#2ee6a8' : A, i !== c.index));
       if (c.radiusM && c.seeker) {
-        L.circle([c.seeker[1], c.seeker[0]], {
-          pane: 'evidPane', radius: c.radiusM, color: A, weight: 1.2, opacity: .55, dashArray: '4 4', fill: false, interactive: false
-        }).addTo(evidLayer);
+        L.circle([c.seeker[1], c.seeker[0]], { pane: 'evidPane', radius: c.radiusM,
+          color: A, weight: 1.2, opacity: .55, dashArray: '4 4', fill: false, interactive: false })
+          .addTo(evidLayer);
       }
     }
-  }
-
-  function dot(coord, color, hollow) {
-    L.circleMarker([coord[1], coord[0]], {
-      pane: 'evidPane', radius: 4.5, color, weight: 2,
-      fillColor: hollow ? '#0d141d' : color, fillOpacity: 1, interactive: false
-    }).addTo(evidLayer);
+    if (c.type === 'transit' && c.geometry) {
+      L.geoJSON(c.geometry, { pane: 'evidPane',
+        style: { color: A, weight: 3, opacity: .9, dashArray: c.answer === 'yes' ? null : '6 5' },
+        interactive: false }).addTo(evidLayer);
+    }
   }
 }
 
 function updateHud(possible, dead) {
   const hud = $('#hud');
-  const total = turf.area(S.playArea) / 1e6;
-  const left = possible ? turf.area(possible) / 1e6 : 0;
+  const totalM2 = turf.area(S.playArea);
+  const leftM2 = possible ? turf.area(possible) : 0;
+  const [num, unit] = fmtArea(dead ? 0 : leftM2);
 
-  hud.classList.toggle('is-dead', !!dead || left === 0);
-  $('#hudArea').textContent = dead || left === 0 ? '0'
-    : left < 1 ? left.toFixed(2)
-    : left < 100 ? left.toFixed(1)
-    : Math.round(left).toString();
-  $('#hudPct').textContent = total ? `${((left / total) * 100).toFixed(left / total < 0.01 ? 2 : 0)}%` : '—';
+  hud.classList.toggle('is-dead', !!dead || leftM2 === 0);
+  $('#hudArea').textContent = num;
+  $('#hudUnit').textContent = unit;
+  const ratio = totalM2 ? leftM2 / totalM2 : 0;
+  $('#hudPct').textContent = totalM2 ? `${(ratio * 100).toFixed(ratio < 0.01 ? 2 : 0)}%` : '—';
   $('#hudCount').textContent = S.constraints.filter((c) => c.active).length;
 
-  if (dead) toastOnce('No area left. One of the answers must be logged wrong — toggle them off in the Log to find it.', true);
+  if (dead) toastOnce('No area left. One of the answers must be logged wrong — mute them one at a time in the Log to find it.', true);
 }
 let _deadShown = false;
 function toastOnce(msg, bad) {
@@ -378,32 +475,40 @@ map.on('click', (e) => {
   }
 });
 
-/* ---------- freehand polygon drawing -------------------------------- */
+/* ---------- freehand drawing ---------------------------------------- */
 
-const drawing = { on: false, pts: [], done: null, label: '' };
+const drawing = { on: false, pts: [], done: null, label: '', line: false };
 
-function startDrawing(label, done) {
-  drawing.on = true; drawing.pts = []; drawing.done = done; drawing.label = label;
+function startDrawing(label, done, asLine) {
+  drawing.on = true; drawing.pts = []; drawing.done = done;
+  drawing.label = label; drawing.line = !!asLine;
   $('#drawHintText').textContent = label;
   $('#drawHint').hidden = false;
   $('#drawFinish').disabled = true;
+  $('#drawFinish').textContent = asLine ? 'Finish line' : 'Finish shape';
   drawLayer.clearLayers();
   if (window.innerWidth <= 820) closeSheet();
 }
 drawing.push = function (coord) {
   drawing.pts.push(coord);
-  $('#drawFinish').disabled = drawing.pts.length < 3;
+  $('#drawFinish').disabled = drawing.pts.length < (drawing.line ? 2 : 3);
   renderDrawing();
 };
 function renderDrawing() {
   drawLayer.clearLayers();
   const latlngs = drawing.pts.map((p) => [p[1], p[0]]);
   if (latlngs.length >= 2) {
-    L.polygon(latlngs, { pane: 'drawPane', color: '#ffb020', weight: 2, fillOpacity: .12, interactive: false }).addTo(drawLayer);
+    if (drawing.line) {
+      L.polyline(latlngs, { pane: 'drawPane', color: '#ffb020', weight: 3, interactive: false })
+        .addTo(drawLayer);
+    } else {
+      L.polygon(latlngs, { pane: 'drawPane', color: '#ffb020', weight: 2,
+        fillOpacity: .12, interactive: false }).addTo(drawLayer);
+    }
   }
-  latlngs.forEach((ll) => L.circleMarker(ll, {
-    pane: 'drawPane', radius: 4, color: '#ffb020', fillColor: '#0d141d', fillOpacity: 1, weight: 2, interactive: false
-  }).addTo(drawLayer));
+  latlngs.forEach((ll) => L.circleMarker(ll, { pane: 'drawPane', radius: 4,
+    color: '#ffb020', fillColor: '#0d141d', fillOpacity: 1, weight: 2, interactive: false })
+    .addTo(drawLayer));
 }
 function stopDrawing() {
   drawing.on = false; drawing.pts = []; drawing.done = null;
@@ -412,16 +517,18 @@ function stopDrawing() {
 }
 $('#drawUndo').addEventListener('click', () => {
   drawing.pts.pop();
-  $('#drawFinish').disabled = drawing.pts.length < 3;
+  $('#drawFinish').disabled = drawing.pts.length < (drawing.line ? 2 : 3);
   renderDrawing();
 });
 $('#drawFinish').addEventListener('click', () => {
-  if (drawing.pts.length < 3) return;
-  const ring = drawing.pts.concat([drawing.pts[0]]);
-  const poly = turf.polygon([ring]);
+  const min = drawing.line ? 2 : 3;
+  if (drawing.pts.length < min) return;
+  const feat = drawing.line
+    ? turf.lineString(drawing.pts.slice())
+    : turf.polygon([drawing.pts.concat([drawing.pts[0]])]);
   const cb = drawing.done;
   stopDrawing();
-  if (cb) cb(poly);
+  if (cb) cb(feat);
   if (window.innerWidth <= 820) openSheet();
 });
 
@@ -431,36 +538,13 @@ let activeTool = null;
 const draft = {};
 
 const TOOLS = {
-  radar: {
-    title: 'Radar',
-    q: '“Are you within ___ of me?”',
-    build: radarForm
-  },
-  thermometer: {
-    title: 'Thermometer',
-    q: '“After travelling ___, am I hotter or colder?”',
-    build: thermoForm
-  },
-  measuring: {
-    title: 'Measuring',
-    q: '“Compared to me, are you closer to or further from ___?”',
-    build: measuringForm
-  },
-  nearest: {
-    title: 'Matching / tentacles',
-    q: '“Is your nearest ___ the same as mine?”',
-    build: nearestForm
-  },
-  zone: {
-    title: 'Zone match',
-    q: 'Same district, parish or postal code as the seeker?',
-    build: zoneForm
-  },
-  area: {
-    title: 'Free shape',
-    q: 'For photo clues, sightlines, hunches — anything you can draw.',
-    build: areaForm
-  }
+  radar:       { title: 'Radar',       q: '“Are you within ___ of me?”', build: radarForm },
+  thermometer: { title: 'Thermometer', q: '“After travelling ___, am I hotter or colder?”', build: thermoForm },
+  measuring:   { title: 'Measuring',   q: '“Compared to me, are you closer to or further from ___?”', build: measuringForm },
+  nearest:     { title: 'Matching / tentacles', q: '“Is your nearest ___ the same as mine?”', build: nearestForm },
+  transit:     { title: 'Transit line', q: '“Will the bus I am on stop at your station?”', build: transitForm },
+  zone:        { title: 'Zone match',  q: 'Same administrative zone as the seeker?', build: zoneForm },
+  area:        { title: 'Free shape',  q: 'For photo clues, sightlines, hunches — anything you can draw.', build: areaForm }
 };
 
 $$('.tool').forEach((btn) => btn.addEventListener('click', () => selectTool(btn.dataset.tool)));
@@ -480,11 +564,11 @@ function renderToolForm() {
   if (!activeTool) { box.hidden = true; box.innerHTML = ''; empty.hidden = false; return; }
   empty.hidden = true;
   box.hidden = false;
-  box.innerHTML = `<p class="form-title">${TOOLS[activeTool].title}</p><p class="form-q">${TOOLS[activeTool].q}</p>`;
+  box.innerHTML = `<p class="form-title">${TOOLS[activeTool].title}</p>
+                   <p class="form-q">${TOOLS[activeTool].q}</p>`;
   TOOLS[activeTool].build(box);
 }
 
-/* Reusable point slot */
 function slot(box, key, label, opts = {}) {
   const el = document.createElement('button');
   el.className = 'slot' + (draft[key] ? ' is-set' : '');
@@ -500,7 +584,7 @@ function slot(box, key, label, opts = {}) {
       locate((coord) => { draft[key] = coord; renderToolForm(); });
       return;
     }
-    beginPick(el, (coord) => { draft[key] = coord; renderToolForm(); if (opts.after) opts.after(coord); });
+    beginPick(el, (coord) => { draft[key] = coord; renderToolForm(); });
   });
   box.appendChild(el);
   return el;
@@ -521,6 +605,23 @@ function answerSeg(box, options, key = 'answer') {
   });
   wrap.appendChild(seg);
   box.appendChild(wrap);
+}
+
+/* number input measured in the "small" unit (feet / metres) */
+function smallInput(box, key, label, placeholder) {
+  const f = document.createElement('div');
+  f.className = 'field';
+  f.innerHTML = `<label>${label} (${smallUnit()})</label>`;
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.min = '1'; inp.step = '10';
+  inp.placeholder = placeholder || '';
+  if (draft[key]) inp.value = Math.round(mToSmall(draft[key]));
+  inp.addEventListener('change', () => {
+    draft[key] = inp.value ? smallToM(Number(inp.value)) : null;
+    renderToolForm();
+  });
+  f.appendChild(inp);
+  box.appendChild(f);
 }
 
 function actions(box, ready, onAdd) {
@@ -559,25 +660,38 @@ function radarForm(box) {
   f.innerHTML = '<label>Radius</label>';
   const chips = document.createElement('div');
   chips.className = 'chips';
-  CONFIG.radarPresets.forEach((m) => {
+  RADAR_PRESETS.forEach((p) => {
     const b = document.createElement('button');
-    b.className = 'chip' + (draft.radiusM === m ? ' is-active' : '');
-    b.textContent = fmtDist(m);
-    b.addEventListener('click', () => { draft.radiusM = m; renderToolForm(); });
+    b.className = 'chip' + (draft.label === p.label ? ' is-active' : '');
+    b.textContent = p.label;
+    b.addEventListener('click', () => {
+      draft.radiusM = p.m; draft.label = p.label; renderToolForm();
+    });
     chips.appendChild(b);
   });
   f.appendChild(chips);
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.min = '10'; inp.step = '10';
-  inp.placeholder = 'or type metres';
-  if (draft.radiusM) inp.value = draft.radiusM;
-  inp.addEventListener('change', () => { draft.radiusM = Number(inp.value) || null; renderToolForm(); });
-  f.appendChild(inp);
   box.appendChild(f);
+
+  const custom = document.createElement('div');
+  custom.className = 'field';
+  custom.innerHTML = `<label>Or type a radius (${smallUnit()})</label>`;
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.min = '1'; inp.step = '10';
+  inp.placeholder = S.units === 'metric' ? 'metres' : 'feet';
+  if (draft.radiusM && /^\d+ /.test(draft.label || '')) inp.value = Math.round(mToSmall(draft.radiusM));
+  inp.addEventListener('change', () => {
+    draft.radiusM = inp.value ? smallToM(Number(inp.value)) : null;
+    // Remember how it was typed, so a 1500 ft radar never redisplays as 0.28 mi.
+    draft.label = inp.value ? `${Number(inp.value)} ${smallUnit()}` : null;
+    renderToolForm();
+  });
+  custom.appendChild(inp);
+  box.appendChild(custom);
 
   answerSeg(box, [['yes', 'Yes'], ['no', 'No']]);
   actions(box, draft.center && draft.radiusM && draft.answer, () =>
-    commit({ type: 'radar', center: draft.center, radiusM: draft.radiusM, answer: draft.answer }));
+    commit({ type: 'radar', center: draft.center, radiusM: draft.radiusM,
+             label: draft.label || null, answer: draft.answer }));
 }
 
 /* --- thermometer --- */
@@ -586,7 +700,7 @@ function thermoForm(box) {
   slot(box, 'b', 'End point');
 
   if (draft.a && draft.b) {
-    const m = Math.round(turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000);
+    const m = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
     const p = document.createElement('p');
     p.className = 'hint';
     p.textContent = `You travelled ${fmtDist(m)} in a straight line.`;
@@ -594,7 +708,7 @@ function thermoForm(box) {
   }
   answerSeg(box, [['hotter', 'Hotter'], ['colder', 'Colder']]);
   actions(box, draft.a && draft.b && draft.answer, () => {
-    const m = Math.round(turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000);
+    const m = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
     commit({ type: 'thermometer', a: draft.a, b: draft.b, travelM: m, answer: draft.answer });
   });
 }
@@ -616,15 +730,16 @@ function measuringForm(box) {
 
   const note = document.createElement('p');
   note.className = 'hint';
-  note.textContent = 'Drop the pin on the map icon you both measured to. Works for point features; for coastlines and borders, draw a free shape instead.';
+  note.textContent = 'Drop the pin on the map icon you both measured to. For coastlines, the Limfjord and borders, draw a free shape instead — a single pin cannot represent a line.';
   box.appendChild(note);
 
   answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
   actions(box, draft.seeker && draft.target && draft.answer, () =>
-    commit({ type: 'measuring', seeker: draft.seeker, target: draft.target, targetName: draft.targetName, answer: draft.answer }));
+    commit({ type: 'measuring', seeker: draft.seeker, target: draft.target,
+             targetName: draft.targetName, answer: draft.answer }));
 }
 
-/* --- matching / tentacles (Voronoi) --- */
+/* --- matching / tentacles --- */
 function nearestForm(box) {
   draft.points = draft.points || [];
 
@@ -672,18 +787,10 @@ function nearestForm(box) {
 
   const hint = document.createElement('p');
   hint.className = 'hint';
-  hint.textContent = 'Add every one of these inside the play area, then tap the one nearest to you. The map splits into nearest-point territories.';
+  hint.textContent = 'Add every one of these inside the play area, then tap the one nearest to you.';
   box.appendChild(hint);
 
-  const f2 = document.createElement('div');
-  f2.className = 'field';
-  f2.innerHTML = '<label>Tentacle radius (optional)</label>';
-  const rin = document.createElement('input');
-  rin.type = 'number'; rin.placeholder = 'metres — leave blank for a matching question';
-  if (draft.radiusM) rin.value = draft.radiusM;
-  rin.addEventListener('change', () => { draft.radiusM = Number(rin.value) || null; renderToolForm(); });
-  f2.appendChild(rin);
-  box.appendChild(f2);
+  smallInput(box, 'radiusM', 'Tentacle radius — leave blank for a plain matching question', '');
   if (draft.radiusM) slot(box, 'seeker', 'Tentacle centre (you)');
 
   answerSeg(box, [['yes', 'Match'], ['no', 'No match']]);
@@ -691,27 +798,72 @@ function nearestForm(box) {
   const ready = draft.points.length > 0 && draft.answer && draft.index != null &&
                 (!draft.radiusM || draft.seeker);
   actions(box, ready, () => commit({
-    type: 'nearest',
-    points: draft.points.slice(),
-    index: draft.index,
-    categoryName: draft.categoryName,
-    radiusM: draft.radiusM || null,
-    seeker: draft.seeker || null,
-    answer: draft.answer
+    type: 'nearest', points: draft.points.slice(), index: draft.index,
+    categoryName: draft.categoryName, radiusM: draft.radiusM || null,
+    seeker: draft.seeker || null, answer: draft.answer
   }));
+}
+
+/* --- transit line --- */
+function transitForm(box) {
+  const lineLayers = S.layers.filter((l) => l.kind === 'line');
+
+  if (!draft.bufferM) draft.bufferM = 0.25 * MI;
+
+  const pick = document.createElement('div');
+  pick.className = 'field';
+  pick.innerHTML = '<label>Route</label>';
+  const status = document.createElement('div');
+  status.className = 'slot' + (draft.lineGeom ? ' is-set' : '');
+  status.innerHTML = `<span class="slot-dot"></span>
+    <span class="slot-body"><span class="slot-label">${draft.lineName || 'No route selected'}</span><br>
+    <span class="slot-coord">${draft.lineGeom ? 'Tap another route to change it' : (lineLayers.length ? 'Tap a route on the map' : 'No route layer loaded')}</span></span>`;
+  pick.appendChild(status);
+  box.appendChild(pick);
+
+  const draw = document.createElement('button');
+  draw.className = 'ghost-btn wide';
+  draw.textContent = draft.lineGeom ? 'Trace a different route by hand' : 'Trace the route by hand';
+  draw.addEventListener('click', () => startDrawing('Tap along the route, stop to stop', (line) => {
+    draft.lineGeom = line.geometry;
+    draft.lineName = draft.lineName || 'Traced route';
+    renderToolForm(); openSheet();
+  }, true));
+  box.appendChild(draw);
+
+  const nf = document.createElement('div');
+  nf.className = 'field';
+  nf.innerHTML = '<label>Route name</label>';
+  const nin = document.createElement('input');
+  nin.type = 'text'; nin.placeholder = 'e.g. line 2';
+  nin.value = draft.lineName || '';
+  nin.addEventListener('input', () => { draft.lineName = nin.value; });
+  nf.appendChild(nin);
+  box.appendChild(nf);
+
+  smallInput(box, 'bufferM', 'How far either side of the route', '');
+  const h = document.createElement('p');
+  h.className = 'hint';
+  h.textContent = 'The hider has to be at a stop on the route, so allow a short walk either side. A quarter mile is a sensible default.';
+  box.appendChild(h);
+
+  answerSeg(box, [['yes', 'Same route'], ['no', 'Different route']]);
+  actions(box, draft.lineGeom && draft.bufferM && draft.answer, () =>
+    commit({ type: 'transit', geometry: draft.lineGeom, lineName: draft.lineName,
+             bufferM: draft.bufferM, answer: draft.answer }));
 }
 
 /* --- zone --- */
 function zoneForm(box) {
   const zones = [];
-  S.zoneLayers.forEach((zl) => {
-    (zl.geojson.features || []).forEach((ft, i) => zones.push({ zl, ft, i }));
+  S.layers.filter((l) => l.kind === 'poly').forEach((zl) => {
+    (zl.geojson.features || []).forEach((ft) => zones.push({ zl, ft }));
   });
 
   if (!zones.length) {
     const p = document.createElement('p');
     p.className = 'empty';
-    p.textContent = 'Load a zone layer first — see the Zones tab.';
+    p.textContent = 'Load a zone layer first — see the Layers tab.';
     box.appendChild(p);
     return;
   }
@@ -721,7 +873,7 @@ function zoneForm(box) {
   f.innerHTML = '<label>Which zone is the seeker in?</label>';
   const sel = document.createElement('select');
   sel.innerHTML = '<option value="">Choose a zone…</option>' + zones.map((z, i) =>
-    `<option value="${i}"${String(draft.zoneIdx) === String(i) ? ' selected' : ''}>${escapeHtml(zoneName(z.ft))} — ${escapeHtml(z.zl.name)}</option>`).join('');
+    `<option value="${i}"${String(draft.zoneIdx) === String(i) ? ' selected' : ''}>${escapeHtml(featureName(z.ft, z.zl))} — ${escapeHtml(z.zl.name)}</option>`).join('');
   sel.addEventListener('change', () => { draft.zoneIdx = sel.value; renderToolForm(); });
   f.appendChild(sel);
   box.appendChild(f);
@@ -734,7 +886,8 @@ function zoneForm(box) {
   answerSeg(box, [['yes', 'Same zone'], ['no', 'Different zone']]);
   actions(box, draft.zoneIdx !== '' && draft.zoneIdx != null && draft.answer, () => {
     const z = zones[Number(draft.zoneIdx)];
-    commit({ type: 'zone', geometry: z.ft.geometry, zoneName: zoneName(z.ft), answer: draft.answer });
+    commit({ type: 'zone', geometry: z.ft.geometry,
+             zoneName: featureName(z.ft, z.zl), answer: draft.answer });
   });
 }
 
@@ -805,104 +958,342 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
-/* ---------- zones ---------------------------------------------------- */
+/* ---------- coordinate handling -------------------------------------
+   Danish services love UTM32 and sometimes hand back lat/lng in the
+   wrong order. Both are silent failures — the zones just land in the
+   sea — so normalise on the way in.                                   */
 
-const ZONE_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
-
-function zoneName(ft) {
-  const p = ft.properties || {};
-  return p.navn || p.name || p.nr || p.kode || p.postnr || 'Zone';
+if (typeof proj4 !== 'undefined') {
+  proj4.defs('EPSG:25832', '+proj=utm +zone=32 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs');
 }
 
-function addZoneLayer(name, geojson) {
-  const feats = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson])
-    .filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
-  if (!feats.length) { toast('No polygons found in that file.', true); return; }
+function normaliseCoords(gj) {
+  let sample = null;
+  turf.coordEach(gj, (c) => { if (!sample) sample = c.slice(); });
+  if (!sample) return { gj, note: '' };
 
-  const color = ZONE_COLORS[S.zoneLayers.length % ZONE_COLORS.length];
+  // Projected metres (UTM32): values far outside degree range.
+  if (Math.abs(sample[0]) > 180 || Math.abs(sample[1]) > 90) {
+    if (typeof proj4 === 'undefined') {
+      throw new Error('Data came back in a projected coordinate system and proj4 did not load.');
+    }
+    turf.coordEach(gj, (c) => {
+      const [lng, lat] = proj4('EPSG:25832', 'EPSG:4326', [c[0], c[1]]);
+      c[0] = lng; c[1] = lat;
+    });
+    return { gj, note: 'reprojected from UTM32' };
+  }
+
+  // Axis order: in Denmark longitude is ~8–13 and latitude ~54–58, so a
+  // first ordinate above 40 means the pair arrived as lat,lng.
+  if (sample[0] > 40 && Math.abs(sample[1]) < 40) {
+    turf.coordEach(gj, (c) => { const t = c[0]; c[0] = c[1]; c[1] = t; });
+    return { gj, note: 'axis order corrected' };
+  }
+  return { gj, note: '' };
+}
+
+const NAME_KEYS = ['navn', 'name', 'plannavn', 'zonestatus', 'linjenavn', 'rutenavn',
+                   'rute', 'linje', 'linienavn', 'linienummer', 'rutenr', 'betegnelse',
+                   'titel', 'plannr', 'nr', 'kode', 'postnr'];
+
+function featureName(ft, layer) {
+  const p = ft.properties || {};
+  if (layer && layer.nameField && p[layer.nameField] != null) return String(p[layer.nameField]);
+  for (const k of NAME_KEYS) {
+    const hit = Object.keys(p).find((x) => x.toLowerCase() === k);
+    if (hit && p[hit] != null && String(p[hit]).trim()) return String(p[hit]);
+  }
+  const first = Object.entries(p).find(([, v]) => typeof v === 'string' && v.trim());
+  return first ? first[1] : 'Unnamed';
+}
+
+/* ---------- layers ---------------------------------------------------- */
+
+const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
+
+function addLayer(name, geojson, opts = {}) {
+  const raw = geojson.type === 'FeatureCollection' ? geojson.features
+            : geojson.type === 'Feature' ? [geojson] : [];
+  const polys = raw.filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
+  const lines = raw.filter((f) => f && f.geometry && /LineString/.test(f.geometry.type));
+
+  const kind = opts.kind || (lines.length > polys.length ? 'line' : 'poly');
+  const feats = kind === 'line' ? lines : polys;
+  if (!feats.length) { toast(`${name}: no ${kind === 'line' ? 'lines' : 'polygons'} in that data.`, true); return null; }
+
+  const color = LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
   const fcol = { type: 'FeatureCollection', features: feats };
+  const rec = { id: uid(), name, color, kind, geojson: fcol,
+                nameField: opts.nameField || '', visible: true, layer: null };
 
-  const layer = L.geoJSON(fcol, {
+  rec.layer = L.geoJSON(fcol, {
     pane: 'zonePane',
-    style: { color, weight: 1.4, opacity: .85, fillColor: color, fillOpacity: .05 },
+    style: kind === 'line'
+      ? { color, weight: 3, opacity: .85 }
+      : { color, weight: 1.4, opacity: .85, fillColor: color, fillOpacity: .05 },
     onEachFeature: (ft, lyr) => {
-      lyr.bindTooltip(zoneName(ft), { className: 'zone-tip', sticky: true });
+      lyr.bindTooltip(featureName(ft, rec), { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
-        if (activeTool !== 'zone') return;
-        L.DomEvent.stopPropagation(e);
-        const all = [];
-        S.zoneLayers.forEach((zl) => (zl.geojson.features || []).forEach((f2) => all.push(f2)));
-        const idx = all.findIndex((f2) => f2 === ft);
-        if (idx >= 0) { draft.zoneIdx = String(idx); renderToolForm(); openSheet(); }
+        if (kind === 'poly' && activeTool === 'zone') {
+          L.DomEvent.stopPropagation(e);
+          const all = [];
+          S.layers.filter((l) => l.kind === 'poly')
+            .forEach((zl) => (zl.geojson.features || []).forEach((f2) => all.push(f2)));
+          const idx = all.indexOf(ft);
+          if (idx >= 0) { draft.zoneIdx = String(idx); renderToolForm(); openSheet(); }
+        }
+        if (kind === 'line' && activeTool === 'transit') {
+          L.DomEvent.stopPropagation(e);
+          draft.lineGeom = ft.geometry;
+          draft.lineName = featureName(ft, rec);
+          renderToolForm(); openSheet();
+        }
       });
     }
   }).addTo(map);
 
-  const rec = { id: uid(), name, color, geojson: fcol, layer, visible: true };
-  S.zoneLayers.push(rec);
-  renderZoneLayers();
-  toast(`${name}: ${feats.length} zones loaded.`);
+  S.layers.push(rec);
+  renderLayerList();
+  return rec;
 }
 
-function renderZoneLayers() {
+function renderLayerList() {
   const box = $('#zoneLayers');
   box.innerHTML = '';
-  S.zoneLayers.forEach((zl) => {
+  $('#layersEmpty').hidden = S.layers.length > 0;
+
+  S.layers.forEach((zl) => {
     const row = document.createElement('div');
     row.className = 'zone-row';
     row.innerHTML = `<span class="zone-swatch" style="background:${zl.color}"></span>
       <span class="zone-name">${escapeHtml(zl.name)}</span>
-      <span class="zone-count">${zl.geojson.features.length}</span>
+      <span class="zone-count">${zl.geojson.features.length}${zl.kind === 'line' ? ' ln' : ''}</span>
       <button class="icon-btn" data-act="vis">${zl.visible ? '◉' : '○'}</button>
       <button class="icon-btn del" data-act="del">✕</button>`;
     row.querySelector('[data-act=vis]').addEventListener('click', () => {
       zl.visible = !zl.visible;
       if (zl.visible) zl.layer.addTo(map); else map.removeLayer(zl.layer);
-      renderZoneLayers();
+      renderLayerList();
     });
     row.querySelector('[data-act=del]').addEventListener('click', () => {
       map.removeLayer(zl.layer);
-      S.zoneLayers = S.zoneLayers.filter((x) => x.id !== zl.id);
-      renderZoneLayers();
+      S.layers = S.layers.filter((x) => x.id !== zl.id);
+      renderLayerList();
     });
     box.appendChild(row);
   });
 }
 
-async function loadDawa(kind, btn) {
-  const urls = {
-    postnumre: `${CONFIG.dawa}/postnumre?kommunekode=${CONFIG.kommunekode}&format=geojson&landpostnumre`,
-    sogne: `${CONFIG.dawa}/sogne?kommunekode=${CONFIG.kommunekode}&format=geojson`,
-    kommune: `${CONFIG.dawa}/kommuner/0${CONFIG.kommunekode}?format=geojson`
-  };
-  const names = { postnumre: 'Postal districts', sogne: 'Parishes', kommune: 'Aalborg Kommune' };
-  const status = $('#zoneStatus');
-  btn.classList.add('is-busy');
-  status.hidden = false; status.classList.remove('is-bad');
-  status.textContent = 'Fetching from Dataforsyningen…';
+function setStatus(msg, bad) {
+  const el = $('#zoneStatus');
+  if (!msg) { el.hidden = true; return; }
+  el.hidden = false;
+  el.classList.toggle('is-bad', !!bad);
+  el.textContent = msg;
+}
+
+/* ---------- fetching -------------------------------------------------- */
+
+function wfsUrl(src) {
+  const p = new URLSearchParams({
+    service: 'WFS', version: '1.0.0', request: 'GetFeature',
+    typeName: src.typeName, outputFormat: 'application/json', srsName: 'EPSG:4326'
+  });
+  if (src.cql) p.set('CQL_FILTER', src.cql);
+  return src.url + (src.url.includes('?') ? '&' : '?') + p.toString();
+}
+
+function gc2Url(table) {
+  const p = new URLSearchParams({
+    q: `SELECT * FROM ${table}`, format: 'geojson', srs: '4326'
+  });
+  return `${GC2}/api/v2/sql/nt?${p.toString()}`;
+}
+
+async function fetchGeoJson(url) {
+  const res = await fetch(url);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  let gj;
+  try { gj = JSON.parse(text); }
+  catch (_) { throw new Error('The service replied with something that is not JSON — check the layer name.'); }
+  if (gj.exceptions || gj.success === false) throw new Error(gj.message || 'The service reported an error.');
+  if (!gj.type) throw new Error('No GeoJSON in the reply.');
+  return gj;
+}
+
+async function loadSource(key, src, btn) {
+  if (!src.url || (src.kind === 'wfs' && !src.typeName)) {
+    setStatus(`${src.name}: no source configured yet. Tap the gear to add one.`, true);
+    return;
+  }
+  if (btn) btn.classList.add('is-busy');
+  setStatus(`Loading ${src.name}…`);
   try {
-    const res = await fetch(urls[kind]);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const gj = await res.json();
-    addZoneLayer(names[kind], gj);
-    status.hidden = true;
+    const url = src.kind === 'wfs' ? wfsUrl(src) : src.url;
+    const gj = await fetchGeoJson(url);
+    const { note } = normaliseCoords(gj);
+    const rec = addLayer(src.name, gj, { nameField: src.nameField, kind: src.kind === 'line' ? 'line' : undefined });
+    if (rec) {
+      setStatus(`${src.name}: ${rec.geojson.features.length} loaded${note ? ' (' + note + ')' : ''}.`);
+      toast(`${src.name} loaded.`);
+    }
   } catch (err) {
-    status.classList.add('is-bad');
-    status.textContent = 'Could not reach Dataforsyningen. Download the GeoJSON on a laptop and load it with “Load a GeoJSON file” — the URL is in the README.';
+    setStatus(`${src.name} failed: ${err.message} — tap the gear to correct the layer name or URL, or load a file instead.`, true);
+  } finally {
+    if (btn) btn.classList.remove('is-busy');
+  }
+}
+
+async function loadRoute(key, btn) {
+  const r = ROUTE_SOURCES[key];
+  btn.classList.add('is-busy');
+  setStatus(`Loading ${r.name}…`);
+  try {
+    const gj = await fetchGeoJson(gc2Url(r.table));
+    const { note } = normaliseCoords(gj);
+    const rec = addLayer(r.name, gj, { kind: 'line' });
+    if (rec) {
+      setStatus(`${r.name}: ${rec.geojson.features.length} route lines${note ? ' (' + note + ')' : ''}. Tap one on the map when using the Bus route question.`);
+      toast(`${r.name} loaded.`);
+    }
+  } catch (err) {
+    setStatus(`${r.name} failed: ${err.message} — turn on the NT picture overlay instead and trace the route by hand.`, true);
   } finally {
     btn.classList.remove('is-busy');
   }
 }
 
-$$('[data-load]').forEach((b) => b.addEventListener('click', () => loadDawa(b.dataset.load, b)));
+/* ---------- layers tab UI --------------------------------------------- */
 
+function renderSourceRows() {
+  const zbox = $('#zoneSources');
+  zbox.innerHTML = '';
+  Object.entries(S.sources).forEach(([key, src]) => {
+    const row = document.createElement('div');
+    row.className = 'src-row';
+    row.innerHTML = `
+      <button class="row-btn src-main">
+        <span class="row-title">${escapeHtml(src.name)}</span>
+        <span class="row-meta">${escapeHtml(src.url ? (src.typeName || src.url) : 'not configured')}</span>
+      </button>
+      <button class="icon-btn src-gear" title="Edit source">⚙</button>`;
+    const main = row.querySelector('.src-main');
+    main.addEventListener('click', () => loadSource(key, src, main));
+    row.querySelector('.src-gear').addEventListener('click', () => openSourceEditor(key));
+    zbox.appendChild(row);
+  });
+
+  const rbox = $('#routeSources');
+  rbox.innerHTML = '';
+  Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
+    const b = document.createElement('button');
+    b.className = 'row-btn';
+    b.innerHTML = `<span class="row-title">${escapeHtml(r.name)}</span>
+                   <span class="row-meta">${escapeHtml(r.table)}</span>`;
+    b.addEventListener('click', () => loadRoute(key, b));
+    rbox.appendChild(b);
+  });
+}
+
+function renderWmsList() {
+  const box = $('#wmsList');
+  box.innerHTML = '';
+  S.wms.forEach((w) => {
+    const row = document.createElement('div');
+    row.className = 'zone-row';
+    row.innerHTML = `<span class="zone-name">${escapeHtml(w.name)}</span>
+      <button class="icon-btn" data-act="vis">${w.visible ? '◉' : '○'}</button>
+      <button class="icon-btn del" data-act="del">✕</button>`;
+    row.querySelector('[data-act=vis]').addEventListener('click', () => {
+      w.visible = !w.visible;
+      if (w.visible) w.leaflet.addTo(map); else map.removeLayer(w.leaflet);
+      renderWmsList();
+    });
+    row.querySelector('[data-act=del]').addEventListener('click', () => {
+      map.removeLayer(w.leaflet);
+      S.wms = S.wms.filter((x) => x.id !== w.id);
+      renderWmsList();
+    });
+    box.appendChild(row);
+  });
+
+  WMS_PRESETS.forEach((p) => {
+    if (S.wms.some((w) => w.name === p.name)) return;
+    const b = document.createElement('button');
+    b.className = 'row-btn';
+    b.innerHTML = `<span class="row-title">Turn on ${escapeHtml(p.name)}</span>
+                   <span class="row-meta">Image overlay — always readable, not clickable</span>`;
+    b.addEventListener('click', () => { addWms(p.name, p.url, p.layers); });
+    box.appendChild(b);
+  });
+}
+
+function addWms(name, url, layers) {
+  const lyr = L.tileLayer.wms(url, {
+    layers, format: 'image/png', transparent: true, pane: 'wmsPane', opacity: 0.9
+  });
+  lyr.on('tileerror', () => setStatus(`${name}: the image service did not respond. Check the URL.`, true));
+  lyr.addTo(map);
+  S.wms.push({ id: uid(), name, url, layers, visible: true, leaflet: lyr });
+  renderWmsList();
+  toast(`${name} on.`);
+}
+
+$('#addWmsBtn').addEventListener('click', () => {
+  const url = prompt('WMS service URL');
+  if (!url) return;
+  const layers = prompt('Layer name(s), comma separated');
+  if (!layers) return;
+  addWms(prompt('Give it a name', 'Overlay') || 'Overlay', url, layers);
+});
+
+/* --- source editor --- */
+let editingKey = null;
+
+function openSourceEditor(key) {
+  editingKey = key;
+  const src = S.sources[key];
+  $('#srcTitle').textContent = src.name;
+  $('#srcNote').textContent = src.note || '';
+  $('#srcKind').value = src.kind === 'geojson' ? 'geojson' : 'wfs';
+  $('#srcUrl').value = src.url || '';
+  $('#srcType').value = src.typeName || '';
+  $('#srcCql').value = src.cql || '';
+  $('#srcName').value = src.nameField || '';
+  syncSrcKind();
+  $('#srcModal').hidden = false;
+}
+function syncSrcKind() {
+  const wfs = $('#srcKind').value === 'wfs';
+  $$('[data-wfs-only]').forEach((el) => { el.hidden = !wfs; });
+}
+$('#srcKind').addEventListener('change', syncSrcKind);
+$('#srcCancel').addEventListener('click', () => { $('#srcModal').hidden = true; });
+$('#srcSave').addEventListener('click', () => {
+  const src = S.sources[editingKey];
+  src.kind = $('#srcKind').value;
+  src.url = $('#srcUrl').value.trim();
+  src.typeName = $('#srcType').value.trim();
+  src.cql = $('#srcCql').value.trim();
+  src.nameField = $('#srcName').value.trim();
+  $('#srcModal').hidden = true;
+  renderSourceRows();
+  loadSource(editingKey, src, null);
+});
+
+/* --- file / draw --- */
 $('#zoneFile').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const r = new FileReader();
   r.onload = () => {
-    try { addZoneLayer(file.name.replace(/\.(geo)?json$/i, ''), JSON.parse(r.result)); }
-    catch (_) { toast('That file is not valid GeoJSON.', true); }
+    try {
+      const gj = JSON.parse(r.result);
+      normaliseCoords(gj);
+      addLayer(file.name.replace(/\.(geo)?json$/i, ''), gj);
+    } catch (err) { toast('Could not read that file: ' + err.message, true); }
   };
   r.readAsText(file);
   e.target.value = '';
@@ -912,12 +1303,12 @@ $('#drawZoneBtn').addEventListener('click', () => {
   startDrawing('Tap the corners of the zone', (poly) => {
     const name = prompt('Name this zone', 'My zone') || 'My zone';
     poly.properties = { navn: name };
-    addZoneLayer(name, { type: 'FeatureCollection', features: [poly] });
+    addLayer(name, { type: 'FeatureCollection', features: [poly] });
     openSheet();
   });
 });
 
-/* ---------- geolocation ---------------------------------------------- */
+/* ---------- geolocation ------------------------------------------------ */
 
 function locate(cb) {
   if (!navigator.geolocation) { toast('This browser has no location access.', true); return; }
@@ -936,14 +1327,17 @@ function locate(cb) {
 function showMe(coord, acc) {
   if (meMarker) map.removeLayer(meMarker);
   meMarker = L.layerGroup([
-    L.circle([coord[1], coord[0]], { radius: Math.min(acc || 40, 200), color: '#2ee6a8', weight: 1, fillColor: '#2ee6a8', fillOpacity: .12 }),
-    L.circleMarker([coord[1], coord[0]], { radius: 6, color: '#0d141d', weight: 2.5, fillColor: '#2ee6a8', fillOpacity: 1 })
+    L.circle([coord[1], coord[0]], { radius: Math.min(acc || 40, 200),
+      color: '#2ee6a8', weight: 1, fillColor: '#2ee6a8', fillOpacity: .12 }),
+    L.circleMarker([coord[1], coord[0]], { radius: 6, color: '#0d141d',
+      weight: 2.5, fillColor: '#2ee6a8', fillOpacity: 1 })
   ]).addTo(map);
 }
 
-$('#locateBtn').addEventListener('click', () => locate((c) => map.setView([c[1], c[0]], Math.max(map.getZoom(), 15))));
+$('#locateBtn').addEventListener('click', () =>
+  locate((c) => map.setView([c[1], c[0]], Math.max(map.getZoom(), 15))));
 
-/* ---------- tabs & sheet ---------------------------------------------- */
+/* ---------- tabs & sheet ------------------------------------------------ */
 
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
@@ -957,24 +1351,41 @@ function openSheet() { panel.classList.add('is-open'); sheetBtn.setAttribute('ar
 function closeSheet() { panel.classList.remove('is-open'); sheetBtn.setAttribute('aria-expanded', 'false'); }
 sheetBtn.addEventListener('click', () => panel.classList.contains('is-open') ? closeSheet() : openSheet());
 
-/* ---------- game settings --------------------------------------------- */
+/* ---------- game settings ----------------------------------------------- */
+
+function applyUnits() {
+  $$('#unitSeg button').forEach((b) => b.classList.toggle('is-active', b.dataset.units === S.units));
+  $('#playRadiusUnit').textContent = bigUnit();
+  if (S.playAreaMeta && S.playAreaMeta.type === 'circle') {
+    $('#playRadius').value = trimNum(mToBig(S.playAreaMeta.radiusKm * 1000).toFixed(2));
+  }
+  renderToolForm();
+  recompute();
+}
+
+$('#unitSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  S.units = b.dataset.units;
+  applyUnits();
+});
 
 $('#applyRadius').addEventListener('click', () => {
-  const km = Number($('#playRadius').value);
-  if (!km || km <= 0) return;
-  setCircularPlayArea(map.getCenter(), km);
-  toast(`Play area set: ${km} km around the map centre.`);
+  const n = Number($('#playRadius').value);
+  if (!n || n <= 0) return;
+  setCircularPlayArea(map.getCenter(), bigToM(n) / 1000);
+  toast(`Play area set: ${trimNum(n.toString())} ${bigUnit()} around the map centre.`);
 });
 
 $('#playAreaKommune').addEventListener('click', async () => {
   try {
-    const res = await fetch(`${CONFIG.dawa}/kommuner/0${CONFIG.kommunekode}?format=geojson`);
-    const gj = await res.json();
+    const gj = await fetchGeoJson(`${CONFIG.dawa}/kommuner/0${CONFIG.kommunekode}?format=geojson`);
+    normaliseCoords(gj);
     const ft = gj.type === 'FeatureCollection' ? gj.features[0] : gj;
     setCustomPlayArea(ft, 'Aalborg Kommune');
     toast('Play area set to Aalborg Kommune.');
-  } catch (_) {
-    toast('Could not fetch the municipality outline.', true);
+  } catch (err) {
+    toast('Could not fetch the municipality outline: ' + err.message, true);
   }
 });
 
@@ -999,20 +1410,25 @@ $('#resetBtn').addEventListener('click', () => {
   toast('Cleared.');
 });
 
-/* ---------- save / share ----------------------------------------------- */
+/* ---------- save / share -------------------------------------------------- */
 
 function serialize() {
   return {
-    v: 1,
+    v: 2,
+    units: S.units,
     playAreaMeta: S.playAreaMeta,
     base: S.baseKey,
     fog: S.fogOpacity,
+    sources: S.sources,
+    wms: S.wms.map((w) => ({ name: w.name, url: w.url, layers: w.layers, visible: w.visible })),
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
       delete o.error;
       if (o.geometry) {
-        try { o.geometry = turf.simplify(turf.feature(o.geometry), { tolerance: 0.0004, highQuality: false }).geometry; }
-        catch (_) { /* keep as-is */ }
+        try {
+          o.geometry = turf.simplify(turf.feature(o.geometry),
+            { tolerance: 0.0004, highQuality: false }).geometry;
+        } catch (_) { /* keep as-is */ }
       }
       return o;
     })
@@ -1023,17 +1439,22 @@ function deserialize(data) {
   if (!data || !data.constraints) return false;
   S.constraints = data.constraints;
   S.seq = S.constraints.length + 1;
+  if (data.units) S.units = data.units;
+  if (data.sources) S.sources = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SOURCES)), data.sources);
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
+
   const m = data.playAreaMeta;
   if (m && m.type === 'circle') {
     S.playArea = turf.circle(m.center, m.radiusKm, { steps: 256, units: 'kilometers' });
     S.playAreaMeta = m;
-    $('#playRadius').value = m.radiusKm;
   } else if (m && m.type === 'custom' && m.geometry) {
     S.playArea = turf.feature(m.geometry);
     S.playAreaMeta = m;
   }
-  recompute();
+  (data.wms || []).forEach((w) => { if (w.visible) addWms(w.name, w.url, w.layers); });
+
+  renderSourceRows();
+  applyUnits();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
   return true;
 }
@@ -1043,10 +1464,8 @@ function b64encode(str) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 function b64decode(str) {
-  const s = str.replace(/-/g, '+').replace(/_/g, '/');
-  const bin = atob(s);
-  const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  const bin = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+  return new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
 }
 
 let _saveTimer = null;
@@ -1068,9 +1487,8 @@ function loadFromUrl() {
 }
 
 $('#copyLink').addEventListener('click', async () => {
-  const url = location.href;
-  try { await navigator.clipboard.writeText(url); toast('Link copied. Send it to your co-seeker.'); }
-  catch (_) { prompt('Copy this link:', url); }
+  try { await navigator.clipboard.writeText(location.href); toast('Link copied. Send it to your co-seeker.'); }
+  catch (_) { prompt('Copy this link:', location.href); }
 });
 
 $('#exportBtn').addEventListener('click', () => {
@@ -1096,24 +1514,29 @@ $('#importFile').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
-/* ---------- boot -------------------------------------------------------- */
+/* ---------- boot ------------------------------------------------------------ */
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
+  if (!$('#srcModal').hidden) { $('#srcModal').hidden = true; return; }
   if (drawing.on) { stopDrawing(); return; }
   if (picker.slot) { endPick(); return; }
   if (activeTool) selectTool(activeTool);
 });
 
-setCircularPlayArea(L.latLng(CONFIG.center[0], CONFIG.center[1]), CONFIG.playRadiusKm);
-if (!loadFromUrl()) recompute();
+setCircularPlayArea(L.latLng(CONFIG.center[0], CONFIG.center[1]), CONFIG.playRadiusMi * MI / 1000);
+renderSourceRows();
+renderWmsList();
+renderLayerList();
+if (!loadFromUrl()) applyUnits();
 renderToolForm();
 
-/* Exposed so you can poke at a live game from the browser console:
-   HS.S.constraints, HS.map.setView(...), HS.addZoneLayer('Bus zones', geojson) … */
+/* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
-  map, S, CONFIG, draft, drawing,
-  recompute, addZoneLayer, setCircularPlayArea, setCustomPlayArea,
+  map, S, CONFIG, draft, drawing, RADAR_PRESETS,
+  recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   serialize, deserialize, b64encode, b64decode,
-  constraintPolygon, halfPlane, voronoiCell
+  constraintPolygon, halfPlane, voronoiCell, normaliseCoords, featureName,
+  renderToolForm, selectTool, switchTab,
+  fmtDist, fmtArea, wfsUrl, gc2Url, loadSource, loadRoute
 };

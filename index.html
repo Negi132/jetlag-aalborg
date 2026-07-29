@@ -18,14 +18,12 @@
 
 <div id="app">
 
-  <!-- ───────────────────────── MAP ───────────────────────── -->
   <div id="map"></div>
 
-  <!-- Live readout: the one number that tells you if you're winning -->
   <div id="hud" class="hud">
     <div class="hud-main">
       <span class="hud-value" id="hudArea">—</span>
-      <span class="hud-unit">km²</span>
+      <span class="hud-unit" id="hudUnit">mi²</span>
     </div>
     <div class="hud-sub"><span id="hudPct">100%</span> of play area left · <span id="hudCount">0</span> answers</div>
   </div>
@@ -40,7 +38,6 @@
     <button id="drawFinish" class="solid-btn">Finish shape</button>
   </div>
 
-  <!-- ───────────────────────── PANEL ───────────────────────── -->
   <button id="sheetToggle" class="sheet-toggle" aria-expanded="false">
     <span class="grip"></span>
     <span class="sheet-toggle-label">Questions</span>
@@ -55,7 +52,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab is-active" data-tab="ask" role="tab">Ask</button>
       <button class="tab" data-tab="log" role="tab">Log</button>
-      <button class="tab" data-tab="zones" role="tab">Zones</button>
+      <button class="tab" data-tab="layers" role="tab">Layers</button>
       <button class="tab" data-tab="game" role="tab">Game</button>
     </nav>
 
@@ -68,7 +65,7 @@
         </button>
         <button class="tool" data-tool="thermometer">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 13.5V5a2 2 0 1 0-4 0v8.5a4 4 0 1 0 4 0Z"/><path d="M12 9v6"/></svg>
-          <span>Thermometer</span>
+          <span>Thermo</span>
         </button>
         <button class="tool" data-tool="measuring">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18"/><path d="M6 9v6M12 8v8M18 9v6"/></svg>
@@ -77,6 +74,10 @@
         <button class="tool" data-tool="nearest">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 9v12h16V9Z" fill="none"/><path d="M12 21v-6"/></svg>
           <span>Matching</span>
+        </button>
+        <button class="tool" data-tool="transit">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="13" rx="2"/><path d="M5 9h14"/><path d="M8 20l-1.5 2M16 20l1.5 2"/><circle cx="8.5" cy="13" r=".9" class="fill"/><circle cx="15.5" cy="13" r=".9" class="fill"/></svg>
+          <span>Bus route</span>
         </button>
         <button class="tool" data-tool="zone">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h7v7H4Z"/><path d="M13 12h7v7h-7Z"/></svg>
@@ -101,25 +102,25 @@
       <p id="logEmpty" class="empty">No questions asked yet. The whole play area is live.</p>
     </section>
 
-    <!-- ZONES -->
-    <section class="tabpane" data-pane="zones">
-      <p class="hint">Zone layers let you ask “are you in the same district as me?” and shade the answer in one tap.</p>
+    <!-- LAYERS -->
+    <section class="tabpane" data-pane="layers">
+      <p class="section-label">Administrative zones</p>
+      <div class="stack" id="zoneSources"></div>
+
+      <p class="section-label">Bus &amp; train routes</p>
+      <div class="stack" id="routeSources"></div>
+      <p class="hint">Routes load as lines you can tap. If the vector feed is down, turn on the
+        picture overlay below — you can still read the map and trace a route by hand.</p>
+
+      <p class="section-label">Picture overlays</p>
+      <div class="stack" id="wmsList"></div>
+      <button class="ghost-btn wide" id="addWmsBtn">Add a WMS overlay</button>
+
+      <p class="section-label">Your own data</p>
       <div class="stack">
-        <button class="row-btn" data-load="postnumre">
-          <span class="row-title">Postal districts</span>
-          <span class="row-meta">Aalborg Kommune · Dataforsyningen</span>
-        </button>
-        <button class="row-btn" data-load="sogne">
-          <span class="row-title">Parishes (sogne)</span>
-          <span class="row-meta">Aalborg Kommune · finer grid</span>
-        </button>
-        <button class="row-btn" data-load="kommune">
-          <span class="row-title">Municipality outline</span>
-          <span class="row-meta">Aalborg Kommune boundary</span>
-        </button>
         <label class="row-btn as-label">
           <span class="row-title">Load a GeoJSON file</span>
-          <span class="row-meta">Bus zones, your own districts…</span>
+          <span class="row-meta">Anything you exported or drew earlier</span>
           <input type="file" id="zoneFile" accept=".geojson,.json" hidden>
         </label>
         <button class="row-btn" id="drawZoneBtn">
@@ -127,17 +128,29 @@
           <span class="row-meta">Tap corners on the map</span>
         </button>
       </div>
+
+      <p class="section-label">Loaded</p>
       <div id="zoneLayers" class="zone-layers"></div>
+      <p id="layersEmpty" class="empty">Nothing loaded yet.</p>
       <div id="zoneStatus" class="status" hidden></div>
     </section>
 
     <!-- GAME -->
     <section class="tabpane" data-pane="game">
       <div class="field">
+        <label>Units</label>
+        <div class="seg" id="unitSeg">
+          <button data-units="imperial" class="is-active">Feet / miles</button>
+          <button data-units="metric">Metres / km</button>
+        </div>
+        <p class="hint">Set to match your deck. The US edition uses feet and miles.</p>
+      </div>
+
+      <div class="field">
         <label for="playRadius">Play area radius</label>
         <div class="inline">
-          <input type="number" id="playRadius" value="10" min="0.5" max="200" step="0.5">
-          <span class="unit">km</span>
+          <input type="number" id="playRadius" value="6" min="0.2" max="150" step="0.5">
+          <span class="unit" id="playRadiusUnit">mi</span>
           <button class="ghost-btn" id="applyRadius">Apply</button>
         </div>
         <p class="hint">Centred on the map's current centre. Everything outside is out of bounds.</p>
@@ -178,11 +191,47 @@
   </aside>
 </div>
 
+<!-- Source editor -->
+<div id="srcModal" class="modal" hidden>
+  <div class="modal-card">
+    <p class="form-title" id="srcTitle">Edit source</p>
+    <p class="form-q" id="srcNote"></p>
+    <div class="field">
+      <label for="srcKind">Type</label>
+      <select id="srcKind">
+        <option value="wfs">WFS (GeoJSON output)</option>
+        <option value="geojson">Direct GeoJSON URL</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="srcUrl">Service URL</label>
+      <input type="text" id="srcUrl" placeholder="https://…">
+    </div>
+    <div class="field" data-wfs-only>
+      <label for="srcType">Layer / typeName</label>
+      <input type="text" id="srcType" placeholder="pdk:theme_pdk_…">
+    </div>
+    <div class="field" data-wfs-only>
+      <label for="srcCql">Filter (CQL, optional)</label>
+      <input type="text" id="srcCql" placeholder="komnr=851">
+    </div>
+    <div class="field">
+      <label for="srcName">Label field (optional)</label>
+      <input type="text" id="srcName" placeholder="auto-detect">
+    </div>
+    <div class="form-actions">
+      <button class="solid-btn" id="srcSave">Save &amp; load</button>
+      <button class="ghost-btn" id="srcCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

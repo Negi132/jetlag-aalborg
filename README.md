@@ -46,12 +46,19 @@ together, and whatever survives is the bright area.
 | Question | What gets drawn |
 |---|---|
 | **Radar** — "are you within ___ of me?" | A circle. *Yes* keeps the inside, *no* keeps the outside. |
+| **Bus route** — "will my bus stop at your station?" | A corridor along the selected route. Default is ¼ mile either side, since the hider has to be at a stop, not on the tarmac. |
 | **Thermometer** — "after travelling ___, am I hotter or colder?" | The perpendicular bisector between your start and end point. *Hotter* keeps the half nearer the end point. |
 | **Measuring** — "compared to me, are you closer to or further from ___?" | A circle centred on the thing, with a radius equal to *your* distance from it. |
 | **Matching** — "is your nearest ___ the same as mine?" | Drop a pin on every candidate in the play area and tap the one nearest you. The map splits into nearest-point territories; you keep yours, or everything but yours. |
 | **Tentacles** | Same as matching, plus a radius limit around you. Also handles "not within reach". |
 | **Zone** | Same district / parish / postal code as you — one tap on a loaded zone layer. |
 | **Free shape** | Draw anything by hand. This is your catch-all for photo clues, sightlines, and hunches. |
+
+**Units.** The app defaults to feet and miles to match the US deck. Radar presets are the deck's
+own values — 250 / 500 / 1000 / 1500 ft, then ¼, ½, 1, 3 and 5 miles — and the area readout is in
+mi². There's a metric toggle in the **Game** tab if you ever play with a European deck; it converts
+everything already logged, because distances are stored in metres internally and only formatted on
+the way out.
 
 Two things worth knowing:
 
@@ -63,26 +70,57 @@ Two things worth knowing:
 
 ---
 
-## Zones for Aalborg
+## Zones and routes
 
-The **Zones** tab pulls live boundaries from [Dataforsyningen](https://dataforsyningen.dk/)
-(the Danish government's open address and geography API — free, no key):
+**Every data source in the Layers tab is editable.** Tap the ⚙ next to a zone level to change the
+service URL, layer name or filter. Nothing is baked into the code, so when a layer gets renamed you
+fix it on your phone in ten seconds instead of pushing a commit. Your edits travel in the game link.
 
-- **Postal districts** — the natural "same zone?" question for a city game
-- **Parishes (sogne)** — a finer grid when postal districts get too coarse
-- **Municipality outline** — also usable as your play-area boundary
+### The four administrative zone levels
 
-If your phone can't reach the API mid-game, grab the file beforehand on a laptop and load it
-with **Load a GeoJSON file**:
+Your KortInfo layers come from Aalborg's own WebGIS, which needs a per-site generated link and
+the administrator's permission to expose data as a service — so it can't be hard-coded. Three of
+the four are national planning themes available from **Plandata.dk**, which is preconfigured:
+
+| Level | Your KortInfo layer | Preconfigured source |
+|---|---|---|
+| 1 | Zonekort (By / Land) | Plandata `theme_pdk_zonekort_samlet_v`, filtered `komnr=851` |
+| 2 | Kommuneplanområder | Plandata `theme_pdk_kommuneplanomraade_vedtaget_v` |
+| 3 | By- og bydele | **Not configured** — Aalborg-only, no national feed |
+| 4 | Kommuneplanrammer | Plandata `theme_pdk_kommuneplanramme_alle_vedtaget_v` |
+
+Level 4 is the one I could confirm exists by that exact name. **Levels 1 and 2 are educated
+guesses** — if they fail, the app tells you so and you correct the `typeName` behind the ⚙. You can
+list the real names by opening
+`https://geoserver.plandata.dk/geoserver/wfs?request=GetCapabilities` and searching for `zonekort`.
+
+For **level 3**, the reliable options are: generate a WFS link from KortInfo's own Linkgenerator and
+paste it in, or draw the districts by hand once and export the GeoJSON into the repo. Once drawn,
+it's yours forever.
+
+Coordinates get normalised on arrival. Plandata publishes in UTM zone 32, and some services return
+lat/lng in the wrong order — both would silently drop your zones in the North Sea, so the app
+detects and fixes each case, then tells you it did.
+
+### Bus and train routes
+
+NT's route map runs on GC2, which exposes every layer over SQL and WMS. The Layers tab loads six
+route sets — city, regional, X Bus, local, telebus and trains — as **tappable lines**. Tap a route
+while the Bus route question is open and it becomes a corridor.
+
+If the vector feed doesn't respond, turn on the **NT route map picture overlay** in the same tab.
+You'll still see every route on the map and can trace the one you're on by hand — the Bus route
+question has a "trace by hand" button for exactly this.
+
+### Also available
+
+Dataforsyningen postal districts, parishes and the municipality outline are still there via the
+Aalborg Kommune boundary button and by pasting these into any zone slot:
 
 ```
 https://api.dataforsyningen.dk/postnumre?kommunekode=851&format=geojson&landpostnumre
 https://api.dataforsyningen.dk/sogne?kommunekode=851&format=geojson
-https://api.dataforsyningen.dk/kommuner/0851?format=geojson
 ```
-
-`851` is Aalborg Kommune. Any other GeoJSON works too — NT bus zones, your own neighbourhood
-carve-up — and you can draw zones by hand and export them.
 
 ---
 
@@ -103,17 +141,16 @@ Nothing is sent anywhere. There's no backend.
 The top of `app.js`:
 
 ```js
-const CONFIG = {
-  center: [57.0488, 9.9217],   // opening view
-  zoom: 12,
-  playRadiusKm: 10,            // default play area
-  kommunekode: '851',          // Aalborg
-  radarPresets: [100, 250, 500, 1000, 2000, 5000, 10000]  // metres
-};
+const CONFIG = { center: [57.0488, 9.9217], zoom: 12, playRadiusMi: 6, komnr: 851 };
+
+const RADAR_PRESETS = [ { label: '250 ft', m: 250 * FT }, … ];
+const DEFAULT_SOURCES = { zone1: {…}, zone2: {…}, zone3: {…}, zone4: {…} };
+const ROUTE_SOURCES  = { bybus: {…}, regionalbus: {…}, … };
 ```
 
-Set `radarPresets` to whatever radii your group agreed on — the official rulebook's radars are
-sized for intercity games and are far too big for one city.
+Distances are stored in metres everywhere and formatted on the way out, so changing units never
+changes a result. `RADAR_PRESETS` carries an explicit label per value — that's why a 1500 ft radar
+shows as "1500 ft" and not "0.28 mi".
 
 Colours are CSS custom properties at the top of `styles.css`.
 
@@ -129,13 +166,17 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 
 ## Tests
 
-`geometry.test.mjs` checks the constraint maths against analytically known answers — that a
-"no" radar leaves exactly the play area minus the circle, that the thermometer bisector lands
-on the midpoint, that contradictory answers are detected.
-
 ```
-npm install @turf/turf@7.2.0
-node geometry.test.mjs
+npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
+node geometry.test.mjs   # 33 checks — the constraint maths
+node ui.test.mjs         # 72 checks — the app, driven headlessly
 ```
 
-Worth running if you change how a question type works.
+`geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
+exactly the play area minus the circle, that the thermometer bisector lands on the midpoint, that
+contradictory answers are detected.
+
+`ui.test.mjs` boots the real `index.html` in a fake DOM and clicks through it — logging a radar,
+switching units, selecting a bus route, checking that UTM32 coordinates land in Aalborg.
+
+Worth running if you change how a question type works. Both caught real bugs while this was built.
