@@ -48,14 +48,14 @@ const DEFAULT_SOURCES = {
   },
   zone2: {
     name: 'Zone 2 · Kommuneplanområder',
-    note: 'Built in: the four play zones, merged from the districts in data.js. ' +
-          'Approximate. Switch to WFS here if you get hold of the official layer.',
+    note: 'Built in: four traced play zones from data.js. Tiny tracing slivers are repaired ' +
+          'into a seamless partition before display.',
     kind: 'areas', url: '', typeName: '', cql: '', nameField: 'navn', style: 'areas'
   },
   zone3: {
     name: 'Zone 3 · By- og bydele',
-    note: 'Built in: nearest-centre territories around each district in data.js. ' +
-          'Approximate — edit the coordinates in data.js to sharpen it.',
+    note: 'Built in: traced city-district outlines from data.js. The automatic fit can use ' +
+          'roads and shoreline to correct scale, aspect and slight rotation.',
     kind: 'districts', url: '', typeName: '', cql: '', nameField: 'navn', style: 'plain'
   },
   zone4: {
@@ -174,9 +174,6 @@ const S = {
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
   cal: null,          // pixel-to-map calibration for the traced zones
-  roadIndex: null,    // loaded road network, for boundary snapping
-  snapOn: false,      // whether boundaries are snapped to it
-  snapM: 70,          // how far a boundary point may be pulled
   renames: {},        // district index -> your own name
   me: null,
   baseKey: 'light',
@@ -1154,54 +1151,190 @@ function anchorPx() {
 function defaultCal() {
   const g = window.GEOREF || { s: 0.00035, lng0: 9.85, my0: 69.94 };
   const [ax, ay] = anchorPx();
-  return { lat: invMercY(g.my0 - g.s * ay), lng: g.lng0 + g.s * ax, mul: 1 };
+  return {
+    lat: invMercY(g.my0 - g.s * ay),
+    lng: g.lng0 + g.s * ax,
+    mul: 1,
+    aspect: 1,
+    rot: 0
+  };
 }
 
-/* The live transform, rebuilt from the calibration. */
-function georef() {
+function normaliseCal(cal) {
+  const d = defaultCal();
+  const c = Object.assign({}, d, cal || {});
+  c.mul = Number.isFinite(Number(c.mul)) ? Number(c.mul) : 1;
+  c.aspect = Number.isFinite(Number(c.aspect)) ? Number(c.aspect) : 1;
+  c.rot = Number.isFinite(Number(c.rot)) ? Number(c.rot) : 0;
+  return c;
+}
+
+/* The live transform. `mul` is the manual uniform scale. `aspect` permits a
+   small X/Y correction for screenshot stretching, and `rot` is degrees.
+   Both are anchored at Midtbyen, so refining them does not move the pin. */
+function georef(cal) {
   const g = window.GEOREF || { s: 0.00035 };
-  const c = S.cal || defaultCal();
+  const c = normaliseCal(cal || S.cal);
   const [ax, ay] = anchorPx();
-  const s = g.s * (c.mul || 1);
-  return { s, lng0: c.lng - s * ax, my0: mercY(c.lat) + s * ay };
+  const a = Math.sqrt(Math.max(0.5, Math.min(2, c.aspect || 1)));
+  const sx = (c.mul || 1) * a;
+  const sy = (c.mul || 1) / a;
+  const th = (c.rot || 0) * Math.PI / 180;
+  return {
+    baseS: g.s,
+    ax, ay,
+    lng: c.lng,
+    my: mercY(c.lat),
+    sx, sy,
+    cos: Math.cos(th),
+    sin: Math.sin(th),
+    cal: c,
+    // Legacy fields remain useful in the no-rotation case and for console use.
+    s: g.s * (c.mul || 1),
+    lng0: c.lng - g.s * (c.mul || 1) * ax,
+    my0: mercY(c.lat) + g.s * (c.mul || 1) * ay
+  };
 }
 
-const pxToLngLat = (x, y, gr) => [gr.lng0 + gr.s * x, invMercY(gr.my0 - gr.s * y)];
+function pxToLngLat(x, y, gr) {
+  const t = gr || georef();
+  const dx = x - t.ax, dy = y - t.ay;
+  const qx = t.baseS * t.sx * dx;
+  const qy = -t.baseS * t.sy * dy;
+  const lng = t.lng + t.cos * qx - t.sin * qy;
+  const my = t.my + t.sin * qx + t.cos * qy;
+  return [lng, invMercY(my)];
+}
 
-function ringToPolygon(ring, props, gr, snapper) {
-  const coords = snapper ? snapper.mapRing(ring, gr)
-                         : ring.map(([x, y]) => pxToLngLat(x, y, gr));
+const projectVertices = (verts, cal) => {
+  const gr = georef(cal);
+  return verts.map(([x, y]) => pxToLngLat(x, y, gr));
+};
+
+function ringToPolygon(ring, props, gr) {
+  const coords = ring.map(([x, y]) => pxToLngLat(x, y, gr));
   if (coords.length < 4) return null;
   const first = coords[0], last = coords[coords.length - 1];
   if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first.slice());
   try { return turf.polygon([coords], props); } catch (_) { return null; }
 }
 
+/* The screenshot contours are pixel-quantised. Even when two districts are
+   visually adjacent, their independently traced rings can leave tiny holes
+   or overlap by a fraction of a pixel. Turn the collection into a true
+   partition: fill only interior slivers, remove overlaps once, and assign
+   every repaired sliver to the nearest original boundary. */
+function fillGeometryHoles(ft) {
+  if (!ft || !ft.geometry) return null;
+  const p = Object.assign({}, ft.properties || {});
+  try {
+    if (ft.geometry.type === 'Polygon') return turf.polygon([ft.geometry.coordinates[0]], p);
+    if (ft.geometry.type === 'MultiPolygon') {
+      // Union the shells rather than returning a raw MultiPolygon. Shells can
+      // touch or nest after holes are removed; unioning produces valid output.
+      const shells = ft.geometry.coordinates
+        .filter((poly) => poly && poly[0] && poly[0].length >= 4)
+        .map((poly) => turf.polygon([poly[0]], p));
+      return unionAll(shells);
+    }
+  } catch (_) { return null; }
+  return turf.clone(ft);
+}
+
+function polygonBoundaryLines(ft) {
+  if (!ft || !ft.geometry) return [];
+  try {
+    const polys = ft.geometry.type === 'Polygon'
+      ? [ft.geometry.coordinates]
+      : ft.geometry.type === 'MultiPolygon' ? ft.geometry.coordinates : [];
+    const lines = [];
+    for (const poly of polys) {
+      // The traced source polygons have no intended holes; the outside ring
+      // is the boundary relevant when deciding which district owns a sliver.
+      if (poly && poly[0] && poly[0].length > 1) lines.push(turf.lineString(poly[0]));
+    }
+    return lines;
+  } catch (_) { return []; }
+}
+
+function distanceToBoundaryKm(pt, ft) {
+  let best = Infinity;
+  for (const line of polygonBoundaryLines(ft)) {
+    try {
+      const d = turf.pointToLineDistance(pt, line, { units: 'kilometers' });
+      if (d < best) best = d;
+    } catch (_) { /* try the next ring */ }
+  }
+  return best;
+}
+
+function seamlessPartition(features) {
+  const raw = features.filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
+  if (raw.length < 2) return raw.map((f) => turf.clone(f));
+
+  const merged = unionAll(raw);
+  const outline = fillGeometryHoles(merged);
+  if (!outline) return raw.map((f) => turf.clone(f));
+
+  // Earlier polygons keep their tiny overlap; later ones are clipped to the
+  // remaining area. The ordering is stable, so zone IDs never change.
+  const clean = [];
+  let used = null;
+  for (const ft of raw) {
+    let part = used ? gDifference(ft, used) : turf.clone(ft);
+    if (part) {
+      part.properties = Object.assign({}, ft.properties || {});
+      clean.push(part);
+      used = unionAll([used, part].filter(Boolean));
+    } else {
+      clean.push(null);
+    }
+  }
+
+  let gaps = used ? gDifference(outline, used) : turf.clone(outline);
+  const gapParts = gaps ? turf.flatten(gaps).features.filter((f) => turf.area(f) > 0.01) : [];
+  for (const gap of gapParts) {
+    const pt = turf.pointOnFeature(gap);
+    let pick = -1, best = Infinity;
+    for (let i = 0; i < raw.length; i++) {
+      const d = distanceToBoundaryKm(pt, raw[i]);
+      if (d < best) { best = d; pick = i; }
+    }
+    if (pick < 0) continue;
+    const joined = clean[pick] ? unionAll([clean[pick], gap]) : turf.clone(gap);
+    if (joined) {
+      joined.properties = Object.assign({}, raw[pick].properties || {});
+      clean[pick] = joined;
+    }
+  }
+
+  return clean.filter(Boolean);
+}
+
 /* Zone 2: the four play zones, straight from the traced outlines. */
 function buildAreaZones() {
   const gr = georef();
-  const snapper = (S.roadIndex && S.snapOn) ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
   const out = [];
   for (const z of window.ZONE2_PX || []) {
-    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr, snapper);
+    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr);
     if (f) out.push(f);
   }
-  return out.length ? { type: 'FeatureCollection', features: out } : null;
+  const fixed = seamlessPartition(out);
+  return fixed.length ? { type: 'FeatureCollection', features: fixed } : null;
 }
 
 /* Zone 3: the city districts, with the names read off the screenshot's
    own labels. Renames live in S.renames, keyed by index. */
 function buildDistrictZones() {
   const gr = georef();
-  const snapper = (S.roadIndex && S.snapOn) ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
   const out = [];
   (window.ZONE3_PX || []).forEach((z, i) => {
     const nm = (S.renames && S.renames[i]) || z.name || `District ${i + 1}`;
-    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr, snapper);
+    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr);
     if (f) out.push(f);
   });
-  if (snapper) S.lastSnap = snapper.stats();
-  return out.length ? { type: 'FeatureCollection', features: out } : null;
+  const fixed = seamlessPartition(out);
+  return fixed.length ? { type: 'FeatureCollection', features: fixed } : null;
 }
 
 /* The play area is the union of the four play zones. */
@@ -1561,7 +1694,7 @@ async function toggleSource(key, btn) {
     const rec = addLayer(src.name, gj, {
       key: 'src:' + key, nameField: 'navn', style: src.style, derived: src.kind
     });
-    if (rec) setStatus(`${src.name}: ${rec.geojson.features.length} zones on (approximate — built from data.js).`);
+    if (rec) setStatus(`${src.name}: ${rec.geojson.features.length} seamless traced zones on.`);
     return;
   }
 
@@ -1613,10 +1746,9 @@ async function toggleRoute(key, btn) {
 }
 
 /* ---------- fitting the zones to real geography ------------------------
-   You spotted that the boundaries follow real features. They do — and
-   better still, many of them follow the shoreline, which is unmistakable.
-   The tracing recorded which vertices sit on water, so the app can pull
-   the real coastline from OpenStreetMap and slide the zones onto it. */
+   The recorded shoreline gives a reliable coarse placement. Non-coastal
+   district edges are then compared with OpenStreetMap roads, railways and
+   waterways to refine scale, aspect ratio and slight rotation. */
 
 function coastVertices() {
   const out = [];
@@ -1627,14 +1759,61 @@ function coastVertices() {
   return out;
 }
 
+/* Samples from non-coastal district edges. Not every such edge is a road,
+   so the fitter deliberately uses a robust percentile rather than forcing
+   every point onto the street network. */
+function boundarySamples() {
+  const out = [], seen = new Set();
+  for (const z of window.ZONE3_PX || []) {
+    const ring = z.ring || [], coast = z.coast || [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      if (!a || !b || coast[i] || coast[(i + 1) % ring.length]) continue;
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy);
+      if (len < 2) continue;
+      const n = Math.max(1, Math.ceil(len / 10));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        const x = a[0] + dx * t, y = a[1] + dy * t;
+        const key = `${Math.round(x / 3)}:${Math.round(y / 3)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ x, y, dx: dx / len, dy: dy / len });
+      }
+    }
+  }
+  // A deterministic cap keeps calibration responsive on older phones.
+  if (out.length <= 700) return out;
+  const step = out.length / 700;
+  return Array.from({ length: 700 }, (_, i) => out[Math.floor(i * step)]);
+}
+
 function overpassCoastQuery() {
   const [s2, w, n, e] = OVERPASS_BBOX;
   return `[out:json][timeout:90];way(${s2},${w},${n},${e})["natural"="coastline"];out geom;`;
 }
 
-function parseOverpassPoints(json, stepKm) {
+function overpassAlignmentQuery() {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  const box = `${s2},${w},${n},${e}`;
+  return `[out:json][timeout:90];(` +
+    `way(${box})["natural"="coastline"];` +
+    `way(${box})["highway"~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified)$"];` +
+    `way(${box})["railway"~"^(rail|light_rail)$"];` +
+    `way(${box})["waterway"~"^(river|canal)$"];` +
+    `);out tags geom;`;
+}
+
+const isCoastElement = (el) => !!(el && el.tags && el.tags.natural === 'coastline');
+const isAlignmentLine = (el) => !!(el && el.tags &&
+  (el.tags.highway || /^(rail|light_rail)$/.test(el.tags.railway || '') ||
+   /^(river|canal)$/.test(el.tags.waterway || '')));
+
+function parseOverpassPoints(json, stepKm, accept) {
   const pts = [];
   for (const el of (json && json.elements) || []) {
+    if (accept && !accept(el)) continue;
     const g = el.geometry;
     if (!Array.isArray(g)) continue;
     for (let i = 1; i < g.length; i++) {
@@ -1645,6 +1824,29 @@ function parseOverpassPoints(json, stepKm) {
       for (let k = 0; k < n; k++) {
         const t = k / n;
         pts.push([a.lon + (b.lon - a.lon) * t, a.lat + (b.lat - a.lat) * t]);
+      }
+    }
+  }
+  return pts;
+}
+
+function parseOverpassOrientedPoints(json, stepKm, accept) {
+  const pts = [];
+  for (const el of (json && json.elements) || []) {
+    if (accept && !accept(el)) continue;
+    const g = el.geometry;
+    if (!Array.isArray(g)) continue;
+    for (let i = 1; i < g.length; i++) {
+      const a = g[i - 1], b = g[i];
+      if (!a || !b || a.lon == null || b.lon == null) continue;
+      const dx = (b.lon - a.lon) * 60.5, dy = (b.lat - a.lat) * 111.2;
+      const len = Math.hypot(dx, dy);
+      if (len <= 0) continue;
+      const angle = Math.atan2(dy, dx);
+      const n = Math.max(1, Math.round(len / (stepKm || 0.05)));
+      for (let k = 0; k < n; k++) {
+        const t = (k + 0.5) / n;
+        pts.push([a.lon + (b.lon - a.lon) * t, a.lat + (b.lat - a.lat) * t, angle]);
       }
     }
   }
@@ -1664,44 +1866,75 @@ function makeIndex(pts, cell) {
   return {
     nearest(x, y) {
       const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
-      for (let r = 1; r <= 4; r++) {
-        let best = Infinity;
-        for (let i = gx - r; i <= gx + r; i++) {
-          for (let j = gy - r; j <= gy + r; j++) {
-            const c = g.get(key(i, j));
-            if (!c) continue;
-            for (const p of c) {
-              const dx = (p[0] - x) * 60.5, dy = (p[1] - y) * 111.2;
-              const d = dx * dx + dy * dy;
-              if (d < best) best = d;
-            }
+      let best = Infinity;
+      // Search the whole local window. Returning after the first occupied
+      // ring can select a farther point when the query lies near a cell edge.
+      for (let i = gx - 4; i <= gx + 4; i++) {
+        for (let j = gy - 4; j <= gy + 4; j++) {
+          const c = g.get(key(i, j));
+          if (!c) continue;
+          for (const p of c) {
+            const dx = (p[0] - x) * 60.5, dy = (p[1] - y) * 111.2;
+            const d = dx * dx + dy * dy;
+            if (d < best) best = d;
           }
         }
-        if (best < Infinity) return Math.sqrt(best);
       }
-      return null;
+      return best < Infinity ? Math.sqrt(best) : null;
     }
   };
 }
 
-const median = (a) => {
+function makeOrientedIndex(pts, cell) {
+  const g = new Map();
+  const key = (a, b) => a + ':' + b;
+  for (const p of pts) {
+    const k = key(Math.floor(p[0] / cell), Math.floor(p[1] / cell));
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(p);
+  }
+  return {
+    nearest(x, y, angle) {
+      const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
+      let best = null;
+      for (let i = gx - 5; i <= gx + 5; i++) {
+        for (let j = gy - 5; j <= gy + 5; j++) {
+          const c = g.get(key(i, j));
+          if (!c) continue;
+          for (const p of c) {
+            const dx = (p[0] - x) * 60.5, dy = (p[1] - y) * 111.2;
+            const dist = Math.hypot(dx, dy);
+            let da = Math.abs(angle - p[2]) % Math.PI;
+            da = Math.min(da, Math.PI - da);
+            // At equal distance, prefer a line running in the same direction.
+            const score = dist + 0.12 * Math.sin(da);
+            if (!best || score < best.score) best = { score, dist, angle: p[2] };
+          }
+        }
+      }
+      return best;
+    }
+  };
+}
+
+const quantile = (a, q) => {
   if (!a.length) return Infinity;
   const b = a.slice().sort((x, y) => x - y);
-  return b[b.length >> 1];
+  const i = Math.max(0, Math.min(b.length - 1, Math.round((b.length - 1) * q)));
+  return b[i];
 };
+const median = (a) => quantile(a, 0.5);
 
 /* Search scale and offset for the placement that puts the traced shoreline
    on the real one. Symmetric: shrinking the zones onto a single beach is
    punished because the rest of the coast is then far from any vertex. */
 function fitCoastline(verts, coastPts, start) {
   const idx = makeIndex(coastPts, 0.01);
-  const [ax, ay] = anchorPx();
-  const g = window.GEOREF;
+  const base = normaliseCal(start);
 
   function evaluate(mul, lat, lng) {
-    const s = g.s * mul;
-    const lng0 = lng - s * ax, my0 = mercY(lat) + s * ay;
-    const proj = verts.map(([x, y]) => [lng0 + s * x, invMercY(my0 - s * y)]);
+    const cal = Object.assign({}, base, { mul, lat, lng });
+    const proj = projectVertices(verts, cal);
     const fwd = [];
     let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
     for (const p of proj) {
@@ -1720,9 +1953,9 @@ function fitCoastline(verts, coastPts, start) {
     return median(fwd) + (rev.length ? median(rev) : 3);
   }
 
-  let best = { cost: Infinity, mul: start.mul, lat: start.lat, lng: start.lng };
+  let best = Object.assign({ cost: Infinity }, base);
   let rMul = 0.35, rLat = 0.035, rLng = 0.06;
-  let centre = { mul: start.mul, lat: start.lat, lng: start.lng };
+  let centre = Object.assign({}, base);
 
   for (let pass = 0; pass < 4; pass++) {
     const N = 6;
@@ -1733,312 +1966,126 @@ function fitCoastline(verts, coastPts, start) {
         const lat = centre.lat + (j / 4) * rLat;
         for (let k = -4; k <= 4; k++) {
           const lng = centre.lng + (k / 4) * rLng;
-          const c = evaluate(mul, lat, lng);
-          if (c < best.cost) best = { cost: c, mul, lat, lng };
+          const cost = evaluate(mul, lat, lng);
+          if (cost < best.cost) best = Object.assign({}, base, { cost, mul, lat, lng });
         }
       }
     }
-    centre = { mul: best.mul, lat: best.lat, lng: best.lng };
+    centre = Object.assign({}, best);
     rMul *= 0.35; rLat *= 0.35; rLng *= 0.35;
   }
   return best;
 }
 
-/* ---------- snapping boundaries to the roads they follow ---------------
-   Most district borders run down the middle of a street, and the traced
-   outlines are pixel-quantised, so they wobble either side of the real
-   line. But plenty of borders follow no road at all — a field edge, the
-   railway, the shore — and in a city there is almost always *some* street
-   within snapping range of those. Pulling every point onto its nearest
-   road is what made the first attempt jitter.
-
-   So a point only moves when its stretch of boundary genuinely follows a
-   road: the road must run in the same direction as the boundary, and the
-   same OSM way must be the best match for a run of consecutive points. */
-
-const SNAP_MIN_RUN = 3;          // consecutive points that must agree
-const SNAP_COS = 0.78;           // ~39 degrees of direction tolerance
-
-function overpassRoadQuery() {
-  const [s2, w, n, e] = OVERPASS_BBOX;
-  // Named roads like Østre Allé are secondary/tertiary; residential is left
-  // out because it bloats the download and borders rarely follow it.
-  return `[out:json][timeout:120];way(${s2},${w},${n},${e})` +
-         `["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified)$"];out geom;`;
+function sampleDirection(sample, cal, gr) {
+  gr = gr || georef(cal);
+  const a = pxToLngLat(sample.x, sample.y, gr);
+  const b = pxToLngLat(sample.x + sample.dx * 8, sample.y + sample.dy * 8, gr);
+  return Math.atan2((b[1] - a[1]) * 111.2, (b[0] - a[0]) * 60.5);
 }
 
-/* [ax, ay, bx, by, wayId] */
-function roadSegments(json) {
-  const segs = [];
-  for (const el of (json && json.elements) || []) {
-    const g = el.geometry;
-    if (!Array.isArray(g)) continue;
-    for (let i = 1; i < g.length; i++) {
-      const a = g[i - 1], b = g[i];
-      if (!a || !b || a.lon == null || b.lon == null) continue;
-      segs.push([a.lon, a.lat, b.lon, b.lat, el.id]);
-    }
-  }
-  return segs;
-}
-
-const KX = 0.545;                       // cos(57°): lng degrees -> lat degrees
-
-function projectToSegment(x, y, s) {
-  const ax = s[0], ay = s[1], bx = s[2], by = s[3];
-  const dx = (bx - ax) * KX, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 ? (((x - ax) * KX) * dx + (y - ay) * dy) / len2 : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
-  const ex = (px - x) * KX, ey = py - y;
-  return { x: px, y: py, d2: ex * ex + ey * ey, way: s[4], dx, dy, len2 };
-}
-
-function segmentIndex(segs, cell) {
-  const g = new Map();
-  const put = (i, j, v) => {
-    const k = i + ':' + j;
-    if (!g.has(k)) g.set(k, []);
-    g.get(k).push(v);
-  };
-  segs.forEach((s) => {
-    const i0 = Math.floor(Math.min(s[0], s[2]) / cell), i1 = Math.floor(Math.max(s[0], s[2]) / cell);
-    const j0 = Math.floor(Math.min(s[1], s[3]) / cell), j1 = Math.floor(Math.max(s[1], s[3]) / cell);
-    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) put(i, j, s);
-  });
-  return {
-    /* Best road within `maxDeg`. With a direction, only roads running
-       roughly parallel to it count. */
-    nearest(x, y, maxDeg, ux, uy) {
-      const gi = Math.floor(x / cell), gj = Math.floor(y / cell);
-      const r = Math.max(1, Math.ceil(maxDeg / cell));
-      let best = null;
-      for (let i = gi - r; i <= gi + r; i++) {
-        for (let j = gj - r; j <= gj + r; j++) {
-          const c = g.get(i + ':' + j);
-          if (!c) continue;
-          for (const s of c) {
-            const p = projectToSegment(x, y, s);
-            if (p.d2 > maxDeg * maxDeg) continue;
-            if (ux !== undefined && p.len2 > 0) {
-              const l = Math.sqrt(p.len2);
-              if (Math.abs((p.dx / l) * ux + (p.dy / l) * uy) < SNAP_COS) continue;
-            }
-            if (!best || p.d2 < best.d2) best = p;
-          }
-        }
-      }
-      return best;
-    }
-  };
-}
-
-/* Snapped positions are cached per pixel coordinate and the first result
-   wins, so a vertex shared by two districts resolves identically in both
-   and the zones stay joined. */
-function snapRingsToRoads(index, toleranceM) {
-  const tolDeg = (toleranceM / 1000) / 111.2;
-  const cache = new Map();
-  let moved = 0, total = 0;
-
-  function mapRing(ring, gr) {
-    const pts = ring.map(([x, y]) => pxToLngLat(x, y, gr));
-    const n = Math.max(1, pts.length - 1);          // last repeats the first
-    const cand = new Array(pts.length).fill(null);
-
-    for (let i = 0; i < n; i++) {
-      const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
-      let ux = (next[0] - prev[0]) * KX, uy = next[1] - prev[1];
-      const l = Math.hypot(ux, uy);
-      if (!l) continue;
-      ux /= l; uy /= l;
-      cand[i] = index.nearest(pts[i][0], pts[i][1], tolDeg, ux, uy);
-    }
-
-    // keep only runs of consecutive points that agree on the same road
-    const use = new Array(pts.length).fill(false);
-    let i = 0;
-    while (i < n) {
-      if (!cand[i]) { i++; continue; }
-      let j = i;
-      while (j + 1 < n && cand[j + 1] && cand[j + 1].way === cand[i].way) j++;
-      if (j - i + 1 >= SNAP_MIN_RUN) for (let k = i; k <= j; k++) use[k] = true;
-      i = j + 1;
-    }
-
-    return ring.map(([x, y], idx) => {
-      const key = x.toFixed(1) + ',' + y.toFixed(1);
-      if (cache.has(key)) return cache.get(key);
-      const k = idx === pts.length - 1 ? 0 : idx;
-      let p = pts[idx];
-      if (use[k] && cand[k]) { p = [cand[k].x, cand[k].y]; moved++; }
-      total++;
-      cache.set(key, p);
-      return p;
-    });
-  }
-  return { mapRing, stats: () => ({ moved, total }) };
-}
-
-async function overpassJson(query) {
-  const body = 'data=' + encodeURIComponent(query);
-  const problems = [];
-  for (const url of OVERPASS) {
-    try {
-      const res = await fetch(url, { method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return JSON.parse(await res.text());
-    } catch (e) { problems.push(e.message); }
-  }
-  throw new Error(problems.join(' / '));
-}
-
-/* All boundary vertices, thinned — the road term of the fit runs over these. */
-function boundaryVertices(step) {
-  const out = [];
-  const push = (ring) => { for (let i = 0; i < ring.length; i += (step || 1)) out.push(ring[i]); };
-  for (const z of window.ZONE3_PX || []) push(z.ring);
-  return out;
-}
-
-/* Scale is what the roads pin down. A long straight road like Østre Allé
-   only lines up with the boundary that runs along it at one size, so
-   including the street network removes the need to touch the slider. */
-function fitToGeography(coastVerts, coastPts, bndVerts, roadIdx, start) {
+/* Refine the coastline placement using road/rail/waterway directions. The
+   robust road score lets non-road district edges remain untouched while the
+   global transform corrects small scale, aspect and rotation errors. */
+function fitRoadNetwork(coastVerts, bounds, coastPts, roadPts, start) {
   const coastIdx = makeIndex(coastPts, 0.01);
-  const [ax, ay] = anchorPx();
-  const g = window.GEOREF;
+  const roadIdx = makeOrientedIndex(roadPts, 0.01);
+  const origin = normaliseCal(start);
 
-  function evaluate(mul, lat, lng) {
-    const s = g.s * mul;
-    const lng0 = lng - s * ax, my0 = mercY(lat) + s * ay;
-    const proj = (p) => [lng0 + s * p[0], invMercY(my0 - s * p[1])];
-
-    const cv = coastVerts.map(proj);
-    const fwd = [];
-    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
-    for (const p of cv) {
+  function evaluate(cal) {
+    const coastD = [];
+    for (const p of projectVertices(coastVerts, cal)) {
       const d = coastIdx.nearest(p[0], p[1]);
-      if (d != null) fwd.push(d);
-      if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0];
-      if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1];
-    }
-    const back = makeIndex(cv, 0.01);
-    const rev = [];
-    for (const p of coastPts) {
-      if (p[0] < minx || p[0] > maxx || p[1] < miny || p[1] > maxy) continue;
-      const d = back.nearest(p[0], p[1]);
-      if (d != null) rev.push(d);
+      if (d != null) coastD.push(d);
     }
 
-    let road = 0;
-    if (roadIdx) {
-      const ds = [];
-      for (const v of bndVerts) {
-        const p = proj(v);
-        const hit = roadIdx.nearest(p[0], p[1], 0.006);
-        ds.push(hit ? Math.sqrt(hit.d2) * 111.2 : 0.7);
-      }
-      ds.sort((a, b) => a - b);
-      road = ds.length ? ds[Math.floor(ds.length * 0.3)] : 0;   // the ones that do follow a road
+    const roadScore = [], roadDist = [];
+    const gr = georef(cal);
+    for (const s of bounds) {
+      const p = pxToLngLat(s.x, s.y, gr);
+      const hit = roadIdx.nearest(p[0], p[1], sampleDirection(s, cal, gr));
+      if (!hit) continue;
+      roadScore.push(hit.score); roadDist.push(hit.dist);
     }
-    return median(fwd) + (rev.length ? median(rev) : 3) + 2 * road;
+    const coast = median(coastD);
+    const road = quantile(roadScore, 0.42);
+    const roadOnly = quantile(roadDist, 0.42);
+    const coverage = roadDist.length
+      ? roadDist.filter((d) => d < 0.12).length / roadDist.length : 0;
+    const regularise = 0.10 * Math.abs(Math.log(cal.aspect || 1)) +
+                       0.006 * Math.abs(cal.rot || 0) +
+                       0.05 * Math.abs(Math.log((cal.mul || 1) / (origin.mul || 1)));
+    const cost = 1.8 * coast + road + Math.max(0, 0.28 - coverage) * 0.8 + regularise;
+    return { cost, coast, road, roadOnly, coverage };
   }
 
-  let best = { cost: Infinity, mul: start.mul, lat: start.lat, lng: start.lng };
-  let centre = { mul: start.mul, lat: start.lat, lng: start.lng };
-  let rMul = 0.4, rLat = 0.04, rLng = 0.07;
-  for (let pass = 0; pass < 4; pass++) {
-    for (let i = -6; i <= 6; i++) {
-      const mul = centre.mul * Math.exp((i / 6) * Math.log(1 + rMul));
-      if (mul < 0.5 || mul > 2.2) continue;
-      for (let j = -4; j <= 4; j++) {
-        const lat = centre.lat + (j / 4) * rLat;
-        for (let k = -4; k <= 4; k++) {
-          const lng = centre.lng + (k / 4) * rLng;
-          const c = evaluate(mul, lat, lng);
-          if (c < best.cost) best = { cost: c, mul, lat, lng };
-        }
+  let best = Object.assign({}, origin, evaluate(origin));
+  const steps = { lat: 0.0035, lng: 0.007, mul: 0.04, aspect: 0.05, rot: 1.4 };
+  for (let pass = 0; pass < 8; pass++) {
+    for (const key of ['lat', 'lng', 'mul', 'aspect', 'rot']) {
+      for (const sign of [-1, 1]) {
+        const c = Object.assign({}, best);
+        if (key === 'mul' || key === 'aspect') c[key] *= Math.exp(sign * steps[key]);
+        else c[key] += sign * steps[key];
+        if (c.mul < 0.5 || c.mul > 2.2 || c.aspect < 0.82 || c.aspect > 1.22 ||
+            c.rot < -7 || c.rot > 7 || Math.abs(c.lat - origin.lat) > 0.025 ||
+            Math.abs(c.lng - origin.lng) > 0.05) continue;
+        const score = evaluate(c);
+        if (score.cost < best.cost) best = Object.assign(c, score);
       }
     }
-    centre = { mul: best.mul, lat: best.lat, lng: best.lng };
-    rMul *= 0.35; rLat *= 0.35; rLng *= 0.35;
+    for (const k of Object.keys(steps)) steps[k] *= 0.55;
   }
   return best;
 }
 
 async function autoCalibrate(btn) {
-  const verts = coastVertices();
+  const verts = coastVertices(), bounds = boundarySamples();
   if (verts.length < 30) { toast('No shoreline vertices recorded to fit against.', true); return; }
   const original = btn.textContent;
-  btn.disabled = true;
-  setStatus('Asking OpenStreetMap for the shoreline and the street network…');
+  btn.disabled = true; btn.textContent = 'Fetching roads and coastline…';
+  setStatus('Asking OpenStreetMap for the Limfjord shoreline and main boundary lines…');
   try {
-    btn.textContent = 'Fetching the coastline…';
-    const coastJson = await overpassJson(overpassCoastQuery());
-    const pts = parseOverpassPoints(coastJson, 0.05);
-    if (pts.length < 200) throw new Error('the coastline came back almost empty');
+    const body = 'data=' + encodeURIComponent(overpassAlignmentQuery());
+    let json = null, problems = [];
+    for (const url of OVERPASS) {
+      try {
+        const res = await fetch(url, { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        json = JSON.parse(await res.text());
+        break;
+      } catch (e) { problems.push(e.message); }
+    }
+    if (!json) throw new Error(problems.join(' / '));
+    const coastPts = parseOverpassPoints(json, 0.05, isCoastElement);
+    const roadPts = parseOverpassOrientedPoints(json, 0.05, isAlignmentLine);
+    if (coastPts.length < 200) throw new Error('the coastline came back almost empty');
 
-    let roadIdx = null, segCount = 0;
-    try {
-      btn.textContent = 'Fetching the streets…';
-      const roadJson = await overpassJson(overpassRoadQuery());
-      const segs = roadSegments(roadJson);
-      segCount = segs.length;
-      if (segs.length > 500) {
-        roadIdx = segmentIndex(segs, 0.004);
-        S.roadIndex = roadIdx;              // reused by the snap button
-      }
-    } catch (_) { /* the coastline alone still gives a usable fit */ }
-
-    btn.textContent = 'Lining everything up…';
+    btn.textContent = `Lining up ${coastPts.length + roadPts.length} map points…`;
     await new Promise((r) => setTimeout(r, 20));
-    const best = fitToGeography(verts, pts, boundaryVertices(2), roadIdx, S.cal || defaultCal());
-    S.cal = { mul: best.mul, lat: best.lat, lng: best.lng };
-    applyCal(true);
+    const start = normaliseCal(S.cal);
+    const coarse = fitCoastline(verts, coastPts, start);
+    const best = (roadPts.length >= 150 && bounds.length >= 80)
+      ? fitRoadNetwork(verts, bounds, coastPts, roadPts, coarse)
+      : Object.assign({}, coarse, { coast: coarse.cost / 2, roadOnly: Infinity, coverage: 0 });
 
-    const zones = buildAreaZones();
-    const bb = zones ? turf.bbox(zones) : null;
-    const across = bb ? turf.distance(turf.point([bb[0], bb[1]]), turf.point([bb[2], bb[1]]),
-                                      { units: 'kilometers' }) * 1000 : 0;
-    setStatus(`Fitted using the shoreline${roadIdx ? ` and ${segCount} road segments` : ''}. ` +
-              `Scale set automatically — the zones now span ${fmtDist(across)}. ` +
-              `Check it against the fjord and Østre Allé, and nudge if you need to.`);
-    toast('Placed and scaled automatically.');
+    S.cal = {
+      mul: best.mul, lat: best.lat, lng: best.lng,
+      aspect: best.aspect || 1, rot: best.rot || 0
+    };
+    applyCal(true);
+    const coastOff = (best.coast || coarse.cost / 2) * 1000;
+    const roadOff = Number.isFinite(best.roadOnly) ? best.roadOnly * 1000 : null;
+    const detail = roadOff == null ? '' :
+      `, road-boundary error about ${fmtDist(roadOff)}`;
+    setStatus(`Fitted: scale ${Math.round(best.mul * 100)}%, aspect ` +
+              `${Math.round((best.aspect || 1) * 100)}%, rotation ${(best.rot || 0).toFixed(1)}°. ` +
+              `Shoreline error about ${fmtDist(coastOff)}${detail}.`,
+              coastOff > 400 || (roadOff != null && roadOff > 350));
+    toast(roadOff == null ? 'Fitted to the coastline.' : 'Fitted to roads and coastline.');
   } catch (err) {
     setStatus(`Could not fit automatically — ${err.message}. Pin the centre and use the slider instead.`, true);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-}
-
-async function snapToRoads(btn) {
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Fetching roads…';
-  setStatus("Asking OpenStreetMap for Aalborg's streets…");
-  try {
-    if (!S.roadIndex) {
-      const json = await overpassJson(overpassRoadQuery());
-      const segs = roadSegments(json);
-      if (segs.length < 500) throw new Error('the road network came back almost empty');
-      S.roadIndex = segmentIndex(segs, 0.004);
-    }
-    btn.textContent = 'Snapping…';
-    await new Promise((r) => setTimeout(r, 20));
-    S.snapOn = true;
-    refreshDerivedLayers();
-    if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
-    const st = S.lastSnap || { moved: 0, total: 0 };
-    setStatus(`Snapped ${st.moved} of ${st.total} boundary points onto roads. ` +
-              `The rest follow no road — a shoreline, a railway, a field edge — and were left ` +
-              `alone on purpose. Reset undoes it.`);
-    toast('Boundaries pulled onto the streets.');
-    saveToUrl();
-  } catch (err) {
-    setStatus(`Could not snap to roads — ${err.message}.`, true);
   } finally {
     btn.disabled = false; btn.textContent = original;
   }
@@ -2056,10 +2103,18 @@ function calSpanText() {
 }
 
 function renderCal() {
-  const c = S.cal || defaultCal();
+  const c = normaliseCal(S.cal);
   $('#calScale').value = Math.round((c.mul || 1) * 100);
   $('#calScaleVal').textContent = Math.round((c.mul || 1) * 100) + '%';
   $('#calSpan').textContent = calSpanText();
+  const meta = $('#calTransform');
+  if (meta) {
+    const a = Math.round((c.aspect || 1) * 100);
+    const r = c.rot || 0;
+    meta.textContent = Math.abs(a - 100) < 1 && Math.abs(r) < 0.05
+      ? 'No rotation or aspect correction.'
+      : `Automatic correction: X/Y ratio ${a}%, rotation ${r.toFixed(1)}°.`;
+  }
 }
 
 /* Rebuild anything derived from the transform, then repaint. */
@@ -2089,7 +2144,6 @@ $('#calPin').addEventListener('click', () => {
 });
 
 $('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
-$('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
 
 /* Three districts sit on the crop edge and came through unnamed; any name
    can be corrected here. Names never affect a zone answer. */
@@ -2119,7 +2173,6 @@ function tryRename(ft) {
 
 $('#calReset').addEventListener('click', () => {
   S.cal = defaultCal();
-  S.roadIndex = null; S.snapOn = false;   // also drops any road snapping
   applyCal();
 });
 
@@ -2492,7 +2545,7 @@ function deserialize(data) {
   S.seq = S.constraints.length + 1;
   if (data.units) S.units = data.units;
   if (data.sources) S.sources = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SOURCES)), data.sources);
-  if (data.cal) S.cal = data.cal;
+  if (data.cal) S.cal = normaliseCal(data.cal);
   if (data.renames) S.renames = data.renames;
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
 
@@ -2606,11 +2659,10 @@ window.HS = {
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
   buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
-  defaultCal, anchorPx, applyCal, autoCalibrate, fitCoastline,
-  snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,
-  fitToGeography, boundaryVertices, overpassJson,
-  projectToSegment, overpassRoadQuery,
-  coastVertices, parseOverpassPoints, makeIndex, overpassCoastQuery,
+  defaultCal, normaliseCal, anchorPx, applyCal, autoCalibrate, fitCoastline, fitRoadNetwork,
+  coastVertices, boundarySamples, parseOverpassPoints, parseOverpassOrientedPoints,
+  makeIndex, makeOrientedIndex, overpassCoastQuery, overpassAlignmentQuery,
+  seamlessPartition, fillGeometryHoles,
   __mercY: mercY, __invMercY: invMercY,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
   parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,

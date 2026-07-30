@@ -114,17 +114,14 @@
         <p class="cal-title">Calibrate zones</p>
         <p class="hint">Zones 2 and 3 are traced from your screenshots, which don't record where
           on Earth they sit. Line them up once — it saves into the game link.</p>
-        <button class="solid-btn wide" id="calAuto">Place and scale automatically</button>
-        <p class="hint">Uses the Limfjord shoreline for position and Aalborg's street network for
-          scale — a road like Østre Allé only lines up with the boundary along it at one size.
-          No slider needed. Check the fjord and Østre Allé afterwards.</p>
-        <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or place by hand: tap here, then tap Nytorv</button>
-        <button class="ghost-btn wide" id="calSnap" style="margin-top:8px">Snap boundaries to the roads</button>
-        <p class="hint">Do this after placing. Only stretches that genuinely run along a road move —
-          borders following the shore, the railway or a field edge are left alone.</p>
+        <button class="solid-btn wide" id="calAuto">Fit to roads + coastline automatically</button>
+        <p class="hint">Uses OpenStreetMap's shoreline, main roads, railways and waterways. The fit
+          can correct position, scale, slight rotation and screenshot aspect distortion.</p>
+        <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or: tap here, then tap Nytorv</button>
         <div class="field" style="margin-top:10px">
-          <label for="calScale">Scale, if you want to override it — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
+          <label for="calScale">2 · Manual scale — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
           <input type="range" id="calScale" min="50" max="200" step="1" value="100">
+          <p id="calTransform" class="hint">No rotation or aspect correction.</p>
         </div>
         <div class="inline wrap">
           <button class="ghost-btn" id="calNudge">Fine nudge…</button>

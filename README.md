@@ -86,72 +86,52 @@ Each level is a **toggle** — tap on, tap off, never duplicated.
 |---|---|---|
 | 1 | Byzone **red** vs landzone **green** | Plandata WFS |
 | 2 | Midtbyen, Nørresundby, Vest and Øst Aalborg | traced (`data.js`) |
-| 3 | 29 city districts | traced (`data.js`) |
+| 3 | 30 city districts | traced (`data.js`) |
 | 4 | Land-use areas in the municipality's colours | Plandata WFS |
 
 ### How zones 2 and 3 were made
 
-Traced from your screenshots, not approximated: boundary lines isolated by colour, the regions
-between them followed, each outline turned into a polygon. Zone 2 is 4 regions, zone 3 is 33.
+The outlines are **traced from your screenshots**, not approximated. The images were processed
+directly: boundary lines isolated by colour, the regions between them followed, each outline turned
+into a polygon. Zone 2 came out as exactly 4 regions, zone 3 as 30.
 
-**Why there were gaps, and how they're gone.** The first version traced each region separately and
-simplified each outline separately — so a border shared by two districts got simplified two different
-ways and the polygons drifted apart by up to the simplification tolerance. Now the boundary network
-is split into **arcs**: each stretch of border shared by exactly two districts. Every arc is
-simplified *once* and handed to both neighbours, so they share an edge exactly.
+**Seamless boundaries.** Pixel tracing and vector simplification can leave tiny enclosed slivers
+where independently traced rings almost—but do not quite—meet. When the app builds either level,
+it converts all regions into one partition: overlaps are clipped once, enclosed slivers are filled,
+and each repaired piece is assigned to the nearest original boundary. The four Zone 2 areas and all
+30 Zone 3 districts therefore cover their shared outline without visible cracks or double-owned
+strips. Names and zone IDs are preserved.
 
-Measured on the output: worst overlap between any two districts **0.00 px²**, interior gaps
-**0.00 px²**, for both zone levels. Before the arc rewrite those were 57 px² and 687 px².
+**Names** come from the screenshot's own red labels: each label was located in the image, read, and
+matched to the polygon containing it. 27 of 30 districts are named this way, which is why Skalborg
+is now Skalborg. Three are still generic — those sit on the crop edge (Klarup, Storvorde, Stae and
+Langholt run off the side of the screenshot, so their districts merged into the background). Use
+**Rename a district** in the Layers tab to fix any of them: tap the button, tap the district. Names
+are cosmetic — a zone question always uses the polygon, so a wrong label still answers correctly.
 
-**Names** come from the screenshot's own red labels — each located in the image, read, and matched
-to the polygon containing it. 27 of 33 are named. The rest are either edge slivers or districts that
-run off the side of the screenshot (Klarup, Storvorde, Stae, Langholt). **Rename a district** in the
-Layers tab fixes any of them: tap the button, tap the district. Names are cosmetic — a zone question
-always uses the polygon.
+### Placing the zones — roads and shoreline
 
-### Placing the zones — automatic, no slider
+You were right that the boundaries follow real features. The automatic calibration now uses both
+the **Limfjord shoreline** and OpenStreetMap linework for main roads, railways and waterways.
+Shoreline vertices provide the reliable coarse placement; non-coastal district edges then provide
+a robust refinement against nearby transport and water corridors.
 
-A screenshot records shape but not position, and I couldn't establish that offline. The app can
-reach OpenStreetMap, so it happens there:
+> **Layers → Calibrate zones → Fit to roads + coastline automatically**
 
-> **Layers → Calibrate zones → Place and scale automatically**
+The first pass searches position and uniform scale against the shoreline. The second pass can also
+correct a small X/Y aspect-ratio error and rotation, which a screenshot crop or resize can introduce.
+It deliberately fits only a robust subset of district-edge samples, because not every administrative
+boundary follows a mapped road. The status line reports approximate shoreline and road-boundary
+errors afterwards so you can judge the result.
 
-It uses the **Limfjord shoreline** for position and **Aalborg's street network for scale**. That
-second part is your idea: a long, well-defined road like Østre Allé only lines up with the district
-boundary running along it at one particular size, so the street network pins the scale down and the
-slider becomes unnecessary. The search is symmetric on the coastline term, so it can't cheat by
-shrinking everything onto one beach.
+The transformation is anchored at Midtbyen, and one calibration fixes both zone levels because both
+screenshots share the same pixel coordinate system. It is also stored in the game link. The manual
+Nytorv pin, scale slider and fine-nudge controls remain available when OpenStreetMap coverage is
+incomplete or a local boundary does not follow a mapped feature.
 
-Tested against synthetic placements: it recovers a known scale to **1.240 against a true 1.240**,
-and position to about 30 m. If the road download fails it falls back to the coastline alone, which
-still gets scale to within 4%.
-
-The scale slider, centre pin and nudge arrows are all still there if you want to override it.
-
-### Snapping boundaries to the roads
-
-> **Layers → Calibrate zones → Snap boundaries to the roads**
-
-Most district borders run down the middle of a street, while the traced outlines are pixel-quantised
-and wobble either side of it.
-
-**The first version of this was wrong**, and here is why. It moved every boundary point to its
-nearest road. But plenty of borders follow no road at all — a field edge, the railway, the shore —
-and in a city there is almost always *some* street within range of those. On a test boundary running
-diagonally across a residential grid, it snapped all 40 points and introduced 887 m of spurious
-zigzag.
-
-A point now moves only when its stretch of boundary genuinely follows a road: the road must run in
-the same direction as the boundary (within about 39°), and the *same* OSM way must be the best match
-for at least three consecutive points. On the same two tests: a boundary hugging a main road goes
-from 24 m of wobble to 0.0 m, and the diagonal boundary across the grid is left completely untouched,
-all 40 points.
-
-It doesn't tear the zones apart either, because neighbouring districts share identical arc
-coordinates and snapping is cached per coordinate — after snapping, areas still sum to their union
-to within 0.000%.
-
-**Reset** clears both the placement and the snapping.
+This improves the global alignment; it does not redraw every district edge independently. A boundary
+that was imprecise in the source screenshot, or that follows an unmapped/local feature, may still need
+a later source-data correction.
 
 ### The play area
 
@@ -240,7 +220,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 209 checks — the app, driven headlessly
+node ui.test.mjs         # 194 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
