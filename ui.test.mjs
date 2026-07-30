@@ -611,6 +611,46 @@ check('scale and position are both recovered', window.eval(`(() => {
   return Math.abs(best.mul - truth.mul) < 0.02;
 })()`), 'recovered ' + (window.eval("window.__af && window.__af.mul")||0).toFixed(3) + ' vs 1.220');
 
+
+console.log('\n== boundaries are smooth, not stepped ==');
+const turnStats = (fs) => window.eval(`(() => {
+  const fs = ${fs};
+  const turns = [];
+  for (const f of fs) {
+    const c = f.geometry.coordinates[0];
+    const u = [];
+    for (let i=1;i<c.length;i++) {
+      const dx=(c[i][0]-c[i-1][0])*0.545, dy=c[i][1]-c[i-1][1];
+      const n=Math.hypot(dx,dy); if(n) u.push([dx/n,dy/n]);
+    }
+    for (let i=1;i<u.length;i++) {
+      const d=Math.max(-1,Math.min(1,u[i-1][0]*u[i][0]+u[i-1][1]*u[i][1]));
+      turns.push(Math.acos(d)*180/Math.PI);
+    }
+  }
+  turns.sort((a,b)=>a-b);
+  return { mean: turns.reduce((a,b)=>a+b,0)/turns.length,
+           sharp: turns.filter(t=>t>45).length/turns.length, n: turns.length };
+})()`);
+const t3 = turnStats("HS.buildDistrictZones().features");
+const t2 = turnStats("HS.buildAreaZones().features");
+check('district borders turn gently', t3.mean < 25,
+      `mean turn ${t3.mean.toFixed(1)}\u00b0 over ${t3.n} corners`);
+check('few sharp kinks in the districts', t3.sharp < 0.12,
+      `${(100*t3.sharp).toFixed(1)}% of turns exceed 45\u00b0`);
+check('play-zone borders turn gently', t2.mean < 22, `mean turn ${t2.mean.toFixed(1)}\u00b0`);
+check('smoothing did not cost detail', window.eval(`(() => {
+  const v = HS.buildDistrictZones().features
+    .reduce((a,f)=>a+f.geometry.coordinates[0].length,0);
+  window.__v = v;
+  return v > 1500;
+})()`), window.eval("window.__v") + ' vertices across the districts');
+check('and the zones are still perfectly joined', window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
+})()`));
+
 console.log('\n== placing the zones ==');
 const c0 = window.eval("JSON.stringify(HS.S.cal)");
 check('placement starts from data.js', window.eval(`(() => {

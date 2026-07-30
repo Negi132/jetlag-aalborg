@@ -96,9 +96,19 @@ colour, the regions between them followed, each outline turned into a polygon. T
 the corner is detected and masked out first so it can't leak in. Zone 2 is 4 regions, zone 3 is 34.
 
 The boundary network is split into **arcs** — each stretch of border shared by exactly two districts
-— and every arc is simplified *once*, then given to both neighbours. Measured on the output: the
-districts' areas sum to 263.36 km² against a merged outline of 263.36 km², with **zero overlap and
-zero gaps** on both zone levels.
+— and every arc is **smoothed and simplified once**, then given to both neighbours. That single
+"once" is what keeps the shared edges identical: zero overlap, zero gaps, measured.
+
+**On smoothness.** A traced pixel contour is a staircase, and running Douglas–Peucker over it turns
+that staircase into a zigzag of straight chords — which is why the first version looked angular. Each
+arc now gets a low-pass filter along its length before simplification, with its endpoints pinned so
+arcs still meet exactly at junctions. Measured across the districts: the mean turn between segments
+is **17.1°, down from 41.7°**, and only 4.7% of corners exceed 45°.
+
+It costs nothing in accuracy — in fact it gains some. Because the old setting simplified hard to keep
+the vertex count down, 95% of the smoothed line now sits **closer** to the originally traced pixels
+than the old simplified line did (0.82 px versus 1.02 px). Only genuine sharp corners get rounded, by
+at most about 40 m.
 
 The two screenshots are the same view: aligning the fjord gives a scale of exactly 1.000 with an
 18-pixel offset and 96% overlap, so they share one pixel space and one placement.
@@ -246,7 +256,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 189 checks — the app, driven headlessly
+node ui.test.mjs         # 194 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
