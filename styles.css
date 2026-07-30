@@ -542,3 +542,28 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
 .seg.seg-stack{ flex-direction:column; }
 .seg.seg-stack button{ border-right:0; border-bottom:1px solid var(--line); text-align:left; padding:10px 12px; }
 .seg.seg-stack button:last-child{ border-bottom:0; }
+
+/* ── Calibration box ──────────────────────────────────── */
+.calbox{
+  margin-top:14px; padding:13px;
+  background:var(--surface); border:1px solid var(--amber);
+  border-left-width:3px; border-radius:var(--r-sm);
+}
+.cal-title{
+  margin:0 0 4px;
+  font-family:"Barlow Condensed",sans-serif;
+  font-size:15px; font-weight:600;
+  text-transform:uppercase; letter-spacing:.08em;
+  color:var(--amber);
+}
+.calbox .hint{ margin-bottom:10px; }
+.calbox .ghost-btn.is-picking{ border-color:var(--amber); background:rgba(255,176,32,.12); }
+.cal-nudge{
+  display:grid; grid-template-columns:repeat(6,1fr); gap:5px; margin-top:9px;
+}
+.cal-nudge button{
+  padding:9px 0; font-size:15px;
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:var(--r-sm); color:var(--text); cursor:pointer;
+}
+.cal-nudge button:hover{ border-color:var(--signal-dk); color:var(--signal); }

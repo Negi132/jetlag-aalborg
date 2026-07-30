@@ -110,6 +110,26 @@
       <p class="section-label">Administrative zones</p>
       <div class="stack" id="zoneSources"></div>
 
+      <div id="calBox" class="calbox">
+        <p class="cal-title">Calibrate zones</p>
+        <p class="hint">Zones 2 and 3 are traced from your screenshots, which don't record where
+          on Earth they sit. Line them up once — it saves into the game link.</p>
+        <button class="ghost-btn wide" id="calPin">1 · Tap here, then tap Nytorv on the map</button>
+        <div class="field" style="margin-top:10px">
+          <label for="calScale">2 · Scale — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
+          <input type="range" id="calScale" min="50" max="200" step="1" value="100">
+        </div>
+        <div class="inline wrap">
+          <button class="ghost-btn" id="calNudge">Fine nudge…</button>
+          <button class="ghost-btn" id="calReset">Reset</button>
+        </div>
+        <div id="calNudgeBox" class="cal-nudge" hidden>
+          <button data-nudge="n">↑</button><button data-nudge="s">↓</button>
+          <button data-nudge="w">←</button><button data-nudge="e">→</button>
+          <button data-nudge="-">−</button><button data-nudge="+">+</button>
+        </div>
+      </div>
+
       <p class="section-label">Bus &amp; train routes</p>
       <div class="stack" id="routeSources"></div>
 

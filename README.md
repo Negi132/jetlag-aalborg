@@ -80,34 +80,48 @@ is a ten-second fix on your phone instead of a commit. Your edits travel in the 
 
 ### The four administrative zone levels
 
-Each level is a **toggle**. Tap once to turn it on, tap again to turn it off — nothing ever stacks a
-second copy, and nothing is one-way.
+Each level is a **toggle** — tap on, tap off, never duplicated.
 
 | Level | Shows | Source |
 |---|---|---|
-| 1 | Byzone (**red**) vs landzone (**green**) | Plandata WFS |
-| 2 | Midtbyen, Nørresundby, Vest Aalborg, Øst Aalborg | **built in** (`data.js`) |
-| 3 | Hasseris, Vejgård, Gug, Klarup… 31 districts | **built in** (`data.js`) |
-| 4 | Land-use areas in the municipality's own colours | Plandata WFS |
+| 1 | Byzone **red** vs landzone **green** | Plandata WFS |
+| 2 | Midtbyen, Nørresundby, Vest and Øst Aalborg | traced (`data.js`) |
+| 3 | 29 city districts | traced (`data.js`) |
+| 4 | Land-use areas in the municipality's colours | Plandata WFS |
 
-**Zones 2 and 3 are now built in and need no network at all.** They are approximations of your
-KortInfo layers, and `data.js` explains exactly how they're made:
+### How zones 2 and 3 were made — and the one thing you must do
 
-Rather than hand-trace 31 district outlines from a screenshot — which invents precision that isn't
-there — each district is one **centre point**, and the polygons are generated as nearest-centre
-territories clipped to the play area. That gets the layout right and leaves only the exact borders
-fuzzy, which is the honest version. Zone 2 is the union of those districts by group, so **zones 2 and
-3 can never disagree with each other.**
+The outlines are **traced from your screenshots**, not approximated. The images were processed
+directly: the boundary lines were isolated by colour, the regions between them were followed, and
+each outline was converted to a polygon. Zone 2 came out as exactly 4 regions and zone 3 as 29, with
+857 vertices between them — real shapes with real corners, not abstract cells.
 
-`zones.test.mjs` checks the result against twelve real Aalborg locations — Nytorv, Hasseris Villaby,
-Lindholm station, AAU campus, Klarup, Gistrup and so on all land in the district you'd expect.
+But a screenshot records *shape*, not *position*. Nothing in the image says where on Earth it sits,
+and I could not establish that reliably: fitting against the coastline, against place-name labels,
+and against known district positions all landed about 1 km out — worse than the districts are wide.
 
-**To sharpen it:** nudge a coordinate in `data.js`, or delete a district and draw it by hand in the
-Layers tab. To regroup, change the `area` number (1–4). Run `node zones.test.mjs` afterwards.
+So the geometry ships in the screenshots' own pixel coordinates, and **you place it once**:
 
-If you ever get the official layer — via KortInfo's Linkgenerator, say — tap **⚙** on the level,
-switch the type to WFS, paste the URL and hit **Browse layers on this server**. That reads the
-service's own layer list so you never have to guess a `typeName`.
+> **Layers → Calibrate zones**
+> 1. Tap the button, then tap **Nytorv** on the map.
+> 2. Drag the scale slider until the outlines sit on the streets.
+> 3. Fine nudge if you want. It saves into the game link.
+
+The starting estimate anchors Midtbyen on central Aalborg and assumes the play area is about 25 km
+across, so it should already be close. Two gestures and it's exact — and you know Aalborg far better
+than any automatic fit does.
+
+Both screenshots share one pixel space (the zone-2 image was rescaled by 1.20 to match zone 3,
+verified by aligning the fjord), so **one calibration fixes both levels at once**.
+
+District names come from the nearest entry in `DISTRICT_NAMES` after calibration. They're cosmetic:
+zone questions use the polygon, never the label, so a mislabelled district still answers correctly.
+
+### The play area
+
+The union of the four play zones — their actual outline, concave bays and all, not a convex hull.
+It's one option in the **Game** tab picker (four play zones / circle / Aalborg Kommune), so it's
+always reversible. It re-derives itself whenever you recalibrate.
 
 ### Zone 1: why landzone was invisible
 
@@ -118,12 +132,6 @@ everything else green, which is what you actually wanted to see. The green backd
 underneath so the red city zones stay on top, and landzone is tappable for zone questions.
 
 ### The play area
-
-Defaults to the **convex hull of the four play zones** — no more 6-mile circle. It's a three-way
-picker in the **Game** tab (four play zones / circle / Aalborg Kommune), so every choice is
-reversible. Roughly 310 km², about 20 × 19 km.
-
-Built-in zone layers are clipped to the play area, so they rebuild automatically when you change it.
 
 ### Bus and train routes
 
@@ -196,8 +204,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 168 checks — the app, driven headlessly
-node zones.test.mjs      # the Aalborg zone data vs. real locations
+node ui.test.mjs         # 181 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
@@ -210,7 +217,8 @@ toggling a layer four times doesn't stack four copies, that a dead Overpass mirr
 the backup, that zone 2 tiles exactly the same ground as zone 3, and that UTM32 coordinates land in
 Aalborg rather than the North Sea.
 
-`zones.test.mjs` probes the generated districts with twelve known Aalborg addresses and sanity-checks
-the play-area size.
+The zone tests check the traced outlines structurally: four areas in zone 2 with Midtbyen smallest
+and Nørresundby northernmost, Vest west of Øst, the play area concave rather than a hull, and
+calibration moving and scaling the zones while keeping the centre pin fixed.
 
 Worth running if you change how a question type works. Both caught real bugs while this was built.

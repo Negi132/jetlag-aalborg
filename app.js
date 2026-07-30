@@ -173,6 +173,7 @@ const S = {
   layers: [],            // {id,name,color,kind:'poly'|'line',geojson,layer,visible}
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
+  cal: null,          // pixel-to-map calibration for the traced zones
   me: null,
   baseKey: 'light',
   fogOpacity: 0.62,
@@ -422,9 +423,9 @@ function setCustomPlayArea(feature, name) {
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [30, 30] }); } catch (_) {}
 }
 
-/* The default: convex hull of the four play zones. */
+/* The default: the outline of the four play zones. */
 function setZonesPlayArea(fit) {
-  const hull = districtHull();
+  const hull = zonesPlayArea();
   if (!hull) return false;
   S.playArea = turf.feature(hull.geometry);
   S.playAreaMeta = { type: 'zones' };
@@ -1126,63 +1127,93 @@ function featureName(ft, layer) {
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
 
-/* ---------- built-in Aalborg zones ----------------------------------
-   Districts are stored as centre points (see data.js); the polygons are
-   built here as nearest-centre territories clipped to the play area, so
-   zone 2 and zone 3 are guaranteed to agree with each other.          */
+/* ---------- traced Aalborg zones -------------------------------------
+   The outlines in data.js are real boundaries traced from the KortInfo
+   screenshots, stored in the screenshots' pixel space. A screenshot can
+   tell you the shape of a boundary but not where on Earth it sits, so
+   the pixel-to-degree transform starts as an estimate and is corrected
+   once, by hand, in the Calibrate control.                            */
 
-function districtPoints() {
-  return (window.AALBORG_DISTRICTS || []).map(([name, lat, lng, area]) =>
-    turf.point([lng, lat], { navn: name, area, omraade: (window.AALBORG_AREAS[area] || {}).name }));
+const mercY = (lat) => (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+const invMercY = (my) => (180 / Math.PI) * (2 * Math.atan(Math.exp(my * Math.PI / 180)) - Math.PI / 2);
+
+/* Anchor pixel = centroid of the Midtbyen ring, so the centre pin and the
+   scale slider act independently of each other. */
+function anchorPx() {
+  const z = (window.ZONE2_PX || []).find((r) => r.n === 1) || (window.ZONE2_PX || [])[0];
+  if (!z) return [446, 401];
+  let sx = 0, sy = 0;
+  for (const [x, y] of z.ring) { sx += x; sy += y; }
+  return [sx / z.ring.length, sy / z.ring.length];
 }
 
-/* Convex hull of every district centre, padded so edge districts are not
-   sliced through the middle. This is the default play area. */
-function districtHull() {
-  const pts = districtPoints();
-  if (pts.length < 3) return null;
-  const hull = turf.convex(turf.featureCollection(pts));
-  if (!hull) return null;
-  const pad = window.AALBORG_HULL_PAD_KM ?? 2;
-  return turf.buffer(hull, pad, { units: 'kilometers', steps: 12 }) || hull;
+function defaultCal() {
+  const g = window.GEOREF || { s: 0.00035, lng0: 9.85, my0: 69.94 };
+  const [ax, ay] = anchorPx();
+  return { lat: invMercY(g.my0 - g.s * ay), lng: g.lng0 + g.s * ax, mul: 1 };
 }
 
-function buildDistrictZones(boundary) {
-  const bound = boundary || S.playArea || districtHull();
-  if (!bound) return null;
-  const pts = districtPoints();
-  if (!pts.length) return null;
+/* The live transform, rebuilt from the calibration. */
+function georef() {
+  const g = window.GEOREF || { s: 0.00035 };
+  const c = S.cal || defaultCal();
+  const [ax, ay] = anchorPx();
+  const s = g.s * (c.mul || 1);
+  return { s, lng0: c.lng - s * ax, my0: mercY(c.lat) + s * ay };
+}
 
-  const pad = turf.buffer(bound, 12, { units: 'kilometers' }) || bound;
-  let cells;
-  try { cells = turf.voronoi(turf.featureCollection(pts), { bbox: turf.bbox(pad) }); }
-  catch (_) { return null; }
-  if (!cells) return null;
+const pxToLngLat = (x, y, gr) => [gr.lng0 + gr.s * x, invMercY(gr.my0 - gr.s * y)];
 
+function ringToPolygon(ring, props, gr) {
+  const coords = ring.map(([x, y]) => pxToLngLat(x, y, gr));
+  if (coords.length < 4) return null;
+  const first = coords[0], last = coords[coords.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first.slice());
+  try { return turf.polygon([coords], props); } catch (_) { return null; }
+}
+
+/* Zone 2: the four play zones, straight from the traced outlines. */
+function buildAreaZones() {
+  const gr = georef();
   const out = [];
-  cells.features.forEach((cell, i) => {
-    if (!cell || !cell.geometry) return;
-    const clipped = gIntersect(cell, bound);
-    if (!clipped) return;
-    clipped.properties = Object.assign({}, pts[i].properties);
-    out.push(clipped);
-  });
+  for (const z of window.ZONE2_PX || []) {
+    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr);
+    if (f) out.push(f);
+  }
   return out.length ? { type: 'FeatureCollection', features: out } : null;
 }
 
-function buildAreaZones(boundary) {
-  const districts = buildDistrictZones(boundary);
-  if (!districts) return null;
+/* Zone 3: the city districts. Names come from the nearest entry in
+   DISTRICT_NAMES — cosmetic only; zone questions use the polygon. */
+function buildDistrictZones() {
+  const gr = georef();
+  const names = window.DISTRICT_NAMES || [];
   const out = [];
-  Object.keys(window.AALBORG_AREAS || {}).forEach((k) => {
-    const mine = districts.features.filter((f) => String(f.properties.area) === String(k));
-    if (!mine.length) return;
-    const merged = unionAll(mine);
-    if (!merged) return;
-    merged.properties = { navn: `${k}. ${window.AALBORG_AREAS[k].name}`, area: Number(k) };
-    out.push(merged);
-  });
+  for (const z of window.ZONE3_PX || []) {
+    const f = ringToPolygon(z.ring, {}, gr);
+    if (!f) continue;
+    let navn = 'District';
+    if (names.length) {
+      let c;
+      try { c = turf.centroid(f).geometry.coordinates; } catch (_) { c = null; }
+      if (c) {
+        let bestD = Infinity;
+        for (const [nm, la, ln] of names) {
+          const d = (ln - c[0]) * (ln - c[0]) * 0.3 + (la - c[1]) * (la - c[1]);
+          if (d < bestD) { bestD = d; navn = nm; }
+        }
+      }
+    }
+    f.properties = { navn };
+    out.push(f);
+  }
   return out.length ? { type: 'FeatureCollection', features: out } : null;
+}
+
+/* The play area is the union of the four play zones. */
+function zonesPlayArea() {
+  const z = buildAreaZones();
+  return z ? unionAll(z.features) : null;
 }
 
 const AREA_STYLE = () => Object.entries(window.AALBORG_AREAS || {})
@@ -1255,7 +1286,14 @@ function addLayer(name, geojson, opts = {}) {
     pane: 'zonePane',
     style: styleOf,
     onEachFeature: (ft, lyr) => {
-      lyr.bindTooltip(featureName(ft, rec), { className: 'zone-tip', sticky: true });
+      // Zone 4's colours are hard to tell apart, so tapping an area names the
+      // land-use letter rather than the plan number.
+      let tip = featureName(ft, rec);
+      if (rec.style === 'rammer') {
+        const cat = rammeCategory(ft.properties);
+        tip = cat ? cat.key : '?';
+      }
+      lyr.bindTooltip(tip, { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
         if (kind === 'poly' && activeTool === 'zone') {
           L.DomEvent.stopPropagation(e);
@@ -1336,7 +1374,9 @@ function renderLegend() {
 
   box.hidden = false;
   box.innerHTML = active.map((l) => {
-    const cats = l.style === 'rammer' ? RAMME_STYLE
+    // RAMME_STYLE is ordered for matching (D before B and so on); show it
+    // alphabetically instead.
+    const cats = l.style === 'rammer' ? RAMME_STYLE.slice().sort((a, b) => a.key.localeCompare(b.key))
               : l.style === 'areas' ? AREA_STYLE()
               : ZONEKORT_STYLE;
     const used = cats.filter((c) =>
@@ -1576,6 +1616,76 @@ async function toggleRoute(key, btn) {
     if (btn) btn.classList.remove('is-busy');
   }
 }
+
+/* ---------- calibration ------------------------------------------------ */
+
+function calSpanText() {
+  const z = buildAreaZones();
+  if (!z) return '—';
+  const bb = turf.bbox(z);
+  const km = turf.distance(turf.point([bb[0], bb[1]]), turf.point([bb[2], bb[1]]),
+                           { units: 'kilometers' });
+  return fmtDist(km * 1000) + ' across';
+}
+
+function renderCal() {
+  const c = S.cal || defaultCal();
+  $('#calScale').value = Math.round((c.mul || 1) * 100);
+  $('#calScaleVal').textContent = Math.round((c.mul || 1) * 100) + '%';
+  $('#calSpan').textContent = calSpanText();
+}
+
+/* Rebuild anything derived from the transform, then repaint. */
+function applyCal(silent) {
+  refreshDerivedLayers();
+  if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
+  else recompute();
+  renderCal();
+  saveToUrl();
+  if (!silent) setStatus(`Zones now ${calSpanText()}.`);
+}
+
+$('#calScale').addEventListener('input', (e) => {
+  S.cal = Object.assign({}, S.cal || defaultCal(), { mul: Number(e.target.value) / 100 });
+  applyCal(true);
+});
+
+$('#calPin').addEventListener('click', () => {
+  const btn = $('#calPin');
+  beginPick(btn, (coord) => {
+    S.cal = Object.assign({}, S.cal || defaultCal(), { lng: coord[0], lat: coord[1] });
+    applyCal();
+    toast('Centre pinned. Now slide the scale until the outlines sit on the streets.');
+  });
+  btn.classList.add('is-picking');
+  toast('Now tap the map where central Aalborg is.');
+});
+
+$('#calReset').addEventListener('click', () => {
+  S.cal = defaultCal();
+  applyCal();
+});
+
+$('#calNudge').addEventListener('click', () => {
+  const box = $('#calNudgeBox');
+  box.hidden = !box.hidden;
+});
+
+$('#calNudgeBox').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const c = Object.assign({}, S.cal || defaultCal());
+  const step = 0.004;                      // ~250 m at this latitude
+  const k = b.dataset.nudge;
+  if (k === 'n') c.lat += step / 2;
+  if (k === 's') c.lat -= step / 2;
+  if (k === 'e') c.lng += step;
+  if (k === 'w') c.lng -= step;
+  if (k === '+') c.mul = (c.mul || 1) * 1.01;
+  if (k === '-') c.mul = (c.mul || 1) / 1.01;
+  S.cal = c;
+  applyCal(true);
+});
 
 /* ---------- layers tab UI --------------------------------------------- */
 
@@ -1902,6 +2012,7 @@ function serialize() {
     base: S.baseKey,
     fog: S.fogOpacity,
     sources: S.sources,
+    cal: S.cal,
     wms: S.wms.map((w) => ({ name: w.name, url: w.url, layers: w.layers, visible: w.visible })),
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
@@ -1923,6 +2034,7 @@ function deserialize(data) {
   S.seq = S.constraints.length + 1;
   if (data.units) S.units = data.units;
   if (data.sources) S.sources = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SOURCES)), data.sources);
+  if (data.cal) S.cal = data.cal;
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
 
   const m = data.playAreaMeta;
@@ -1942,6 +2054,7 @@ function deserialize(data) {
   renderWmsList();
 
   renderSourceRows();
+  renderCal();
   applyUnits();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
   return true;
@@ -2012,6 +2125,7 @@ document.addEventListener('keydown', (e) => {
   if (activeTool) selectTool(activeTool);
 });
 
+S.cal = defaultCal();
 if (!setZonesPlayArea(false)) {
   setCircularPlayArea(L.latLng(CONFIG.center[0], CONFIG.center[1]), CONFIG.playRadiusMi * MI / 1000);
   markPlayMode('circle');
@@ -2022,6 +2136,7 @@ if (!setZonesPlayArea(false)) {
 renderSourceRows();
 renderWmsList();
 renderLayerList();
+renderCal();
 if (!loadFromUrl()) applyUnits();
 renderToolForm();
 
@@ -2031,7 +2146,8 @@ window.HS = {
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
-  districtHull, districtPoints, buildDistrictZones, buildAreaZones,
+  buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
+  defaultCal, anchorPx, applyCal,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
   parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, ZONEKORT_STYLE,

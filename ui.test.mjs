@@ -63,7 +63,7 @@ check('map container got a Leaflet class', /leaflet-container/.test($('#map').cl
 const HULL = parseFloat($('#hudArea').textContent);
 check('play area defaults to the zone hull, not a circle', window.eval("HS.S.playAreaMeta.type") === 'zones',
       window.eval("HS.S.playAreaMeta.type"));
-check('hull covers a plausible Aalborg area', HULL > 80 && HULL < 400, `${HULL} mi²`);
+check('play area is the four zones and non-trivial', HULL > 20 && HULL < 400, `${HULL} mi²`);
 check('HUD unit is mi²', $('#hudUnit').textContent === 'mi²');
 check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSeg [data-area="zones"]').className));
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
@@ -96,8 +96,10 @@ click(doc.querySelector('#toolForm .solid-btn'));
 check('constraint stored', window.eval('HS.S.constraints.length') === 1);
 check('log entry rendered', doc.querySelectorAll('.log-item').length === 1);
 check('log shows the imperial label', /Within \u00bd mi/.test($('#logList').textContent), `"${$('#logList').textContent.trim().replace(/\s+/g,' ').slice(0,60)}"`);
-check('HUD area fell to \u03c0/4 mi\u00b2', Math.abs(parseFloat($('#hudArea').textContent) - Math.PI*0.25) < 0.02, `got "${$('#hudArea').textContent}"`);
-check('HUD percentage gains precision when tiny', /^0\.\d+%$/.test($('#hudPct').textContent), `got "${$('#hudPct').textContent}"`);
+// the \u00bd-mile circle gets clipped by the play-area edge, so \u2264 \u03c0r\u00b2
+check('radar circle clipped to the play area', (() => { const v = parseFloat($('#hudArea').textContent);
+      return v > 0.3 && v <= Math.PI*0.25 + 0.01; })(), `got "${$('#hudArea').textContent}" vs \u03c0r\u00b2=${(Math.PI*0.25).toFixed(3)}`);
+check('HUD percentage shrank to a sliver', /^(0\.\d+|[0-3])%$/.test($('#hudPct').textContent), `got "${$('#hudPct').textContent}"`);
 check('view switched to the Log tab', doc.querySelector('[data-pane="log"]').classList.contains('is-active'));
 
 console.log('\n== url state round-trip ==');
@@ -113,7 +115,7 @@ click(doc.querySelector('.log-item [data-act="toggle"]'));
 check('muting restores the full area', Math.abs(parseFloat($('#hudArea').textContent) - HULL) < 0.5);
 check('muted row is dimmed', doc.querySelector('.log-item').classList.contains('is-off'));
 click(doc.querySelector('.log-item [data-act="toggle"]'));
-check('unmuting re-applies it', Math.abs(parseFloat($('#hudArea').textContent) - Math.PI*0.25) < 0.02);
+check('unmuting re-applies it', parseFloat($('#hudArea').textContent) < HULL*0.2);
 click(doc.querySelector('.log-item [data-act="del"]'));
 check('delete removes the entry', doc.querySelectorAll('.log-item').length === 0);
 check('empty-state message returns', !$('#logEmpty').hidden);
@@ -433,68 +435,98 @@ click(doc.querySelectorAll('#routeSources .src-main')[0]);
 await new Promise(r => setTimeout(r, 30));
 check('third tap shows it again', window.eval("HS.layerByKey('route:bus').visible") === true);
 
-console.log('\n== built-in zone 2 and zone 3 ==');
+console.log('\n== traced zone 2 and zone 3 ==');
 click(doc.querySelector('[data-tab="layers"]'));
 const zoneRows = () => doc.querySelectorAll('#zoneSources .src-main');
-// zone 3: districts
-click(zoneRows()[2]);
+click(zoneRows()[2]);                        // zone 3
 await new Promise(r => setTimeout(r, 40));
-const z3 = window.eval("HS.layerByKey('src:zone3')");
-check('zone 3 builds without any network', !!z3);
-check('one polygon per district', window.eval("HS.layerByKey('src:zone3').geojson.features.length")
-      === window.eval("window.AALBORG_DISTRICTS.length"),
-      `${window.eval("HS.layerByKey('src:zone3').geojson.features.length")} of ${window.eval("window.AALBORG_DISTRICTS.length")}`);
-check('districts are named', /Hasseris/.test($('#zoneLayers').textContent + window.eval(
-      "HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn).join(',')")));
-check('status says it is approximate', /approximate/.test($('#zoneStatus').textContent),
-      $('#zoneStatus').textContent.slice(0,60));
-
-// every district centre must fall inside its own polygon
-check('each centre sits in its own district', window.eval(`(() => {
-  const rec = HS.layerByKey('src:zone3');
-  return HS.districtPoints().every(pt => {
-    const f = rec.geojson.features.find(x => x.properties.navn === pt.properties.navn);
-    return f && turf.booleanPointInPolygon(pt, f);
-  });
-})()`));
-// and districts must not overlap each other
-check('districts do not overlap', window.eval(`(() => {
+check('zone 3 builds with no network', window.eval("!!HS.layerByKey('src:zone3')"));
+check('one polygon per traced district',
+      window.eval("HS.layerByKey('src:zone3').geojson.features.length") === window.eval("window.ZONE3_PX.length"),
+      `${window.eval("HS.layerByKey('src:zone3').geojson.features.length")} of ${window.eval("window.ZONE3_PX.length")}`);
+check('districts are real outlines, not boxes', window.eval(`(() => {
   const fs = HS.layerByKey('src:zone3').geojson.features;
-  for (let i = 0; i < fs.length; i++) for (let j = i+1; j < fs.length; j++) {
-    const o = HS.unionAll ? null : null;
-    let inter = null;
-    try { inter = turf.intersect(turf.featureCollection([fs[i], fs[j]])); } catch(e) {}
-    if (inter && turf.area(inter) > 5000) return false;   // >0.005 km2 is real overlap
-  }
-  return true;
-})()`));
+  const v = fs.map(f => f.geometry.coordinates[0].length);
+  return Math.min(...v) > 8 && v.reduce((a,b)=>a+b,0) > 600;
+})()`), `${window.eval("HS.layerByKey('src:zone3').geojson.features.reduce((a,f)=>a+f.geometry.coordinates[0].length,0)")} vertices total`);
+check('districts carry names', /[A-Za-zÆØÅæøå]/.test(window.eval(
+      "HS.layerByKey('src:zone3').geojson.features[0].properties.navn")));
 
-// zone 2: the four areas
-click(zoneRows()[1]);
+click(zoneRows()[1]);                        // zone 2
 await new Promise(r => setTimeout(r, 40));
-const z2n = window.eval("(HS.layerByKey('src:zone2')||{geojson:{features:[]}}).geojson.features.length");
-check('zone 2 has exactly four areas', z2n === 4, `got ${z2n}`);
-check('areas are the named four', window.eval(
-      "HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).join(' | ')")
-      === '1. Midtbyen | 2. Nørresundby | 3. Vest Aalborg | 4. Øst Aalborg',
-      window.eval("HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).join(' | ')"));
-check('each area gets its own colour', window.eval(
-      "new Set(HS.AREA_STYLE().map(c=>c.color)).size") === 4);
-check('area legend shows all four', /Nørresundby/.test($('#legend').textContent) &&
+check('zone 2 has exactly four areas',
+      window.eval("HS.layerByKey('src:zone2').geojson.features.length") === 4);
+check('the four are named and numbered', window.eval(
+      "HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).sort().join('|')")
+      === '1. Midtbyen|2. Nørresundby|3. Vest Aalborg|4. Øst Aalborg',
+      window.eval("HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).sort().join('|')"));
+check('Midtbyen is the smallest zone', window.eval(`(() => {
+  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const byArea = fs.slice().sort((a,b)=>turf.area(a)-turf.area(b));
+  return byArea[0].properties.navn === '1. Midtbyen';
+})()`));
+check('Nørresundby is the northernmost', window.eval(`(() => {
+  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const north = fs.slice().sort((a,b)=>turf.centroid(b).geometry.coordinates[1]-turf.centroid(a).geometry.coordinates[1]);
+  return north[0].properties.navn === '2. Nørresundby';
+})()`));
+check('Vest Aalborg is west of Øst Aalborg', window.eval(`(() => {
+  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const g = n => turf.centroid(fs.find(f=>f.properties.navn.includes(n))).geometry.coordinates[0];
+  return g('Vest') < g('Øst');
+})()`));
+check('each area gets its own colour', window.eval("new Set(HS.AREA_STYLE().map(c=>c.color)).size") === 4);
+check('area legend lists all four', /Nørresundby/.test($('#legend').textContent) &&
       /Vest Aalborg/.test($('#legend').textContent));
 
-// zone 2 must be exactly the union of zone 3 — they can never disagree
-check('zone 2 tiles the same space as zone 3', window.eval(`(() => {
-  const a = turf.area(HS.unionAll(HS.layerByKey('src:zone2').geojson.features));
-  const b = turf.area(HS.unionAll(HS.layerByKey('src:zone3').geojson.features));
-  return Math.abs(a - b) / b < 0.01;
+console.log('\n== play area follows the four zones ==');
+window.eval("HS.setPlayMode('zones')");
+check('play area is the union of zone 2, not a hull', window.eval(`(() => {
+  const u = turf.area(HS.unionAll(HS.layerByKey('src:zone2').geojson.features));
+  return Math.abs(turf.area(HS.S.playArea) - u) / u < 0.01;
 })()`));
-// and the play area is the hull of it all
-check('play area matches the zone extent', window.eval(`(() => {
-  HS.setPlayMode('zones');
-  const hull = turf.area(HS.S.playArea);
-  const zones = turf.area(HS.unionAll(HS.layerByKey('src:zone2').geojson.features));
-  return Math.abs(hull - zones) / hull < 0.02;
+check('and it is genuinely concave, unlike a hull', window.eval(`(() => {
+  const pa = HS.S.playArea;
+  const hull = turf.convex(turf.explode(pa));
+  return turf.area(hull) > turf.area(pa) * 1.12;   // hull noticeably bigger
+})()`), `play ${(window.eval("turf.area(HS.S.playArea)")/1e6).toFixed(0)} km2`);
+
+console.log('\n== calibration ==');
+const before = window.eval("JSON.stringify(turf.centroid(HS.layerByKey('src:zone2').geojson.features[0]).geometry.coordinates)");
+window.eval("HS.S.cal = Object.assign({}, HS.S.cal, {lat: 57.0480, lng: 9.9187}); HS.applyCal(true)");
+const after = window.eval("JSON.stringify(turf.centroid(HS.layerByKey('src:zone2').geojson.features[0]).geometry.coordinates)");
+check('pinning the centre moves the zones', before !== after);
+check('the pin lands where asked', window.eval(`(() => {
+  const a = HS.anchorPx(), gr = HS.georef();
+  const [lng, lat] = HS.pxToLngLat(a[0], a[1], gr);
+  return Math.abs(lng - 9.9187) < 1e-6 && Math.abs(lat - 57.0480) < 1e-6;
+})()`));
+const span1 = window.eval(`(() => { const b = turf.bbox(HS.buildAreaZones());
+  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`);
+window.eval("HS.S.cal = Object.assign({}, HS.S.cal, {mul: 1.5}); HS.applyCal(true)");
+const span2 = window.eval(`(() => { const b = turf.bbox(HS.buildAreaZones());
+  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`);
+check('scaling widens the zones proportionally', Math.abs(span2 / span1 - 1.5) < 0.02,
+      `${span1.toFixed(1)} km -> ${span2.toFixed(1)} km`);
+check('scaling keeps the centre pin fixed', window.eval(`(() => {
+  const a = HS.anchorPx(), gr = HS.georef();
+  const [lng, lat] = HS.pxToLngLat(a[0], a[1], gr);
+  return Math.abs(lng - 9.9187) < 1e-6 && Math.abs(lat - 57.0480) < 1e-6;
+})()`));
+check('play area followed the calibration', window.eval(`(() => {
+  const u = turf.area(HS.unionAll(HS.buildAreaZones().features));
+  return Math.abs(turf.area(HS.S.playArea) - u) / u < 0.01;
+})()`));
+window.eval("HS.S.cal = HS.defaultCal(); HS.applyCal(true)");
+check('reset returns to the shipped estimate', Math.abs(window.eval(`(() => {
+  const b = turf.bbox(HS.buildAreaZones());
+  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`) - span1) < 0.01);
+check('calibration survives a save/load round trip', window.eval(`(() => {
+  HS.S.cal = {lat: 57.05, lng: 9.93, mul: 1.2};
+  const blob = JSON.parse(JSON.stringify(HS.serialize()));
+  HS.S.cal = HS.defaultCal();
+  HS.deserialize(blob);
+  return Math.abs(HS.S.cal.mul - 1.2) < 1e-9 && Math.abs(HS.S.cal.lng - 9.93) < 1e-9;
 })()`));
 
 console.log('\n== zone toggles stay reversible ==');
@@ -529,6 +561,37 @@ check('overlay turned on', window.eval("HS.S.wms.length") === 1 && window.eval("
 click(doc.querySelector('#wmsList .src-main'));
 check('overlay turned off, not duplicated',
       window.eval("HS.S.wms.length") === 1 && window.eval("HS.S.wms[0].visible") === false);
+
+
+console.log('\n== zone 4 tooltip and legend order ==');
+check('legend is alphabetical by letter', window.eval(`(() => {
+  const ks = HS.RAMME_STYLE.slice().sort((a,b)=>a.key.localeCompare(b.key)).map(c=>c.key);
+  return ks.join('') === 'BCDGHILMORST';
+})()`), window.eval("HS.RAMME_STYLE.slice().sort((a,b)=>a.key.localeCompare(b.key)).map(c=>c.key).join('')"));
+check('matching order still puts D before B', window.eval(
+      "HS.RAMME_STYLE.findIndex(c=>c.key==='D') < HS.RAMME_STYLE.findIndex(c=>c.key==='B')"));
+window.eval(`HS.addLayer('Rammer test', {type:'FeatureCollection',features:[
+  {type:'Feature',properties:{plannr:'1.1.C2', anvendelsesnavn:'Centerområde'},
+   geometry:{type:'Polygon',coordinates:[[[9.91,57.04],[9.93,57.04],[9.93,57.05],[9.91,57.05],[9.91,57.04]]]}},
+  {type:'Feature',properties:{plannr:'2.2.S1', anvendelsesnavn:'Sommerhusområde'},
+   geometry:{type:'Polygon',coordinates:[[[9.94,57.04],[9.95,57.04],[9.95,57.05],[9.94,57.05],[9.94,57.04]]]}},
+  {type:'Feature',properties:{plannr:'3.3.B4', anvendelsesnavn:'Boligområde'},
+   geometry:{type:'Polygon',coordinates:[[[9.96,57.04],[9.97,57.04],[9.97,57.05],[9.96,57.05],[9.96,57.04]]]}},
+  {type:'Feature',properties:{plannr:'4.4.R1', anvendelsesnavn:'Rekreativt område'},
+   geometry:{type:'Polygon',coordinates:[[[9.98,57.04],[9.99,57.04],[9.99,57.05],[9.98,57.05],[9.98,57.04]]]}}]},
+  {key:'src:zone4t', style:'rammer', nameField:'plannr'})`);
+const tips = window.eval(`(() => {
+  const out = [];
+  HS.layerByKey('src:zone4t').layer.eachLayer(l => out.push(l.getTooltip().getContent()));
+  return out;
+})()`);
+check('tapping an area shows only the letter', tips.join(',') === 'C,S,B,R', JSON.stringify(tips));
+check('no plan number in any tooltip', tips.every(t => !/\d/.test(t)));
+const legTxt = $('#legend').textContent.slice($('#legend').textContent.indexOf('Rammer test'));
+const shown = (legTxt.match(/([A-Z]) ·/g) || []).map(t => t[0]);
+check('legend lists the letters alphabetically',
+      shown.length >= 3 && shown.join('') === shown.slice().sort().join(''),
+      shown.join(''));
 
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
