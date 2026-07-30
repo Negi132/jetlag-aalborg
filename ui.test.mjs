@@ -702,61 +702,136 @@ window.eval("HS.S.renames = {}");
 console.log('\n== boundaries snapped to roads ==');
 check('road query asks for the street network', window.eval(`(() => {
   const q = HS.overpassRoadQuery();
-  return q.includes('highway') && q.includes('out geom;') && q.includes('residential');
+  return q.includes('highway') && q.includes('out geom;') && q.includes('secondary');
 })()`));
-check('road geometry becomes segments', window.eval(`(() => {
-  const segs = HS.roadSegments({elements:[{type:'way',geometry:[
+check('road geometry becomes segments carrying their way id', window.eval(`(() => {
+  const segs = HS.roadSegments({elements:[{type:'way',id:77,geometry:[
     {lat:57.05,lon:9.90},{lat:57.05,lon:9.92},{lat:57.06,lon:9.92}]}]});
-  return segs.length === 2 && segs[0][0] === 9.90;
+  return segs.length === 2 && segs[0][0] === 9.90 && segs[0][4] === 77;
 })()`));
 check('a point projects onto the nearest place on a segment', window.eval(`(() => {
-  const p = HS.projectToSegment(9.91, 57.06, [9.90,57.05,9.92,57.05]);
+  const p = HS.projectToSegment(9.91, 57.06, [9.90,57.05,9.92,57.05,1]);
   return Math.abs(p.x - 9.91) < 1e-6 && Math.abs(p.y - 57.05) < 1e-6;
 })()`));
 check('projection clamps to the segment ends', window.eval(`(() => {
-  const p = HS.projectToSegment(9.80, 57.05, [9.90,57.05,9.92,57.05]);
+  const p = HS.projectToSegment(9.80, 57.05, [9.90,57.05,9.92,57.05,1]);
   return Math.abs(p.x - 9.90) < 1e-6;
 })()`));
 
-// Synthetic road network laid exactly on the current boundaries: snapping
-// should then move points onto it without tearing the zones apart.
+// A boundary that follows a main road, crossed by side streets, over a
+// residential grid. Only the main road should attract it.
+check('a boundary along a road is straightened onto it', window.eval(`(() => {
+  const segs = [];
+  for (let i=0;i<40;i++) segs.push([9.90+i*0.002,57.05,9.90+(i+1)*0.002,57.05,1]);
+  for (let i=0;i<40;i+=3){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,2+i]); }
+  const idx = HS.segmentIndex(segs, 0.004);
+  const sn = HS.snapRingsToRoads(idx, 70);
+  // a ring hugging the main road, wobbling about +/- 24 m either side
+  const ring = [];
+  for (let i=0;i<40;i++) ring.push([i, (i%2?0.1:-0.1)]);
+  const gr = { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.05) };
+  const before = ring.map(([x,y]) => HS.pxToLngLat(x,y,gr)[1]);
+  window.__before = (Math.max(...before)-Math.min(...before))*111200;
+  const out = sn.mapRing(ring.concat([ring[0]]), gr);
+  const lats = out.map(p => p[1]);
+  const spread = Math.max(...lats) - Math.min(...lats);
+  window.__spread = spread * 111200;
+  return spread * 111200 < 5;       // pulled onto one line
+})()`), 'wobble ' + (window.eval("window.__before")||0).toFixed(0) + ' m before, ' +
+        (window.eval("window.__spread")||0).toFixed(1) + ' m after');
+
+check('a boundary that follows no road is left alone', window.eval(`(() => {
+  // dense grid, none of it parallel to a diagonal boundary
+  const segs = [];
+  for (let j=0;j<12;j++){ const y=57.045+j*0.0009;
+    for (let i=0;i<40;i++) segs.push([9.90+i*0.002,y,9.90+(i+1)*0.002,y,100+j]); }
+  for (let i=0;i<40;i+=2){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,200+i]); }
+  const idx = HS.segmentIndex(segs, 0.004);
+  const sn = HS.snapRingsToRoads(idx, 70);
+  const ring = []; for (let i=0;i<40;i++) ring.push([i, i]);
+  const out = sn.mapRing(ring.concat([ring[0]]), { s: 0.002, lng0: 9.901,
+              my0: HS.__mercY(57.0455) });
+  const st = sn.stats();
+  window.__left = st.total - st.moved; window.__tot = st.total;
+  return st.moved < st.total * 0.25;
+})()`), window.eval("window.__left") + ' of ' + window.eval("window.__tot") + ' points left untouched');
+
+check('a run shorter than the threshold is ignored', window.eval("HS.SNAP_MIN_RUN") >= 3);
+
+// Snapping must not tear the zones apart
 check('snapping preserves shared edges', window.eval(`(() => {
   const before = HS.buildDistrictZones().features;
-  // build "roads" from a slightly offset copy of the real boundaries
   const segs = [];
   for (const f of before) {
     const c = f.geometry.coordinates[0];
-    for (let i = 1; i < c.length; i++) {
-      segs.push([c[i-1][0]+0.0002, c[i-1][1]+0.0001, c[i][0]+0.0002, c[i][1]+0.0001]);
-    }
+    for (let i = 1; i < c.length; i++)
+      segs.push([c[i-1][0]+0.0002, c[i-1][1]+0.0001, c[i][0]+0.0002, c[i][1]+0.0001, 1]);
   }
   HS.S.roadIndex = HS.segmentIndex(segs, 0.004);
-  HS.S.snapM = 120;
+  HS.S.snapOn = true; HS.S.snapM = 120;
   const after = HS.buildDistrictZones().features;
   const sum = after.reduce((a,f)=>a+turf.area(f),0);
   const union = turf.area(HS.unionAll(after));
   window.__snapDelta = Math.abs(sum-union)/union;
   return window.__snapDelta < 0.005;
 })()`), 'sum vs union differ by ' + (100*(window.eval("window.__snapDelta")||0)).toFixed(3) + '%');
-check('snapping actually moved the boundaries', window.eval(`(() => {
-  const st = HS.S.lastSnap || {moved:0,total:1};
-  window.__st = st;
-  return st.moved > st.total * 0.5;
-})()`), window.eval("window.__st.moved") + ' of ' + window.eval("window.__st.total") + ' points moved');
-check('the same pixel always snaps to the same place', window.eval(`(() => {
-  const sn = HS.snapRingsToRoads(HS.S.roadIndex, 120);
-  const a = sn.snapPx(300.0, 400.0), b = sn.snapPx(300.0, 400.0);
-  return a[0] === b[0] && a[1] === b[1];
-})()`));
-check('zone 2 and zone 3 snap consistently', window.eval(`(() => {
+check('snapping did move the boundaries', window.eval(`(() => {
+  const st = HS.S.lastSnap || {moved:0,total:1}; window.__st = st;
+  return st.moved > st.total * 0.4;
+})()`), window.eval("window.__st.moved") + ' of ' + window.eval("window.__st.total") + ' moved');
+check('zone 2 snaps consistently too', window.eval(`(() => {
   const z2 = HS.buildAreaZones().features;
   const sum = z2.reduce((a,f)=>a+turf.area(f),0);
   return Math.abs(sum - turf.area(HS.unionAll(z2)))/sum < 0.005;
 })()`));
-window.eval("HS.S.roadIndex = null");
-check('clearing the road index restores the plain outlines', window.eval(`(() => {
+window.eval("HS.S.roadIndex = null; HS.S.snapOn = false;");
+check('snapping is opt-in, not automatic', window.eval(`(() => {
+  HS.S.roadIndex = HS.segmentIndex([[9.9,57.0,9.91,57.0,1]], 0.004);
+  HS.S.snapOn = false;
   const fs = HS.buildDistrictZones().features;
+  HS.S.roadIndex = null;
   return fs.length === window.ZONE3_PX.length;
+})()`));
+
+console.log('\n== automatic scaling from the road network ==');
+check('boundary vertices are sampled for the fit', window.eval("HS.boundaryVertices(2).length") > 200,
+      window.eval("HS.boundaryVertices(2).length") + ' points');
+// synthetic: place the zones under a known transform, generate a coastline AND
+// a road network from them, then check the fit recovers the scale unaided
+check('scale is recovered without touching the slider', window.eval(`(() => {
+  const truth = { mul: 1.24, lat: 57.0620, lng: 9.9420 };
+  const g = window.GEOREF, a = HS.anchorPx();
+  const s = g.s * truth.mul;
+  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
+  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
+  const coastV = HS.coastVertices();
+  const coast = coastV.map(put);
+  const bnd = HS.boundaryVertices(2);
+  const segs = [];
+  for (let i=1;i<bnd.length;i++){
+    const p = put(bnd[i-1]), q = put(bnd[i]);
+    segs.push([p[0],p[1],q[0],q[1], i]);
+  }
+  const roadIdx = HS.segmentIndex(segs, 0.004);
+  const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
+  const best = HS.fitToGeography(coastV, coast, bnd, roadIdx, start);
+  window.__fit2 = best;
+  return Math.abs(best.mul - truth.mul) < 0.04;
+})()`), 'recovered scale ' + (window.eval("window.__fit2 && window.__fit2.mul")||0).toFixed(3) + ' vs 1.240');
+check('and position comes out right too', window.eval(`(() => {
+  const f = window.__fit2;
+  return Math.abs(f.lat - 57.0620) < 0.005 && Math.abs(f.lng - 9.9420) < 0.008;
+})()`), window.eval("window.__fit2 ? window.__fit2.lat.toFixed(4)+', '+window.__fit2.lng.toFixed(4) : ''"));
+check('the fit still works if the roads are unavailable', window.eval(`(() => {
+  const truth = { mul: 1.18, lat: 57.0600, lng: 9.9500 };
+  const g = window.GEOREF, a = HS.anchorPx();
+  const s = g.s * truth.mul;
+  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
+  const cv = HS.coastVertices();
+  const coast = cv.map(([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)]);
+  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
+                                 { mul: 1.0, lat: 57.048, lng: 9.9187 });
+  return Math.abs(best.mul - 1.18) < 0.04;
 })()`));
 
 console.log('\n== runtime errors ==');

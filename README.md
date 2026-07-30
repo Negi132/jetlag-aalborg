@@ -109,34 +109,49 @@ run off the side of the screenshot (Klarup, Storvorde, Stae, Langholt). **Rename
 Layers tab fixes any of them: tap the button, tap the district. Names are cosmetic — a zone question
 always uses the polygon.
 
-### Placing the zones, and straightening them onto the streets
+### Placing the zones — automatic, no slider
 
-A screenshot records shape but not position, and I couldn't establish that offline: coarse coastline
-data, place-name labels and known district positions all landed about a kilometre out. The app can
-reach OpenStreetMap, so it happens there. Three tools, in the **Layers → Calibrate zones** box:
+A screenshot records shape but not position, and I couldn't establish that offline. The app can
+reach OpenStreetMap, so it happens there:
 
-**1. Fit to the coastline automatically.** Many zone edges follow the Limfjord, and the tracing
-recorded which vertices sit on water. The app pulls the real shoreline and searches scale and
-position for the placement that lines the two up. The search is symmetric, so it can't cheat by
-shrinking everything onto one beach. Against a synthetic placement it recovers a known transform to
-within 0.2% of scale and about 10 m of position.
+> **Layers → Calibrate zones → Place and scale automatically**
 
-**2. Snap boundaries to the roads.** Your point about roads is right, and it's a better fit for
-*shape* than for placement: most district borders run down the middle of a street, while the traced
-outlines are pixel-quantised and wobble either side of it. This pulls each boundary point onto the
-nearest road centreline (within 70 m by default), which straightens them out.
+It uses the **Limfjord shoreline** for position and **Aalborg's street network for scale**. That
+second part is your idea: a long, well-defined road like Østre Allé only lines up with the district
+boundary running along it at one particular size, so the street network pins the scale down and the
+slider becomes unnecessary. The search is symmetric on the coastline term, so it can't cheat by
+shrinking everything onto one beach.
 
-The reason this doesn't tear the zones apart: neighbouring districts share *identical* arc
-coordinates, and snapping is cached per coordinate, so both sides of a shared border resolve to the
-same point and move together. Tested — after snapping, the districts' areas still sum to their union
+Tested against synthetic placements: it recovers a known scale to **1.240 against a true 1.240**,
+and position to about 30 m. If the road download fails it falls back to the coastline alone, which
+still gets scale to within 4%.
+
+The scale slider, centre pin and nudge arrows are all still there if you want to override it.
+
+### Snapping boundaries to the roads
+
+> **Layers → Calibrate zones → Snap boundaries to the roads**
+
+Most district borders run down the middle of a street, while the traced outlines are pixel-quantised
+and wobble either side of it.
+
+**The first version of this was wrong**, and here is why. It moved every boundary point to its
+nearest road. But plenty of borders follow no road at all — a field edge, the railway, the shore —
+and in a city there is almost always *some* street within range of those. On a test boundary running
+diagonally across a residential grid, it snapped all 40 points and introduced 887 m of spurious
+zigzag.
+
+A point now moves only when its stretch of boundary genuinely follows a road: the road must run in
+the same direction as the boundary (within about 39°), and the *same* OSM way must be the best match
+for at least three consecutive points. On the same two tests: a boundary hugging a main road goes
+from 24 m of wobble to 0.0 m, and the diagonal boundary across the grid is left completely untouched,
+all 40 points.
+
+It doesn't tear the zones apart either, because neighbouring districts share identical arc
+coordinates and snapping is cached per coordinate — after snapping, areas still sum to their union
 to within 0.000%.
 
-**3. Manual.** Tap the button, tap Nytorv, then the scale slider and the nudge arrows. **Reset**
-clears both the calibration and any road snapping.
-
-All of it saves into the game link, and one calibration fixes both zone levels, because both
-screenshots share a pixel space (zone 2 scaled by 1.20 to match zone 3, verified by aligning the
-fjord).
+**Reset** clears both the placement and the snapping.
 
 ### The play area
 
@@ -225,7 +240,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 203 checks — the app, driven headlessly
+node ui.test.mjs         # 209 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
