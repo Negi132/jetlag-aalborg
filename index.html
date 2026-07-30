@@ -114,13 +114,17 @@
         <p class="cal-title">Calibrate zones</p>
         <p class="hint">Zones 2 and 3 are traced from your screenshots, which don't record where
           on Earth they sit. Line them up once — it saves into the game link.</p>
-        <button class="ghost-btn wide" id="calPin">1 · Tap here, then tap Nytorv on the map</button>
+        <button class="solid-btn wide" id="calAuto">Fit to the coastline automatically</button>
+        <p class="hint">Uses OpenStreetMap's shoreline. Many zone edges follow the Limfjord, so
+          this usually lands close. Check the fjord edges afterwards.</p>
+        <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or: tap here, then tap Nytorv</button>
         <div class="field" style="margin-top:10px">
           <label for="calScale">2 · Scale — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
           <input type="range" id="calScale" min="50" max="200" step="1" value="100">
         </div>
         <div class="inline wrap">
           <button class="ghost-btn" id="calNudge">Fine nudge…</button>
+          <button class="ghost-btn" id="calRename">Rename a district</button>
           <button class="ghost-btn" id="calReset">Reset</button>
         </div>
         <div id="calNudgeBox" class="cal-nudge" hidden>

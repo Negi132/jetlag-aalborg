@@ -449,8 +449,22 @@ check('districts are real outlines, not boxes', window.eval(`(() => {
   const v = fs.map(f => f.geometry.coordinates[0].length);
   return Math.min(...v) > 8 && v.reduce((a,b)=>a+b,0) > 600;
 })()`), `${window.eval("HS.layerByKey('src:zone3').geojson.features.reduce((a,f)=>a+f.geometry.coordinates[0].length,0)")} vertices total`);
-check('districts carry names', /[A-Za-zÆØÅæøå]/.test(window.eval(
-      "HS.layerByKey('src:zone3').geojson.features[0].properties.navn")));
+check('districts carry names read off the screenshot', window.eval(`(() => {
+  const ns = HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn);
+  return ns.includes('Hasseris') && ns.includes('Vejgård') && ns.includes('Nørresundby Midtby');
+})()`), window.eval("HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn).slice(0,4).join(', ')"));
+check('no district name is duplicated', window.eval(`(() => {
+  const ns = HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn);
+  return new Set(ns).size === ns.length;
+})()`));
+check('Skalborg is not called Dall Villaby', window.eval(`(() => {
+  const fs = HS.layerByKey('src:zone3').geojson.features;
+  const sk = fs.find(f=>f.properties.navn==='Skalborg');
+  const dv = fs.find(f=>f.properties.navn==='Dall Villaby');
+  if (!sk || !dv) return false;
+  // Dall Villaby lies south of Skalborg on the map
+  return turf.centroid(dv).geometry.coordinates[1] < turf.centroid(sk).geometry.coordinates[1];
+})()`));
 
 click(zoneRows()[1]);                        // zone 2
 await new Promise(r => setTimeout(r, 40));
@@ -592,6 +606,95 @@ const shown = (legTxt.match(/([A-Z]) ·/g) || []).map(t => t[0]);
 check('legend lists the letters alphabetically',
       shown.length >= 3 && shown.join('') === shown.slice().sort().join(''),
       shown.join(''));
+
+
+console.log('\n== no gaps between neighbouring zones ==');
+check('zone 3 covers its own outline with no slivers', window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  const outline = HS.unionAll(fs);
+  // if regions abut exactly, the union equals the sum of the parts
+  return Math.abs(sum - turf.area(outline)) / turf.area(outline) < 0.02;
+})()`), window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  return 'sum ' + (sum/1e6).toFixed(1) + ' km2 vs union ' + (turf.area(HS.unionAll(fs))/1e6).toFixed(1);
+})()`));
+check('zone 2 areas abut with no gaps', window.eval(`(() => {
+  const fs = HS.buildAreaZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.02;
+})()`));
+// Abutting polygons share an edge, and contour tracing is pixel-quantised,
+// so neighbours overlap by up to one pixel (~28 m) along a shared border.
+// What matters is that they overlap slightly rather than leaving a gap.
+check('districts share edges instead of leaving gaps', window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  let worstFrac = 0, worstAbs = 0;
+  for (let i=0;i<fs.length;i++) for (let j=i+1;j<fs.length;j++) {
+    let inter=null;
+    try { inter = turf.intersect(turf.featureCollection([fs[i],fs[j]])); } catch(e) {}
+    if (!inter) continue;
+    const a = turf.area(inter);
+    const smaller = Math.min(turf.area(fs[i]), turf.area(fs[j]));
+    worstAbs = Math.max(worstAbs, a);
+    worstFrac = Math.max(worstFrac, a / smaller);
+  }
+  window.__wf = worstFrac; window.__wa = worstAbs;
+  return worstFrac < 0.03;
+})()`), 'worst overlap ' + (100*window.eval("window.__wf||0")).toFixed(2) + '% of the smaller district');
+
+console.log('\n== coastline auto-fit ==');
+check('shoreline vertices were recorded', window.eval("HS.coastVertices().length") > 100,
+      window.eval("HS.coastVertices().length") + ' vertices');
+check('Overpass coastline query is well formed', window.eval(`(() => {
+  const q = HS.overpassCoastQuery();
+  return q.includes('"natural"="coastline"') && q.includes('out geom;')
+      && q.includes('way(56.94,9.7,57.18,10.25)');
+})()`), window.eval("HS.overpassCoastQuery()").slice(0, 60));
+check('overpass geometry densifies into points', window.eval(`(() => {
+  const pts = HS.parseOverpassPoints({elements:[{type:'way',geometry:[
+    {lat:57.05,lon:9.90},{lat:57.05,lon:9.95}]}]}, 0.05);
+  return pts.length > 40 && Math.abs(pts[0][0]-9.90) < 1e-9;
+})()`), window.eval("HS.parseOverpassPoints({elements:[{type:'way',geometry:[{lat:57.05,lon:9.90},{lat:57.05,lon:9.95}]}]},0.05).length") + ' points');
+check('grid index finds the nearest point', window.eval(`(() => {
+  const idx = HS.makeIndex([[9.90,57.00],[10.00,57.00]], 0.01);
+  const d = idx.nearest(9.905, 57.00);
+  return d != null && Math.abs(d - 0.3025) < 0.05;
+})()`));
+
+// Synthetic test: build a "coastline" from the recorded shoreline vertices
+// under a known transform, then check the optimiser recovers it.
+check('optimiser recovers a known placement', window.eval(`(() => {
+  const truth = { mul: 1.18, lat: 57.0600, lng: 9.9500 };
+  const g = window.GEOREF, a = HS.anchorPx();
+  const s = g.s * truth.mul;
+  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
+  const verts = HS.coastVertices();
+  const coast = verts.map(([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)]);
+  const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
+  const best = HS.fitCoastline(verts, coast, start);
+  window.__fit = best;
+  return Math.abs(best.mul - truth.mul) < 0.03 &&
+         Math.abs(best.lat - truth.lat) < 0.004 &&
+         Math.abs(best.lng - truth.lng) < 0.007;
+})()`), window.eval("JSON.stringify(window.__fit && {mul:+window.__fit.mul.toFixed(3), lat:+window.__fit.lat.toFixed(4), lng:+window.__fit.lng.toFixed(4)})") + ' vs {mul:1.18, lat:57.06, lng:9.95}');
+check('optimiser does not collapse the zones', window.eval("window.__fit.mul") > 0.9);
+
+console.log('\n== renaming a district ==');
+check('renames apply', window.eval(`(() => {
+  HS.S.renames = { 0: 'My own name' };
+  const fs = HS.buildDistrictZones().features;
+  return fs[0].properties.navn === 'My own name';
+})()`));
+check('renames survive save/load', window.eval(`(() => {
+  HS.S.renames = { 3: 'Gammel Hasseris' };
+  const blob = JSON.parse(JSON.stringify(HS.serialize()));
+  HS.S.renames = {};
+  HS.deserialize(blob);
+  return HS.S.renames['3'] === 'Gammel Hasseris';
+})()`));
+window.eval("HS.S.renames = {}");
 
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));

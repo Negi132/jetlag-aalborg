@@ -174,6 +174,7 @@ const S = {
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
   cal: null,          // pixel-to-map calibration for the traced zones
+  renames: {},        // district index -> your own name
   me: null,
   baseKey: 'light',
   fogOpacity: 0.62,
@@ -1183,30 +1184,16 @@ function buildAreaZones() {
   return out.length ? { type: 'FeatureCollection', features: out } : null;
 }
 
-/* Zone 3: the city districts. Names come from the nearest entry in
-   DISTRICT_NAMES — cosmetic only; zone questions use the polygon. */
+/* Zone 3: the city districts, with the names read off the screenshot's
+   own labels. Renames live in S.renames, keyed by index. */
 function buildDistrictZones() {
   const gr = georef();
-  const names = window.DISTRICT_NAMES || [];
   const out = [];
-  for (const z of window.ZONE3_PX || []) {
-    const f = ringToPolygon(z.ring, {}, gr);
-    if (!f) continue;
-    let navn = 'District';
-    if (names.length) {
-      let c;
-      try { c = turf.centroid(f).geometry.coordinates; } catch (_) { c = null; }
-      if (c) {
-        let bestD = Infinity;
-        for (const [nm, la, ln] of names) {
-          const d = (ln - c[0]) * (ln - c[0]) * 0.3 + (la - c[1]) * (la - c[1]);
-          if (d < bestD) { bestD = d; navn = nm; }
-        }
-      }
-    }
-    f.properties = { navn };
-    out.push(f);
-  }
+  (window.ZONE3_PX || []).forEach((z, i) => {
+    const nm = (S.renames && S.renames[i]) || z.name || `District ${i + 1}`;
+    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr);
+    if (f) out.push(f);
+  });
   return out.length ? { type: 'FeatureCollection', features: out } : null;
 }
 
@@ -1295,6 +1282,7 @@ function addLayer(name, geojson, opts = {}) {
       }
       lyr.bindTooltip(tip, { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
+        if (kind === 'poly' && tryRename(ft)) { L.DomEvent.stopPropagation(e); return; }
         if (kind === 'poly' && activeTool === 'zone') {
           L.DomEvent.stopPropagation(e);
           const all = [];
@@ -1617,6 +1605,178 @@ async function toggleRoute(key, btn) {
   }
 }
 
+/* ---------- fitting the zones to real geography ------------------------
+   You spotted that the boundaries follow real features. They do — and
+   better still, many of them follow the shoreline, which is unmistakable.
+   The tracing recorded which vertices sit on water, so the app can pull
+   the real coastline from OpenStreetMap and slide the zones onto it. */
+
+function coastVertices() {
+  const out = [];
+  for (const z of window.ZONE3_PX || []) {
+    const c = z.coast || [];
+    for (let i = 0; i < z.ring.length; i++) if (c[i]) out.push(z.ring[i]);
+  }
+  return out;
+}
+
+function overpassCoastQuery() {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  return `[out:json][timeout:90];way(${s2},${w},${n},${e})["natural"="coastline"];out geom;`;
+}
+
+function parseOverpassPoints(json, stepKm) {
+  const pts = [];
+  for (const el of (json && json.elements) || []) {
+    const g = el.geometry;
+    if (!Array.isArray(g)) continue;
+    for (let i = 1; i < g.length; i++) {
+      const a = g[i - 1], b = g[i];
+      if (!a || !b || a.lon == null || b.lon == null) continue;
+      const dx = (b.lon - a.lon) * 60.5, dy = (b.lat - a.lat) * 111.2;
+      const n = Math.max(1, Math.round(Math.hypot(dx, dy) / (stepKm || 0.05)));
+      for (let k = 0; k < n; k++) {
+        const t = k / n;
+        pts.push([a.lon + (b.lon - a.lon) * t, a.lat + (b.lat - a.lat) * t]);
+      }
+    }
+  }
+  return pts;
+}
+
+/* Cheap nearest-neighbour over a fixed grid — plenty for a few thousand
+   points, and it keeps the search loop fast enough to feel instant. */
+function makeIndex(pts, cell) {
+  const g = new Map();
+  const key = (a, b) => a + ':' + b;
+  for (const p of pts) {
+    const k = key(Math.floor(p[0] / cell), Math.floor(p[1] / cell));
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(p);
+  }
+  return {
+    nearest(x, y) {
+      const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
+      for (let r = 1; r <= 4; r++) {
+        let best = Infinity;
+        for (let i = gx - r; i <= gx + r; i++) {
+          for (let j = gy - r; j <= gy + r; j++) {
+            const c = g.get(key(i, j));
+            if (!c) continue;
+            for (const p of c) {
+              const dx = (p[0] - x) * 60.5, dy = (p[1] - y) * 111.2;
+              const d = dx * dx + dy * dy;
+              if (d < best) best = d;
+            }
+          }
+        }
+        if (best < Infinity) return Math.sqrt(best);
+      }
+      return null;
+    }
+  };
+}
+
+const median = (a) => {
+  if (!a.length) return Infinity;
+  const b = a.slice().sort((x, y) => x - y);
+  return b[b.length >> 1];
+};
+
+/* Search scale and offset for the placement that puts the traced shoreline
+   on the real one. Symmetric: shrinking the zones onto a single beach is
+   punished because the rest of the coast is then far from any vertex. */
+function fitCoastline(verts, coastPts, start) {
+  const idx = makeIndex(coastPts, 0.01);
+  const [ax, ay] = anchorPx();
+  const g = window.GEOREF;
+
+  function evaluate(mul, lat, lng) {
+    const s = g.s * mul;
+    const lng0 = lng - s * ax, my0 = mercY(lat) + s * ay;
+    const proj = verts.map(([x, y]) => [lng0 + s * x, invMercY(my0 - s * y)]);
+    const fwd = [];
+    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (const p of proj) {
+      const d = idx.nearest(p[0], p[1]);
+      if (d != null) fwd.push(d);
+      if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0];
+      if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1];
+    }
+    const back = makeIndex(proj, 0.01);
+    const rev = [];
+    for (const p of coastPts) {
+      if (p[0] < minx || p[0] > maxx || p[1] < miny || p[1] > maxy) continue;
+      const d = back.nearest(p[0], p[1]);
+      if (d != null) rev.push(d);
+    }
+    return median(fwd) + (rev.length ? median(rev) : 3);
+  }
+
+  let best = { cost: Infinity, mul: start.mul, lat: start.lat, lng: start.lng };
+  let rMul = 0.35, rLat = 0.035, rLng = 0.06;
+  let centre = { mul: start.mul, lat: start.lat, lng: start.lng };
+
+  for (let pass = 0; pass < 4; pass++) {
+    const N = 6;
+    for (let i = -N; i <= N; i += 1) {
+      const mul = centre.mul * Math.exp((i / N) * Math.log(1 + rMul));
+      if (mul < 0.5 || mul > 2.2) continue;
+      for (let j = -4; j <= 4; j++) {
+        const lat = centre.lat + (j / 4) * rLat;
+        for (let k = -4; k <= 4; k++) {
+          const lng = centre.lng + (k / 4) * rLng;
+          const c = evaluate(mul, lat, lng);
+          if (c < best.cost) best = { cost: c, mul, lat, lng };
+        }
+      }
+    }
+    centre = { mul: best.mul, lat: best.lat, lng: best.lng };
+    rMul *= 0.35; rLat *= 0.35; rLng *= 0.35;
+  }
+  return best;
+}
+
+async function autoCalibrate(btn) {
+  const verts = coastVertices();
+  if (verts.length < 30) { toast('No shoreline vertices recorded to fit against.', true); return; }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Fetching the coastline…';
+  setStatus('Asking OpenStreetMap for the Limfjord shoreline…');
+  try {
+    const body = 'data=' + encodeURIComponent(overpassCoastQuery());
+    let json = null, problems = [];
+    for (const url of OVERPASS) {
+      try {
+        const res = await fetch(url, { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        json = JSON.parse(await res.text());
+        break;
+      } catch (e) { problems.push(e.message); }
+    }
+    if (!json) throw new Error(problems.join(' / '));
+    const pts = parseOverpassPoints(json, 0.05);
+    if (pts.length < 200) throw new Error('the coastline came back almost empty');
+
+    btn.textContent = `Lining up against ${pts.length} points…`;
+    await new Promise((r) => setTimeout(r, 20));
+    const start = S.cal || defaultCal();
+    const best = fitCoastline(verts, pts, start);
+    S.cal = { mul: best.mul, lat: best.lat, lng: best.lng };
+    applyCal(true);
+    const off = (best.cost / 2) * 1000;
+    setStatus(`Fitted to the shoreline: scale ${Math.round(best.mul * 100)}%, ` +
+              `typical error about ${fmtDist(off)}. Check it against the fjord, and nudge if needed.`,
+              off > 400);
+    toast('Fitted to the coastline. Have a look at the fjord edges.');
+  } catch (err) {
+    setStatus(`Could not fit automatically — ${err.message}. Pin the centre and use the slider instead.`, true);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
 /* ---------- calibration ------------------------------------------------ */
 
 function calSpanText() {
@@ -1660,6 +1820,34 @@ $('#calPin').addEventListener('click', () => {
   btn.classList.add('is-picking');
   toast('Now tap the map where central Aalborg is.');
 });
+
+$('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
+
+/* Three districts sit on the crop edge and came through unnamed; any name
+   can be corrected here. Names never affect a zone answer. */
+let renaming = false;
+$('#calRename').addEventListener('click', () => {
+  renaming = !renaming;
+  $('#calRename').classList.toggle('is-picking', renaming);
+  toast(renaming ? 'Tap a district on the map to rename it.' : 'Renaming off.');
+  if (renaming && window.innerWidth <= 820) closeSheet();
+});
+
+function tryRename(ft) {
+  if (!renaming || !ft.properties || ft.properties.idx == null) return false;
+  const cur = ft.properties.navn || '';
+  const next = prompt('Name this district', cur);
+  if (next && next !== cur) {
+    S.renames = Object.assign({}, S.renames, { [ft.properties.idx]: next });
+    refreshDerivedLayers();
+    saveToUrl();
+    toast(`Renamed to ${next}.`);
+  }
+  renaming = false;
+  $('#calRename').classList.remove('is-picking');
+  openSheet();
+  return true;
+}
 
 $('#calReset').addEventListener('click', () => {
   S.cal = defaultCal();
@@ -2013,6 +2201,7 @@ function serialize() {
     fog: S.fogOpacity,
     sources: S.sources,
     cal: S.cal,
+    renames: S.renames,
     wms: S.wms.map((w) => ({ name: w.name, url: w.url, layers: w.layers, visible: w.visible })),
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
@@ -2035,6 +2224,7 @@ function deserialize(data) {
   if (data.units) S.units = data.units;
   if (data.sources) S.sources = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SOURCES)), data.sources);
   if (data.cal) S.cal = data.cal;
+  if (data.renames) S.renames = data.renames;
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
 
   const m = data.playAreaMeta;
@@ -2147,7 +2337,9 @@ window.HS = {
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
   buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
-  defaultCal, anchorPx, applyCal,
+  defaultCal, anchorPx, applyCal, autoCalibrate, fitCoastline,
+  coastVertices, parseOverpassPoints, makeIndex, overpassCoastQuery,
+  __mercY: mercY, __invMercY: invMercY,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
   parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, ZONEKORT_STYLE,
