@@ -538,12 +538,11 @@ check('reset returns to the shipped estimate', Math.abs(window.eval(`(() => {
   const b = turf.bbox(HS.buildAreaZones());
   return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`) - span1) < 0.01);
 check('calibration survives a save/load round trip', window.eval(`(() => {
-  HS.S.cal = {lat: 57.05, lng: 9.93, mul: 1.2, aspect: 1.07, rot: 2.3};
+  HS.S.cal = {lat: 57.05, lng: 9.93, mul: 1.2};
   const blob = JSON.parse(JSON.stringify(HS.serialize()));
   HS.S.cal = HS.defaultCal();
   HS.deserialize(blob);
-  return Math.abs(HS.S.cal.mul - 1.2) < 1e-9 && Math.abs(HS.S.cal.lng - 9.93) < 1e-9 &&
-         Math.abs(HS.S.cal.aspect - 1.07) < 1e-9 && Math.abs(HS.S.cal.rot - 2.3) < 1e-9;
+  return Math.abs(HS.S.cal.mul - 1.2) < 1e-9 && Math.abs(HS.S.cal.lng - 9.93) < 1e-9;
 })()`));
 
 console.log('\n== zone toggles stay reversible ==');
@@ -676,7 +675,7 @@ check('optimiser recovers a known placement', window.eval(`(() => {
   const verts = HS.coastVertices();
   const coast = verts.map(([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)]);
   const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
-  const best = HS.fitCoastline(verts, coast, start);
+  const best = HS.fitToGeography(verts, coast, HS.boundaryVertices(4), null, start, []);
   window.__fit = best;
   return Math.abs(best.mul - truth.mul) < 0.03 &&
          Math.abs(best.lat - truth.lat) < 0.004 &&
@@ -703,21 +702,13 @@ window.eval("HS.S.renames = {}");
 console.log('\n== boundaries snapped to roads ==');
 check('road query asks for the street network', window.eval(`(() => {
   const q = HS.overpassRoadQuery();
-  return q.includes('highway') && q.includes('out tags geom;') && q.includes('secondary');
+  return q.includes('highway') && q.includes('out geom;') && q.includes('secondary');
 })()`));
-check('road geometry keeps way id and road name', window.eval(`(() => {
-  const segs = HS.roadSegments({elements:[{type:'way',id:77,tags:{name:'Østre Allé',highway:'secondary'},geometry:[
+check('road geometry becomes segments carrying their way id', window.eval(`(() => {
+  const segs = HS.roadSegments({elements:[{type:'way',id:77,geometry:[
     {lat:57.05,lon:9.90},{lat:57.05,lon:9.92},{lat:57.06,lon:9.92}]}]});
-  return segs.length === 2 && segs[0][0] === 9.90 && segs[0][4] === 77 &&
-         segs[0][5] === 'Østre Allé' && segs[0][6] === 'secondary';
+  return segs.length === 2 && segs[0][0] === 9.90 && segs[0][4] === 77;
 })()`));
-check('the named Østre Allé control is extracted from OSM tags', window.eval(`(() => {
-  const json = {elements:[{type:'way',id:88,tags:{name:'Østre Alle',highway:'secondary'},geometry:[
-    {lat:57.038,lon:9.91},{lat:57.0382,lon:9.94},{lat:57.039,lon:9.96}]}]};
-  const cs = HS.buildRoadControls(json);
-  return cs.length === 1 && cs[0].id === 'ostre-alle' && cs[0].points.length > 10;
-})()`));
-
 check('a point projects onto the nearest place on a segment', window.eval(`(() => {
   const p = HS.projectToSegment(9.91, 57.06, [9.90,57.05,9.92,57.05,1]);
   return Math.abs(p.x - 9.91) < 1e-6 && Math.abs(p.y - 57.05) < 1e-6;
@@ -825,31 +816,12 @@ check('scale is recovered without touching the slider', window.eval(`(() => {
   const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
   const best = HS.fitToGeography(coastV, coast, bnd, roadIdx, start);
   window.__fit2 = best;
-  return Math.abs(best.mul - truth.mul) < 0.04;
+  return Math.abs(best.mul - truth.mul) < 0.015;
 })()`), 'recovered scale ' + (window.eval("window.__fit2 && window.__fit2.mul")||0).toFixed(3) + ' vs 1.240');
 check('and position comes out right too', window.eval(`(() => {
   const f = window.__fit2;
   return Math.abs(f.lat - 57.0620) < 0.005 && Math.abs(f.lng - 9.9420) < 0.008;
 })()`), window.eval("window.__fit2 ? window.__fit2.lat.toFixed(4)+', '+window.__fit2.lng.toFixed(4) : ''"));
-check('a named road plus coastline recovers aspect and rotation', window.eval(`(() => {
-  const truth = { mul: 1.12, aspect: 1.08, rot: 2.0, lat: 57.0560, lng: 9.9360 };
-  const put = (p) => HS.pxToLngLat(p[0], p[1], HS.georefForCal(truth));
-  const coastV = HS.coastVertices();
-  const coast = coastV.map(put);
-  const def = window.ZONE_ROAD_CONTROLS[0];
-  const sourcePoints = HS.controlSourcePoints(def, 3);
-  const target = sourcePoints.map(put);
-  const segs = [];
-  for (let i=1;i<target.length;i++) segs.push([target[i-1][0],target[i-1][1],target[i][0],target[i][1],88,'Østre Allé','secondary']);
-  const ctl = Object.assign({}, def, {sourcePoints, points:target, lines:[target], chains:[target],
-    pointIndex:HS.makeIndex(target,0.002), segmentIndex:HS.segmentIndex(segs,0.002)});
-  const best = HS.fitToGeography(coastV, coast, [], null,
-    {mul:1,aspect:1,rot:0,lat:57.048,lng:9.9187}, [ctl]);
-  window.__aff = best;
-  return Math.abs(best.aspect-truth.aspect) < 0.035 && Math.abs(best.rot-truth.rot) < 0.8 &&
-         Math.abs(best.mul-truth.mul) < 0.05;
-})()`), window.eval("JSON.stringify(window.__aff && {mul:+window.__aff.mul.toFixed(3),aspect:+window.__aff.aspect.toFixed(3),rot:+window.__aff.rot.toFixed(2)})"));
-
 check('the fit still works if the roads are unavailable', window.eval(`(() => {
   const truth = { mul: 1.18, lat: 57.0600, lng: 9.9500 };
   const g = window.GEOREF, a = HS.anchorPx();
@@ -860,6 +832,62 @@ check('the fit still works if the roads are unavailable', window.eval(`(() => {
   const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
                                  { mul: 1.0, lat: 57.048, lng: 9.9187 });
   return Math.abs(best.mul - 1.18) < 0.04;
+})()`));
+
+
+console.log('\n== Østre Allé as the anchor ==');
+check('a reference road is defined', window.eval("(window.REFERENCE_ROADS||[]).length") >= 1,
+      window.eval("(window.REFERENCE_ROADS||[]).map(r=>r.name).join(', ')"));
+check('it is Midtbyen\u2019s southern edge', window.eval(`(() => {
+  const r = window.REFERENCE_ROADS[0];
+  const mid = window.ZONE2_PX.find(z => z.n === 1);
+  // every reference point must be a vertex of the Midtbyen ring
+  return r.px.every(p => mid.ring.some(q => q[0] === p[0] && q[1] === p[1]));
+})()`));
+check('the reference line densifies evenly', window.eval(`(() => {
+  const l = HS.referenceLines(2)[0];
+  let maxGap = 0;
+  for (let i=1;i<l.px.length;i++) maxGap = Math.max(maxGap,
+    Math.hypot(l.px[i][0]-l.px[i-1][0], l.px[i][1]-l.px[i-1][1]));
+  window.__gap = maxGap;
+  return l.px.length > window.REFERENCE_ROADS[0].px.length * 3 && maxGap <= 2.5;
+})()`), window.eval("HS.referenceLines(2)[0].px.length") + ' points, max gap ' +
+        (window.eval("window.__gap")||0).toFixed(1) + ' px');
+check('named-road query asks for the road by name', window.eval(`(() => {
+  const q = HS.overpassNamedRoadQuery(['Østre Allé']);
+  return q.includes('["name"="Østre Allé"]') && q.includes('out geom;');
+})()`));
+
+// The anchor should sharpen the fit: give it a deliberately poor start and
+// only the reference road plus a short coastline to work from.
+check('the anchor pins scale and position', window.eval(`(() => {
+  const truth = { mul: 1.31, lat: 57.0555, lng: 9.9310 };
+  const g = window.GEOREF, a = HS.anchorPx();
+  const s = g.s * truth.mul;
+  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
+  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
+  const line = HS.referenceLines(2)[0];
+  // the "real" Østre Allé, as it would be if the truth transform held
+  const real = line.px.map(put);
+  const cv = HS.coastVertices();
+  const coast = cv.map(put);
+  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
+                                 { mul: 1.0, lat: 57.040, lng: 9.900 },
+                                 [{ name: 'Østre Allé', px: line.px, real }]);
+  window.__anchored = best;
+  return Math.abs(best.mul - truth.mul) < 0.01 &&
+         Math.abs(best.lat - truth.lat) < 0.001 &&
+         Math.abs(best.lng - truth.lng) < 0.0015;
+})()`), window.eval("window.__anchored ? 'recovered ' + window.__anchored.mul.toFixed(3) + ' / ' + window.__anchored.lat.toFixed(4) + ', ' + window.__anchored.lng.toFixed(4) : ''") + ' vs 1.310 / 57.0555, 9.9310');
+check('the fit still runs when the named road is missing', window.eval(`(() => {
+  const cv = HS.coastVertices();
+  const g = window.GEOREF, a = HS.anchorPx();
+  const s = g.s * 1.2;
+  const lng0 = 9.94 - s*a[0], my0 = HS.__mercY(57.05) + s*a[1];
+  const coast = cv.map(([x,y]) => [lng0+s*x, HS.__invMercY(my0-s*y)]);
+  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
+                                 { mul: 1.0, lat: 57.048, lng: 9.9187 }, []);
+  return Math.abs(best.mul - 1.2) < 0.05;
 })()`));
 
 console.log('\n== runtime errors ==');

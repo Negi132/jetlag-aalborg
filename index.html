@@ -115,24 +115,16 @@
         <p class="hint">Zones 2 and 3 are traced from your screenshots, which don't record where
           on Earth they sit. Line them up once — it saves into the game link.</p>
         <button class="solid-btn wide" id="calAuto">Place and scale automatically</button>
-        <p class="hint">Uses the Limfjord shoreline together with the known central Midtbyen → Østre Allé boundary.
-          That named road anchors position, scale, aspect and slight rotation instead of merely
-          rewarding whichever street happens to be nearby. Check the fjord and Østre Allé afterwards.</p>
+        <p class="hint">Anchors on <strong>Østre Allé</strong> — Midtbyen's southern edge runs along
+          it — plus the Limfjord shoreline and the wider street network. Position and scale both come
+          out of that, so there's no slider to touch. It reports how close the Midtbyen edge landed.</p>
         <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or place by hand: tap here, then tap Nytorv</button>
         <button class="ghost-btn wide" id="calSnap" style="margin-top:8px">Snap boundaries to the roads</button>
-        <p class="hint">Do this after placing. The Østre Allé control arc is densified and projected onto the
-          real road; other stretches move only when they consistently follow the same road.</p>
+        <p class="hint">Do this after placing. Only stretches that genuinely run along a road move —
+          borders following the shore, the railway or a field edge are left alone.</p>
         <div class="field" style="margin-top:10px">
-          <label for="calScale">Overall scale — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
+          <label for="calScale">Scale, if you want to override it — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
           <input type="range" id="calScale" min="50" max="200" step="1" value="100">
-        </div>
-        <div class="field">
-          <label for="calAspect">Width / height correction — <span id="calAspectVal">100%</span></label>
-          <input type="range" id="calAspect" min="82" max="122" step="0.5" value="100">
-        </div>
-        <div class="field">
-          <label for="calRotate">Rotation — <span id="calRotateVal">0.0°</span></label>
-          <input type="range" id="calRotate" min="-6" max="6" step="0.1" value="0">
         </div>
         <div class="inline wrap">
           <button class="ghost-btn" id="calNudge">Fine nudge…</button>

@@ -23,23 +23,6 @@ const GEOREF = {
   lng0: 9.7842008,
   my0: 69.9662333
 };
-
-/* Known road-following control arcs. These are stronger than generic
-   nearest-road matching because they record an actual correspondence:
-   this exact traced boundary follows this exact named road. The first
-   control is the central southern edge of Zone 2 Midtbyen along Østre Allé. */
-const ZONE_ROAD_CONTROLS = [
-  {
-    id: 'ostre-alle',
-    name: 'Østre Allé',
-    aliases: ['Østre Allé', 'Østre Alle'],
-    weight: 7,
-    /* Ordered west-to-east in screenshot pixel space. The same source
-       segments also occur, reversed, in the neighbouring Zone 2 rings. */
-    arc: [[256.8, 404.8], [266.4, 414.4], [306.0, 426.4],
-          [338.4, 416.8], [354.0, 404.8]]
-  }
-];
 /* The four play zones. Their union is the play area. */
 const ZONE2_PX = [
   { n: 1, name: 'Midtbyen', ring: [[306.0, 426.4], [266.4, 414.4], [256.8, 404.8], [228.0, 398.8], [213.6, 384.4], [211.2, 370.0], [202.8, 361.6], [193.2, 359.2], [190.8, 350.8], [183.6, 342.4], [169.2, 336.4], [177.6, 280.0], [192.0, 280.0], [222.0, 289.6], [272.4, 319.6], [289.2, 332.8], [301.2, 337.6], [330.0, 338.8], [339.6, 336.4], [372.0, 320.8], [388.8, 306.4], [397.2, 305.2], [408.0, 311.2], [411.6, 318.4], [410.4, 323.2], [403.2, 337.6], [392.4, 341.2], [372.0, 364.0], [366.0, 379.6], [360.0, 384.4], [354.0, 404.8], [338.4, 416.8], [306.0, 426.4]] },
@@ -90,6 +73,15 @@ const ZONE3_PX = [
   { name: "Dall Villaby", ring: [[180.0, 726.0], [174.0, 722.0], [172.0, 716.0], [174.0, 699.0], [173.0, 679.0], [165.0, 678.0], [160.0, 685.0], [159.0, 698.0], [148.0, 698.0], [139.0, 706.0], [136.0, 721.0], [125.0, 723.0], [120.0, 738.0], [122.0, 743.0], [129.0, 746.0], [131.0, 752.0], [147.0, 757.0], [150.0, 756.0], [163.0, 741.0], [175.0, 734.0], [180.0, 726.0]], coast: [0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0] },
 ];
 
+/* A named road we can anchor to. The southern boundary of Midtbyen runs
+   mostly along Østre Allé, so matching this polyline against the real road
+   fixes position AND scale far more tightly than the coastline alone can.
+   "Mostly" is the operative word - part of it dips away from the road - so
+   the fit uses a robust median rather than a strict one. */
+const REFERENCE_ROADS = [
+  { name: 'Østre Allé', note: 'southern edge of Midtbyen', px: [[190.8, 350.8], [193.2, 359.2], [202.8, 361.6], [211.2, 370.0], [213.6, 384.4], [228.0, 398.8], [256.8, 404.8], [266.4, 414.4], [306.0, 426.4], [338.4, 416.8], [354.0, 404.8], [360.0, 384.4], [366.0, 379.6], [372.0, 364.0]] }
+];
+
 const AALBORG_AREAS = {
   1: { name: 'Midtbyen',     color: '#e8734d' },
   2: { name: 'Nørresundby',  color: '#4f9bd8' },
@@ -98,5 +90,5 @@ const AALBORG_AREAS = {
 };
 
 if (typeof window !== 'undefined') {
-  Object.assign(window, { GEOREF, ZONE_ROAD_CONTROLS, ZONE2_PX, ZONE3_PX, AALBORG_AREAS });
+  Object.assign(window, { GEOREF, ZONE2_PX, ZONE3_PX, AALBORG_AREAS, REFERENCE_ROADS });
 }

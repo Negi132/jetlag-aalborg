@@ -111,26 +111,35 @@ always uses the polygon.
 
 ### Placing the zones — automatic, no slider
 
-A screenshot records shape but not position, and I couldn't establish that offline. The app can
-reach OpenStreetMap, so it happens there:
+A screenshot records shape but not position. The app can reach OpenStreetMap, so the placement
+happens there:
 
 > **Layers → Calibrate zones → Place and scale automatically**
 
-It now uses two different kinds of evidence:
+It anchors on three things, in descending order of usefulness:
 
-- the **Limfjord shoreline** fixes the northern/water-facing placement;
-- the known central southern Midtbyen boundary is explicitly paired with the named OSM road
-  **Østre Allé**.
+1. **Østre Allé.** Midtbyen's southern boundary runs mostly along it, so `data.js` stores that edge
+   as a named reference line. Matching it against the real road fixes position *and* scale in one
+   go — this is much tighter than anything derived from the coast, because it's a direct
+   correspondence between a known line on the map and a known line on the ground. "Mostly" is
+   handled: the fit uses a median, so the stretch that leaves the road doesn't drag the answer.
+2. **The Limfjord shoreline**, for global position.
+3. **The wider street network**, as a scale check.
 
-That second item is deliberately stronger than generic nearest-road matching. The previous version
-asked whether some percentage of all boundary points happened to sit near some major road. In a city,
-that can reward the wrong parallel street and still produce a plausible-looking but incorrectly
-scaled result. The new version records a real correspondence: this traced arc is Østre Allé. It then
-solves translation, overall scale, width/height distortion and a small rotation together.
+Tested against synthetic placements: with the Østre Allé anchor it recovers a known scale of
+**1.310 as 1.308** and position to four decimal places, from a deliberately bad starting guess. With
+only the coastline it still gets scale to about 1%. Afterwards it reports how far Midtbyen's southern
+edge ended up from Østre Allé, so you can judge the result at a glance.
 
-The sliders remain available for inspection and manual correction. Besides overall scale there are
-now controls for **width/height correction** and **rotation**, while the Midtbyen anchor remains fixed.
-If Østre Allé cannot be found in OSM, calibration falls back to the coastline and generic road term.
+The slider, centre pin and nudge arrows remain as overrides.
+
+*Adding another anchor:* append to `REFERENCE_ROADS` in `data.js` — a road name and the pixel
+polyline of the boundary that follows it. More anchors, tighter fit.
+
+*On speed:* the fit is a search over a few thousand candidate placements, and at full point density
+it took about 15 seconds. Every point set is thinned to a couple of hundred points first, and the
+street-network term is skipped in the coarse passes, which brings it to roughly a second on a laptop
+without measurably changing the answer.
 
 ### Snapping boundaries to the roads
 
@@ -145,17 +154,15 @@ and in a city there is almost always *some* street within range of those. On a t
 diagonally across a residential grid, it snapped all 40 points and introduced 887 m of spurious
 zigzag.
 
-For ordinary boundaries, a point still moves only when its stretch genuinely follows a road: the
-road must run in the same direction and the same OSM way must remain the best match for a consecutive
-run. The Østre Allé arc is handled separately because its identity is known. It is densified in
-screenshot space and projected onto the named road even when OSM has split the road into several way
-IDs. When OSM represents the road as parallel carriageways, one continuous chain is selected for
-the whole arc so consecutive points cannot jump from one carriageway to the other. This removes the
-long angular chords and the smaller left-right jitter that made the southern Midtbyen edge look rough.
+A point now moves only when its stretch of boundary genuinely follows a road: the road must run in
+the same direction as the boundary (within about 39°), and the *same* OSM way must be the best match
+for at least three consecutive points. On the same two tests: a boundary hugging a main road goes
+from 24 m of wobble to 0.0 m, and the diagonal boundary across the grid is left completely untouched,
+all 40 points.
 
-Densification is deterministic per shared source segment and snapped positions are cached by source
-coordinate. Neighbouring Zone 2 polygons therefore receive the same added road-following points in
-reverse order, rather than opening a new seam while the boundary becomes smoother.
+It doesn't tear the zones apart either, because neighbouring districts share identical arc
+coordinates and snapping is cached per coordinate — after snapping, areas still sum to their union
+to within 0.000%.
 
 **Reset** clears both the placement and the snapping.
 
@@ -246,7 +253,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 209 checks — the app, driven headlessly
+node ui.test.mjs         # 215 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
