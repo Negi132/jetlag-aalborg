@@ -173,7 +173,8 @@ const S = {
   layers: [],            // {id,name,color,kind:'poly'|'line',geojson,layer,visible}
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
-  cal: null,          // pixel-to-map calibration for the traced zones
+  cal: null,          // where the traced zones sit on the map
+  calMode: false,     // dragging the overlay rather than the map
   roadIndex: null,    // loaded road network, for boundary snapping
   snapOn: false,      // whether boundaries are snapped to it
   snapM: 70,          // how far a boundary point may be pulled
@@ -1141,8 +1142,9 @@ const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7
 const mercY = (lat) => (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
 const invMercY = (my) => (180 / Math.PI) * (2 * Math.atan(Math.exp(my * Math.PI / 180)) - Math.PI / 2);
 
-/* Anchor pixel = centroid of the Midtbyen ring, so the centre pin and the
-   scale slider act independently of each other. */
+/* The overlays are the right shape already — only where they sit and how big
+   they are needs setting, and only once. Placement is three numbers: the map
+   position of the overlay's anchor point, and a scale multiplier. */
 function anchorPx() {
   const z = (window.ZONE2_PX || []).find((r) => r.n === 1) || (window.ZONE2_PX || [])[0];
   if (!z) return [446, 401];
@@ -1152,17 +1154,14 @@ function anchorPx() {
 }
 
 function defaultCal() {
-  const g = window.GEOREF || { s: 0.00035, lng0: 9.85, my0: 69.94 };
-  const [ax, ay] = anchorPx();
-  return { lat: invMercY(g.my0 - g.s * ay), lng: g.lng0 + g.s * ax, mul: 1 };
+  const p = window.PLACEMENT || { lat: 57.048, lng: 9.9187, scale: 1 };
+  return { lat: p.lat, lng: p.lng, mul: p.scale };
 }
 
-/* The live transform, rebuilt from the calibration. */
 function georef() {
-  const g = window.GEOREF || { s: 0.00035 };
   const c = S.cal || defaultCal();
   const [ax, ay] = anchorPx();
-  const s = g.s * (c.mul || 1);
+  const s = (window.BASE_PX_DEG || 0.00031) * (c.mul || 1);
   return { s, lng0: c.lng - s * ax, my0: mercY(c.lat) + s * ay };
 }
 
@@ -1177,6 +1176,7 @@ function ringToPolygon(ring, props, gr, snapper) {
   try { return turf.polygon([coords], props); } catch (_) { return null; }
 }
 
+/* Zone 2: the four play zones, straight from the traced outlines. */
 /* Zone 2: the four play zones, straight from the traced outlines. */
 function buildAreaZones() {
   const gr = georef();
@@ -1881,7 +1881,7 @@ function boundaryVertices(step) {
 function fitToGeography(coastVerts, coastPts, bndVerts, roadIdx, start, refs) {
   const coastIdx = makeIndex(coastPts, 0.01);
   const [ax, ay] = anchorPx();
-  const g = window.GEOREF;
+  const g = { s: window.BASE_PX_DEG || 0.00031 };
 
   // The fit searches thousands of candidate placements, so thin every point
   // set down first — a few hundred per term locates the optimum just as well
@@ -2087,6 +2087,89 @@ async function snapToRoads(btn) {
   }
 }
 
+/* ---------- moving and scaling the overlay ----------------------------
+   The shapes are already right; only placement needs setting, once. So the
+   tools are the direct kind: drag the zones around with a finger, scale
+   them about the map centre, nudge by an exact number of metres, and then
+   bake the result into data.js so nobody ever does it again. */
+
+let dragging = null;
+
+function calStep() { return Number($('#calStepSel').value) || 25; }
+
+/* Move the overlay by a distance in metres. The east-west conversion uses a
+   fixed reference latitude rather than the current one, so a nudge and its
+   opposite cancel exactly — otherwise repeated tweaking drifts. */
+const NUDGE_REF_LAT = 57.05;
+const M_PER_DEG_LNG = 111320 * Math.cos(NUDGE_REF_LAT * Math.PI / 180);
+
+function nudgeCal(dxM, dyM) {
+  const c = Object.assign({}, S.cal || defaultCal());
+  c.lat += dyM / 111320;
+  c.lng += dxM / M_PER_DEG_LNG;
+  S.cal = c;
+  applyCal(true);
+}
+
+/* Scale about the centre of the visible map, so what you are looking at
+   stays put while the overlay grows or shrinks around it. */
+function scaleCal(factor) {
+  const c = Object.assign({}, S.cal || defaultCal());
+  const mid = map.getCenter();
+  const k = (c.mul || 1) * factor;
+  if (k < 0.2 || k > 5) return;
+  // keep the map centre fixed: the anchor moves relative to it by `factor`
+  c.lng = mid.lng + (c.lng - mid.lng) * factor;
+  const my = mercY(mid.lat) + (mercY(c.lat) - mercY(mid.lat)) * factor;
+  c.lat = invMercY(my);
+  c.mul = k;
+  S.cal = c;
+  applyCal(true);
+}
+
+function setCalMode(on) {
+  S.calMode = on;
+  document.body.classList.toggle('cal-mode', on);
+  $('#calDrag').classList.toggle('is-picking', on);
+  $('#calDrag').textContent = on ? 'Dragging on — tap to finish' : 'Drag the zones on the map';
+  map.dragging[on ? 'disable' : 'enable']();
+  if (on) {
+    toast('Drag the map to move the zones. Pinch or use +/− to resize.');
+    if (window.innerWidth <= 820) closeSheet();
+  }
+}
+
+function calPointerDown(e) {
+  if (!S.calMode) return;
+  const p = e.touches ? e.touches[0] : e;
+  dragging = { x: p.clientX, y: p.clientY };
+}
+function calPointerMove(e) {
+  if (!S.calMode || !dragging) return;
+  const p = e.touches ? e.touches[0] : e;
+  const a = map.containerPointToLatLng([dragging.x, dragging.y]);
+  const b = map.containerPointToLatLng([p.clientX, p.clientY]);
+  const c = Object.assign({}, S.cal || defaultCal());
+  c.lat += b.lat - a.lat;
+  c.lng += b.lng - a.lng;
+  S.cal = c;
+  dragging = { x: p.clientX, y: p.clientY };
+  applyCal(true, true);          // light repaint while the finger is down
+  e.preventDefault();
+}
+function calPointerUp() {
+  if (!dragging) return;
+  dragging = null;
+  applyCal(true);
+}
+
+/* The line to paste into data.js so this never has to be done again. */
+function placementSnippet() {
+  const c = S.cal || defaultCal();
+  return `const PLACEMENT = { lat: ${c.lat.toFixed(6)}, lng: ${c.lng.toFixed(6)}, ` +
+         `scale: ${(c.mul || 1).toFixed(5)} };`;
+}
+
 /* ---------- calibration ------------------------------------------------ */
 
 function calSpanText() {
@@ -2100,36 +2183,25 @@ function calSpanText() {
 
 function renderCal() {
   const c = S.cal || defaultCal();
-  $('#calScale').value = Math.round((c.mul || 1) * 100);
-  $('#calScaleVal').textContent = Math.round((c.mul || 1) * 100) + '%';
+  $('#calScaleVal').textContent = ((c.mul || 1) * 100).toFixed(1) + '%';
   $('#calSpan').textContent = calSpanText();
+  $('#calSnippet').value = placementSnippet();
 }
 
 /* Rebuild anything derived from the transform, then repaint. */
-function applyCal(silent) {
+function applyCal(silent, light) {
   refreshDerivedLayers();
+  if (light) {
+    // during a drag, skip the play-area rebuild and the fog recompute
+    renderCal();
+    return;
+  }
   if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
   else recompute();
   renderCal();
   saveToUrl();
   if (!silent) setStatus(`Zones now ${calSpanText()}.`);
 }
-
-$('#calScale').addEventListener('input', (e) => {
-  S.cal = Object.assign({}, S.cal || defaultCal(), { mul: Number(e.target.value) / 100 });
-  applyCal(true);
-});
-
-$('#calPin').addEventListener('click', () => {
-  const btn = $('#calPin');
-  beginPick(btn, (coord) => {
-    S.cal = Object.assign({}, S.cal || defaultCal(), { lng: coord[0], lat: coord[1] });
-    applyCal();
-    toast('Centre pinned. Now slide the scale until the outlines sit on the streets.');
-  });
-  btn.classList.add('is-picking');
-  toast('Now tap the map where central Aalborg is.');
-});
 
 $('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
 $('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
@@ -2160,31 +2232,50 @@ function tryRename(ft) {
   return true;
 }
 
+$('#calDrag').addEventListener('click', () => setCalMode(!S.calMode));
+
+const mapEl = $('#map');
+mapEl.addEventListener('mousedown', calPointerDown);
+mapEl.addEventListener('touchstart', calPointerDown, { passive: false });
+window.addEventListener('mousemove', calPointerMove);
+window.addEventListener('touchmove', calPointerMove, { passive: false });
+window.addEventListener('mouseup', calPointerUp);
+window.addEventListener('touchend', calPointerUp);
+
+$('#calBox').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.nudge) {
+    const m = calStep();
+    if (b.dataset.nudge === 'n') nudgeCal(0, m);
+    if (b.dataset.nudge === 's') nudgeCal(0, -m);
+    if (b.dataset.nudge === 'e') nudgeCal(m, 0);
+    if (b.dataset.nudge === 'w') nudgeCal(-m, 0);
+  }
+  if (b.dataset.scale) scaleCal(Number(b.dataset.scale));
+});
+
+/* Arrow keys nudge too, while dragging mode is on. */
+document.addEventListener('keydown', (e) => {
+  if (!S.calMode) return;
+  const m = calStep();
+  const k = { ArrowUp: [0, m], ArrowDown: [0, -m], ArrowLeft: [-m, 0], ArrowRight: [m, 0] }[e.key];
+  if (!k) return;
+  nudgeCal(k[0], k[1]);
+  e.preventDefault();
+});
+
+$('#calCopy').addEventListener('click', async () => {
+  const line = placementSnippet();
+  try { await navigator.clipboard.writeText(line); toast('Copied. Paste it over PLACEMENT in data.js.'); }
+  catch (_) { $('#calSnippet').select(); toast('Select and copy the line above.'); }
+});
+
 $('#calReset').addEventListener('click', () => {
   S.cal = defaultCal();
   S.roadIndex = null; S.snapOn = false;   // also drops any road snapping
+  setCalMode(false);
   applyCal();
-});
-
-$('#calNudge').addEventListener('click', () => {
-  const box = $('#calNudgeBox');
-  box.hidden = !box.hidden;
-});
-
-$('#calNudgeBox').addEventListener('click', (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  const c = Object.assign({}, S.cal || defaultCal());
-  const step = 0.004;                      // ~250 m at this latitude
-  const k = b.dataset.nudge;
-  if (k === 'n') c.lat += step / 2;
-  if (k === 's') c.lat -= step / 2;
-  if (k === 'e') c.lng += step;
-  if (k === 'w') c.lng -= step;
-  if (k === '+') c.mul = (c.mul || 1) * 1.01;
-  if (k === '-') c.mul = (c.mul || 1) / 1.01;
-  S.cal = c;
-  applyCal(true);
 });
 
 /* ---------- layers tab UI --------------------------------------------- */
@@ -2650,6 +2741,7 @@ window.HS = {
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
   buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate,
+  nudgeCal, scaleCal, setCalMode, placementSnippet, georef,
   snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,
   fitToGeography, boundaryVertices, overpassJson,
   referenceLines, overpassNamedRoadQuery,

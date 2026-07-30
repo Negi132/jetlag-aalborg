@@ -111,31 +111,48 @@
       <div class="stack" id="zoneSources"></div>
 
       <div id="calBox" class="calbox">
-        <p class="cal-title">Calibrate zones</p>
-        <p class="hint">Zones 2 and 3 are traced from your screenshots, which don't record where
-          on Earth they sit. Line them up once — it saves into the game link.</p>
-        <button class="solid-btn wide" id="calAuto">Place and scale automatically</button>
-        <p class="hint">Anchors on <strong>Østre Allé</strong> — Midtbyen's southern edge runs along
-          it — plus the Limfjord shoreline and the wider street network. Position and scale both come
-          out of that, so there's no slider to touch. It reports how close the Midtbyen edge landed.</p>
-        <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or place by hand: tap here, then tap Nytorv</button>
-        <button class="ghost-btn wide" id="calSnap" style="margin-top:8px">Snap boundaries to the roads</button>
-        <p class="hint">Do this after placing. Only stretches that genuinely run along a road move —
-          borders following the shore, the railway or a field edge are left alone.</p>
-        <div class="field" style="margin-top:10px">
-          <label for="calScale">Scale, if you want to override it — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
-          <input type="range" id="calScale" min="50" max="200" step="1" value="100">
+        <p class="cal-title">Place the zones — once</p>
+        <p class="hint">The outlines are already the right shape. All that's left is where they sit
+          and how big they are. Set it once, paste the line at the bottom into <code>data.js</code>,
+          and nobody ever has to do this again.</p>
+
+        <button class="solid-btn wide" id="calAuto">Try it automatically</button>
+
+        <p class="cal-sub">Move</p>
+        <button class="ghost-btn wide" id="calDrag">Drag the zones on the map</button>
+        <div class="cal-pad">
+          <span></span><button data-nudge="n">↑</button><span></span>
+          <button data-nudge="w">←</button>
+          <select id="calStepSel" title="step size">
+            <option value="5">5 m</option>
+            <option value="25" selected>25 m</option>
+            <option value="100">100 m</option>
+            <option value="500">500 m</option>
+          </select>
+          <button data-nudge="e">→</button>
+          <span></span><button data-nudge="s">↓</button><span></span>
         </div>
-        <div class="inline wrap">
-          <button class="ghost-btn" id="calNudge">Fine nudge…</button>
+
+        <p class="cal-sub">Resize <span class="cal-read" id="calScaleVal">100%</span></p>
+        <div class="cal-row">
+          <button class="ghost-btn" data-scale="0.99">−1%</button>
+          <button class="ghost-btn" data-scale="0.999">−0.1%</button>
+          <button class="ghost-btn" data-scale="1.001">+0.1%</button>
+          <button class="ghost-btn" data-scale="1.01">+1%</button>
+        </div>
+        <p class="hint">Resizes around the middle of the screen, so line up one landmark first,
+          centre it, then resize until a second one matches. Zones span <span id="calSpan">—</span>.</p>
+
+        <p class="cal-sub">Make it permanent</p>
+        <textarea id="calSnippet" class="cal-snippet" readonly rows="2"></textarea>
+        <div class="cal-row">
+          <button class="ghost-btn" id="calCopy">Copy this line</button>
+          <button class="ghost-btn" id="calSnap">Snap to roads</button>
           <button class="ghost-btn" id="calRename">Rename a district</button>
           <button class="ghost-btn" id="calReset">Reset</button>
         </div>
-        <div id="calNudgeBox" class="cal-nudge" hidden>
-          <button data-nudge="n">↑</button><button data-nudge="s">↓</button>
-          <button data-nudge="w">←</button><button data-nudge="e">→</button>
-          <button data-nudge="-">−</button><button data-nudge="+">+</button>
-        </div>
+        <p class="hint">Paste it over the <code>PLACEMENT</code> line in <code>data.js</code> and
+          commit. Until you do, it still rides along in the game link.</p>
       </div>
 
       <p class="section-label">Bus &amp; train routes</p>

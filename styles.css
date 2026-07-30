@@ -538,10 +538,6 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 
-/* Play-area picker stacks so the option names stay readable */
-.seg.seg-stack{ flex-direction:column; }
-.seg.seg-stack button{ border-right:0; border-bottom:1px solid var(--line); text-align:left; padding:10px 12px; }
-.seg.seg-stack button:last-child{ border-bottom:0; }
 
 /* ── Calibration box ──────────────────────────────────── */
 .calbox{
@@ -567,3 +563,53 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
   border-radius:var(--r-sm); color:var(--text); cursor:pointer;
 }
 .cal-nudge button:hover{ border-color:var(--signal-dk); color:var(--signal); }
+
+/* Play-area picker stacks so the option names stay readable */
+.seg.seg-stack{ flex-direction:column; }
+.seg.seg-stack button{ border-right:0; border-bottom:1px solid var(--line); text-align:left; padding:10px 12px; }
+.seg.seg-stack button:last-child{ border-bottom:0; }
+
+/* ── Placement controls ───────────────────────────────── */
+.cal-sub{
+  margin:14px 0 7px;
+  font-family:"Barlow Condensed",sans-serif;
+  font-size:13px; font-weight:600;
+  text-transform:uppercase; letter-spacing:.1em;
+  color:var(--text-dim);
+  display:flex; align-items:baseline; gap:8px;
+}
+.cal-read{
+  font-family:"IBM Plex Mono",monospace; font-size:12px;
+  color:var(--signal); letter-spacing:0; text-transform:none;
+}
+.cal-pad{
+  display:grid; grid-template-columns:repeat(3,1fr); gap:5px;
+  margin-top:8px;
+}
+.cal-pad button{
+  padding:11px 0; font-size:16px;
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:var(--r-sm); color:var(--text); cursor:pointer;
+}
+.cal-pad button:hover{ border-color:var(--signal-dk); color:var(--signal); }
+.cal-pad select{
+  padding:0 4px; text-align:center;
+  font-family:"IBM Plex Mono",monospace; font-size:12px;
+}
+.cal-row{ display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.cal-row .ghost-btn{ flex:1 1 auto; padding:9px 8px; font-size:13px; }
+.cal-snippet{
+  width:100%; margin-top:8px; padding:9px 10px;
+  background:var(--ink); border:1px solid var(--line); border-radius:var(--r-sm);
+  color:var(--signal);
+  font-family:"IBM Plex Mono",monospace; font-size:11px; line-height:1.5;
+  resize:vertical;
+}
+.calbox code{
+  font-family:"IBM Plex Mono",monospace; font-size:11px;
+  background:var(--surface-2); padding:1px 4px; border-radius:3px;
+}
+
+/* while dragging the overlay, the map itself should not pan */
+body.cal-mode .leaflet-container{ cursor:move; }
+body.cal-mode #map{ touch-action:none; }

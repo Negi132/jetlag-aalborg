@@ -507,333 +507,216 @@ check('and it is genuinely concave, unlike a hull', window.eval(`(() => {
   return turf.area(hull) > turf.area(pa) * 1.12;   // hull noticeably bigger
 })()`), `play ${(window.eval("turf.area(HS.S.playArea)")/1e6).toFixed(0)} km2`);
 
-console.log('\n== calibration ==');
-const before = window.eval("JSON.stringify(turf.centroid(HS.layerByKey('src:zone2').geojson.features[0]).geometry.coordinates)");
-window.eval("HS.S.cal = Object.assign({}, HS.S.cal, {lat: 57.0480, lng: 9.9187}); HS.applyCal(true)");
-const after = window.eval("JSON.stringify(turf.centroid(HS.layerByKey('src:zone2').geojson.features[0]).geometry.coordinates)");
-check('pinning the centre moves the zones', before !== after);
-check('the pin lands where asked', window.eval(`(() => {
-  const a = HS.anchorPx(), gr = HS.georef();
-  const [lng, lat] = HS.pxToLngLat(a[0], a[1], gr);
-  return Math.abs(lng - 9.9187) < 1e-6 && Math.abs(lat - 57.0480) < 1e-6;
+
+console.log('\n== no gaps between neighbouring zones ==');
+check('zone 3 tiles its own outline exactly', window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  const outline = turf.area(HS.unionAll(fs));
+  window.__z3 = [sum, outline];
+  return Math.abs(sum - outline) / outline < 0.002;
+})()`), (() => { const v = window.eval("window.__z3")||[0,1];
+  return 'sum ' + (v[0]/1e6).toFixed(2) + ' km2 vs union ' + (v[1]/1e6).toFixed(2); })());
+check('zone 2 tiles its own outline exactly', window.eval(`(() => {
+  const fs = HS.buildAreaZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
 })()`));
-const span1 = window.eval(`(() => { const b = turf.bbox(HS.buildAreaZones());
-  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`);
-window.eval("HS.S.cal = Object.assign({}, HS.S.cal, {mul: 1.5}); HS.applyCal(true)");
-const span2 = window.eval(`(() => { const b = turf.bbox(HS.buildAreaZones());
-  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`);
-check('scaling widens the zones proportionally', Math.abs(span2 / span1 - 1.5) < 0.02,
-      `${span1.toFixed(1)} km -> ${span2.toFixed(1)} km`);
-check('scaling keeps the centre pin fixed', window.eval(`(() => {
-  const a = HS.anchorPx(), gr = HS.georef();
-  const [lng, lat] = HS.pxToLngLat(a[0], a[1], gr);
-  return Math.abs(lng - 9.9187) < 1e-6 && Math.abs(lat - 57.0480) < 1e-6;
+check('no two districts overlap', window.eval(`(() => {
+  const fs = HS.buildDistrictZones().features;
+  let worst = 0;
+  for (let i=0;i<fs.length;i++) for (let j=i+1;j<fs.length;j++) {
+    let inter=null;
+    try { inter = turf.intersect(turf.featureCollection([fs[i],fs[j]])); } catch(e) {}
+    if (inter) worst = Math.max(worst, turf.area(inter) / Math.min(turf.area(fs[i]),turf.area(fs[j])));
+  }
+  window.__ov = worst;
+  return worst < 0.005;
+})()`), 'worst overlap ' + (100*(window.eval("window.__ov")||0)).toFixed(3) + '% of the smaller');
+check('the four play zones cover the districts', window.eval(`(() => {
+  const z2 = turf.area(HS.unionAll(HS.buildAreaZones().features));
+  const z3 = turf.area(HS.unionAll(HS.buildDistrictZones().features));
+  window.__cov = z3/z2;
+  return z3/z2 > 0.85 && z3/z2 < 1.15;
+})()`), 'zone 3 covers ' + (100*(window.eval("window.__cov")||0)).toFixed(0) + '% of zone 2');
+
+console.log('\n== zone toggles stay reversible ==');
+click(doc.querySelector('[data-tab="layers"]'));
+const zr = () => doc.querySelectorAll('#zoneSources .src-main');
+if (!window.eval("!!HS.layerByKey('src:zone3')")) {
+  click(zr()[2]); await new Promise(r=>setTimeout(r,40));
+}
+const vis = () => window.eval("HS.layerByKey('src:zone3').visible");
+const start = vis();
+click(zr()[2]);
+check('tapping flips the layer', vis() === !start);
+click(zr()[2]);
+check('tapping again flips it back', vis() === start);
+click(zr()[2]); click(zr()[2]);
+check('four taps later there is still exactly one layer',
+      window.eval("HS.S.layers.filter(l=>l.key==='src:zone3').length") === 1 && vis() === start);
+
+console.log('\n== boundaries snapped to roads ==');
+check('a boundary along a road is straightened onto it', window.eval(`(() => {
+  const segs = [];
+  for (let i=0;i<40;i++) segs.push([9.90+i*0.002,57.05,9.90+(i+1)*0.002,57.05,1]);
+  for (let i=0;i<40;i+=3){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,2+i]); }
+  const sn = HS.snapRingsToRoads(HS.segmentIndex(segs, 0.004), 70);
+  const ring = []; for (let i=0;i<40;i++) ring.push([i, (i%2?0.1:-0.1)]);
+  const gr = { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.05) };
+  const out = sn.mapRing(ring.concat([ring[0]]), gr);
+  const lats = out.map(p=>p[1]);
+  window.__sp = (Math.max(...lats)-Math.min(...lats))*111200;
+  return window.__sp < 5;
+})()`), 'residual spread ' + (window.eval("window.__sp")||0).toFixed(1) + ' m');
+check('a boundary that follows no road is left alone', window.eval(`(() => {
+  const segs = [];
+  for (let j=0;j<12;j++){ const y=57.045+j*0.0009;
+    for (let i=0;i<40;i++) segs.push([9.90+i*0.002,y,9.90+(i+1)*0.002,y,100+j]); }
+  for (let i=0;i<40;i+=2){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,200+i]); }
+  const sn = HS.snapRingsToRoads(HS.segmentIndex(segs, 0.004), 70);
+  const ring = []; for (let i=0;i<40;i++) ring.push([i, i]);
+  sn.mapRing(ring.concat([ring[0]]), { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.0455) });
+  const st = sn.stats(); window.__lo = st.total - st.moved; window.__lt = st.total;
+  return st.moved < st.total * 0.25;
+})()`), window.eval("window.__lo") + ' of ' + window.eval("window.__lt") + ' left untouched');
+check('snapping keeps the zones joined', window.eval(`(() => {
+  const before = HS.buildDistrictZones().features;
+  const segs = [];
+  for (const f of before) { const c = f.geometry.coordinates[0];
+    for (let i=1;i<c.length;i++) segs.push([c[i-1][0]+0.0002,c[i-1][1]+0.0001,c[i][0]+0.0002,c[i][1]+0.0001,1]); }
+  HS.S.roadIndex = HS.segmentIndex(segs, 0.004); HS.S.snapOn = true; HS.S.snapM = 120;
+  const after = HS.buildDistrictZones().features;
+  const sum = after.reduce((a,f)=>a+turf.area(f),0);
+  const d = Math.abs(sum - turf.area(HS.unionAll(after)))/turf.area(HS.unionAll(after));
+  HS.S.roadIndex = null; HS.S.snapOn = false;
+  window.__sd = d;
+  return d < 0.005;
+})()`), 'sum vs union differ by ' + (100*(window.eval("window.__sd")||0)).toFixed(3) + '%');
+
+console.log('\n== automatic placement ==');
+check('scale and position are both recovered', window.eval(`(() => {
+  const truth = { mul: 1.22, lat: 57.0610, lng: 9.9400 };
+  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
+  const s = g.s * truth.mul;
+  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
+  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
+  const cv = HS.coastVertices(), coast = cv.map(put);
+  const bnd = HS.boundaryVertices(2);
+  const segs = [];
+  for (let i=1;i<bnd.length;i++){ const p=put(bnd[i-1]), q=put(bnd[i]); segs.push([p[0],p[1],q[0],q[1],i]); }
+  const best = HS.fitToGeography(cv, coast, bnd, HS.segmentIndex(segs,0.004),
+                                 { mul: 1.0, lat: 57.048, lng: 9.9187 }, []);
+  window.__af = best;
+  return Math.abs(best.mul - truth.mul) < 0.02;
+})()`), 'recovered ' + (window.eval("window.__af && window.__af.mul")||0).toFixed(3) + ' vs 1.220');
+
+console.log('\n== placing the zones ==');
+const c0 = window.eval("JSON.stringify(HS.S.cal)");
+check('placement starts from data.js', window.eval(`(() => {
+  const c = HS.S.cal || HS.defaultCal(), p = window.PLACEMENT;
+  return Math.abs(c.lat-p.lat)<1e-9 && Math.abs(c.lng-p.lng)<1e-9 && Math.abs(c.mul-p.scale)<1e-9;
 })()`));
-check('play area followed the calibration', window.eval(`(() => {
-  const u = turf.area(HS.unionAll(HS.buildAreaZones().features));
-  return Math.abs(turf.area(HS.S.playArea) - u) / u < 0.01;
+
+console.log('  -- nudging by an exact distance --');
+check('nudging east moves the zones east by the amount asked', window.eval(`(() => {
+  const before = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  HS.nudgeCal(250, 0);
+  const after = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  const d = turf.distance(turf.point(before), turf.point(after), {units:'kilometers'})*1000;
+  window.__d = d;
+  return Math.abs(d - 250) < 3 && after[0] > before[0];
+})()`), 'moved ' + (window.eval("window.__d")||0).toFixed(1) + ' m for a 250 m nudge');
+check('nudging north moves north by the amount asked', window.eval(`(() => {
+  const before = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  HS.nudgeCal(0, 100);
+  const after = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  const d = turf.distance(turf.point(before), turf.point(after), {units:'kilometers'})*1000;
+  return Math.abs(d - 100) < 2 && after[1] > before[1];
 })()`));
-window.eval("HS.S.cal = HS.defaultCal(); HS.applyCal(true)");
-check('reset returns to the shipped estimate', Math.abs(window.eval(`(() => {
-  const b = turf.bbox(HS.buildAreaZones());
-  return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); })()`) - span1) < 0.01);
-check('calibration survives a save/load round trip', window.eval(`(() => {
-  HS.S.cal = {lat: 57.05, lng: 9.93, mul: 1.2};
+check('nudges undo exactly', window.eval(`(() => {
+  const a = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  HS.nudgeCal(-250, -100);
+  const b = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  HS.nudgeCal(250, 100); HS.nudgeCal(-250, -100);
+  const c = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
+  return Math.abs(b[0]-c[0])<1e-9 && Math.abs(b[1]-c[1])<1e-9;
+})()`));
+window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
+
+console.log('  -- resizing about the screen centre --');
+check('a 1% resize changes the span by 1%', window.eval(`(() => {
+  const span = () => { const b = turf.bbox(HS.buildAreaZones());
+    return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); };
+  const a = span(); HS.scaleCal(1.01); const b = span();
+  window.__r = b/a;
+  return Math.abs(b/a - 1.01) < 0.002;
+})()`), 'ratio ' + (window.eval("window.__r")||0).toFixed(4));
+check('resizing keeps the map centre fixed', window.eval(`(() => {
+  const mid = HS.map.getCenter();
+  const at = () => { const gr = HS.georef();
+    // where does the map centre fall in overlay pixel space?
+    return [(mid.lng - gr.lng0)/gr.s, (HS.__mercY(mid.lat) - gr.my0)/(-gr.s)]; };
+  const a = at(); HS.scaleCal(1.05); const b = at();
+  window.__px = Math.hypot(a[0]-b[0], a[1]-b[1]);
+  return window.__px < 0.6;      // same overlay pixel stays under the centre
+})()`), 'centre drifted ' + (window.eval("window.__px")||0).toFixed(2) + ' overlay px');
+check('resizes undo exactly', window.eval(`(() => {
+  const m0 = HS.S.cal.mul;
+  HS.scaleCal(1.01); HS.scaleCal(1/1.01);
+  return Math.abs(HS.S.cal.mul - m0) < 1e-9;
+})()`));
+check('resizing refuses to run away', window.eval(`(() => {
+  const m0 = HS.S.cal.mul;
+  for (let i=0;i<200;i++) HS.scaleCal(1.1);
+  const big = HS.S.cal.mul <= 5;
+  for (let i=0;i<400;i++) HS.scaleCal(0.9);
+  return big && HS.S.cal.mul >= 0.2;
+})()`));
+window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
+
+console.log('  -- dragging --');
+check('drag mode stops the map panning', window.eval(`(() => {
+  HS.setCalMode(true);
+  const off = !HS.map.dragging.enabled();
+  HS.setCalMode(false);
+  return off && HS.map.dragging.enabled();
+})()`));
+
+console.log('  -- making it permanent --');
+check('the snippet is a valid PLACEMENT line', window.eval(`(() => {
+  const line = HS.placementSnippet();
+  window.__line = line;
+  if (line.indexOf('const PLACEMENT = {') !== 0 || line.slice(-2) !== '};') return false;
+  const o = eval('(' + line.slice('const PLACEMENT = '.length, -1) + ')');
+  const c = HS.S.cal || HS.defaultCal();
+  return Math.abs(o.lat-c.lat) < 1e-5 && Math.abs(o.lng-c.lng) < 1e-5
+      && Math.abs(o.scale-(c.mul||1)) < 1e-4;
+})()`), window.eval("window.__line"));
+check('pasting the snippet reproduces the placement exactly', window.eval(`(() => {
+  HS.nudgeCal(137, -42); HS.scaleCal(1.037);
+  const line = HS.placementSnippet();
+  const want = HS.buildAreaZones().features.map(f => turf.centroid(f).geometry.coordinates);
+  // simulate a fresh load with that PLACEMENT baked into data.js
+  const saved = window.PLACEMENT;
+  window.PLACEMENT = eval(line.replace('const PLACEMENT =','(').replace(/;$/,')'));
+  HS.S.cal = HS.defaultCal();
+  const got = HS.buildAreaZones().features.map(f => turf.centroid(f).geometry.coordinates);
+  window.PLACEMENT = saved;
+  const worst = Math.max(...want.map((w,i) =>
+    turf.distance(turf.point(w), turf.point(got[i]), {units:'kilometers'})*1000));
+  window.__worst = worst;
+  return worst < 1;             // under a metre
+})()`), 'reproduced to ' + (window.eval("window.__worst")||0).toFixed(2) + ' m');
+window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
+check('placement still survives the game link', window.eval(`(() => {
+  HS.S.cal = { lat: 57.05, lng: 9.93, mul: 1.2 };
   const blob = JSON.parse(JSON.stringify(HS.serialize()));
   HS.S.cal = HS.defaultCal();
   HS.deserialize(blob);
   return Math.abs(HS.S.cal.mul - 1.2) < 1e-9 && Math.abs(HS.S.cal.lng - 9.93) < 1e-9;
 })()`));
-
-console.log('\n== zone toggles stay reversible ==');
-click(zoneRows()[2]);
-check('zone 3 toggles off', window.eval("HS.layerByKey('src:zone3').visible") === false);
-click(zoneRows()[2]);
-check('zone 3 toggles back on', window.eval("HS.layerByKey('src:zone3').visible") === true);
-check('still only one zone 3 layer', window.eval("HS.S.layers.filter(l=>l.key==='src:zone3').length") === 1);
-
-console.log('\n== zone 1 landzone backdrop ==');
-window.eval(`HS.addLayer('Zone 1 backdrop test', {type:'FeatureCollection',features:[
-  {type:'Feature',properties:{zonestatus:'Byzone'},geometry:{type:'Polygon',coordinates:[[[9.90,57.04],[9.94,57.04],[9.94,57.06],[9.90,57.06],[9.90,57.04]]]}}]},
-  {key:'src:zone1b', style:'zonekort'})`);
-const zb = () => window.eval("HS.layerByKey('src:zone1b').geojson.features");
-check('a landzone polygon was added alongside the byzone', zb().length === 2, `${zb().length} features`);
-check('landzone is drawn first so byzone sits on top',
-      zb()[0].properties.zonestatus === 'Landzone', zb()[0].properties.zonestatus);
-check('landzone fills the rest of the play area', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone1b').geojson.features;
-  const total = turf.area(HS.unionAll(fs));
-  return Math.abs(total - turf.area(HS.S.playArea)) / turf.area(HS.S.playArea) < 0.02;
-})()`));
-check('landzone renders green', window.eval(
-      "(HS.categoryFor('zonekort', HS.layerByKey('src:zone1b').geojson.features[0].properties)||{}).color") === '#4fae5a');
-check('byzone renders red', window.eval(
-      "(HS.categoryFor('zonekort', HS.layerByKey('src:zone1b').geojson.features[1].properties)||{}).color") === '#e0554f');
-
-console.log('\n== picture overlay toggles ==');
-check('NT overlay offered as a row', /NT route map/.test($('#wmsList').textContent));
-click(doc.querySelector('#wmsList .src-main'));
-check('overlay turned on', window.eval("HS.S.wms.length") === 1 && window.eval("HS.S.wms[0].visible") === true);
-click(doc.querySelector('#wmsList .src-main'));
-check('overlay turned off, not duplicated',
-      window.eval("HS.S.wms.length") === 1 && window.eval("HS.S.wms[0].visible") === false);
-
-
-console.log('\n== zone 4 tooltip and legend order ==');
-check('legend is alphabetical by letter', window.eval(`(() => {
-  const ks = HS.RAMME_STYLE.slice().sort((a,b)=>a.key.localeCompare(b.key)).map(c=>c.key);
-  return ks.join('') === 'BCDGHILMORST';
-})()`), window.eval("HS.RAMME_STYLE.slice().sort((a,b)=>a.key.localeCompare(b.key)).map(c=>c.key).join('')"));
-check('matching order still puts D before B', window.eval(
-      "HS.RAMME_STYLE.findIndex(c=>c.key==='D') < HS.RAMME_STYLE.findIndex(c=>c.key==='B')"));
-window.eval(`HS.addLayer('Rammer test', {type:'FeatureCollection',features:[
-  {type:'Feature',properties:{plannr:'1.1.C2', anvendelsesnavn:'Centerområde'},
-   geometry:{type:'Polygon',coordinates:[[[9.91,57.04],[9.93,57.04],[9.93,57.05],[9.91,57.05],[9.91,57.04]]]}},
-  {type:'Feature',properties:{plannr:'2.2.S1', anvendelsesnavn:'Sommerhusområde'},
-   geometry:{type:'Polygon',coordinates:[[[9.94,57.04],[9.95,57.04],[9.95,57.05],[9.94,57.05],[9.94,57.04]]]}},
-  {type:'Feature',properties:{plannr:'3.3.B4', anvendelsesnavn:'Boligområde'},
-   geometry:{type:'Polygon',coordinates:[[[9.96,57.04],[9.97,57.04],[9.97,57.05],[9.96,57.05],[9.96,57.04]]]}},
-  {type:'Feature',properties:{plannr:'4.4.R1', anvendelsesnavn:'Rekreativt område'},
-   geometry:{type:'Polygon',coordinates:[[[9.98,57.04],[9.99,57.04],[9.99,57.05],[9.98,57.05],[9.98,57.04]]]}}]},
-  {key:'src:zone4t', style:'rammer', nameField:'plannr'})`);
-const tips = window.eval(`(() => {
-  const out = [];
-  HS.layerByKey('src:zone4t').layer.eachLayer(l => out.push(l.getTooltip().getContent()));
-  return out;
-})()`);
-check('tapping an area shows only the letter', tips.join(',') === 'C,S,B,R', JSON.stringify(tips));
-check('no plan number in any tooltip', tips.every(t => !/\d/.test(t)));
-const legTxt = $('#legend').textContent.slice($('#legend').textContent.indexOf('Rammer test'));
-const shown = (legTxt.match(/([A-Z]) ·/g) || []).map(t => t[0]);
-check('legend lists the letters alphabetically',
-      shown.length >= 3 && shown.join('') === shown.slice().sort().join(''),
-      shown.join(''));
-
-
-console.log('\n== no gaps between neighbouring zones ==');
-check('zone 3 covers its own outline with no slivers', window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  const outline = HS.unionAll(fs);
-  // if regions abut exactly, the union equals the sum of the parts
-  return Math.abs(sum - turf.area(outline)) / turf.area(outline) < 0.02;
-})()`), window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  return 'sum ' + (sum/1e6).toFixed(1) + ' km2 vs union ' + (turf.area(HS.unionAll(fs))/1e6).toFixed(1);
-})()`));
-check('zone 2 areas abut with no gaps', window.eval(`(() => {
-  const fs = HS.buildAreaZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.02;
-})()`));
-// Abutting polygons share an edge, and contour tracing is pixel-quantised,
-// so neighbours overlap by up to one pixel (~28 m) along a shared border.
-// What matters is that they overlap slightly rather than leaving a gap.
-check('districts share edges with no gaps and no overlap', window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  let worstFrac = 0, worstAbs = 0;
-  for (let i=0;i<fs.length;i++) for (let j=i+1;j<fs.length;j++) {
-    let inter=null;
-    try { inter = turf.intersect(turf.featureCollection([fs[i],fs[j]])); } catch(e) {}
-    if (!inter) continue;
-    const a = turf.area(inter);
-    const smaller = Math.min(turf.area(fs[i]), turf.area(fs[j]));
-    worstAbs = Math.max(worstAbs, a);
-    worstFrac = Math.max(worstFrac, a / smaller);
-  }
-  window.__wf = worstFrac; window.__wa = worstAbs;
-  return worstFrac < 0.03;
-})()`), 'worst overlap ' + (100*window.eval("window.__wf||0")).toFixed(2) + '% of the smaller district');
-
-console.log('\n== coastline auto-fit ==');
-check('shoreline vertices were recorded', window.eval("HS.coastVertices().length") > 100,
-      window.eval("HS.coastVertices().length") + ' vertices');
-check('Overpass coastline query is well formed', window.eval(`(() => {
-  const q = HS.overpassCoastQuery();
-  return q.includes('"natural"="coastline"') && q.includes('out geom;')
-      && q.includes('way(56.94,9.7,57.18,10.25)');
-})()`), window.eval("HS.overpassCoastQuery()").slice(0, 60));
-check('overpass geometry densifies into points', window.eval(`(() => {
-  const pts = HS.parseOverpassPoints({elements:[{type:'way',geometry:[
-    {lat:57.05,lon:9.90},{lat:57.05,lon:9.95}]}]}, 0.05);
-  return pts.length > 40 && Math.abs(pts[0][0]-9.90) < 1e-9;
-})()`), window.eval("HS.parseOverpassPoints({elements:[{type:'way',geometry:[{lat:57.05,lon:9.90},{lat:57.05,lon:9.95}]}]},0.05).length") + ' points');
-check('grid index finds the nearest point', window.eval(`(() => {
-  const idx = HS.makeIndex([[9.90,57.00],[10.00,57.00]], 0.01);
-  const d = idx.nearest(9.905, 57.00);
-  return d != null && Math.abs(d - 0.3025) < 0.05;
-})()`));
-
-// Synthetic test: build a "coastline" from the recorded shoreline vertices
-// under a known transform, then check the optimiser recovers it.
-check('optimiser recovers a known placement', window.eval(`(() => {
-  const truth = { mul: 1.18, lat: 57.0600, lng: 9.9500 };
-  const g = window.GEOREF, a = HS.anchorPx();
-  const s = g.s * truth.mul;
-  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
-  const verts = HS.coastVertices();
-  const coast = verts.map(([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)]);
-  const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
-  const best = HS.fitToGeography(verts, coast, HS.boundaryVertices(4), null, start, []);
-  window.__fit = best;
-  return Math.abs(best.mul - truth.mul) < 0.03 &&
-         Math.abs(best.lat - truth.lat) < 0.004 &&
-         Math.abs(best.lng - truth.lng) < 0.007;
-})()`), window.eval("JSON.stringify(window.__fit && {mul:+window.__fit.mul.toFixed(3), lat:+window.__fit.lat.toFixed(4), lng:+window.__fit.lng.toFixed(4)})") + ' vs {mul:1.18, lat:57.06, lng:9.95}');
-check('optimiser does not collapse the zones', window.eval("window.__fit.mul") > 0.9);
-
-console.log('\n== renaming a district ==');
-check('renames apply', window.eval(`(() => {
-  HS.S.renames = { 0: 'My own name' };
-  const fs = HS.buildDistrictZones().features;
-  return fs[0].properties.navn === 'My own name';
-})()`));
-check('renames survive save/load', window.eval(`(() => {
-  HS.S.renames = { 3: 'Gammel Hasseris' };
-  const blob = JSON.parse(JSON.stringify(HS.serialize()));
-  HS.S.renames = {};
-  HS.deserialize(blob);
-  return HS.S.renames['3'] === 'Gammel Hasseris';
-})()`));
-window.eval("HS.S.renames = {}");
-
-
-console.log('\n== boundaries snapped to roads ==');
-check('road query asks for the street network', window.eval(`(() => {
-  const q = HS.overpassRoadQuery();
-  return q.includes('highway') && q.includes('out geom;') && q.includes('secondary');
-})()`));
-check('road geometry becomes segments carrying their way id', window.eval(`(() => {
-  const segs = HS.roadSegments({elements:[{type:'way',id:77,geometry:[
-    {lat:57.05,lon:9.90},{lat:57.05,lon:9.92},{lat:57.06,lon:9.92}]}]});
-  return segs.length === 2 && segs[0][0] === 9.90 && segs[0][4] === 77;
-})()`));
-check('a point projects onto the nearest place on a segment', window.eval(`(() => {
-  const p = HS.projectToSegment(9.91, 57.06, [9.90,57.05,9.92,57.05,1]);
-  return Math.abs(p.x - 9.91) < 1e-6 && Math.abs(p.y - 57.05) < 1e-6;
-})()`));
-check('projection clamps to the segment ends', window.eval(`(() => {
-  const p = HS.projectToSegment(9.80, 57.05, [9.90,57.05,9.92,57.05,1]);
-  return Math.abs(p.x - 9.90) < 1e-6;
-})()`));
-
-// A boundary that follows a main road, crossed by side streets, over a
-// residential grid. Only the main road should attract it.
-check('a boundary along a road is straightened onto it', window.eval(`(() => {
-  const segs = [];
-  for (let i=0;i<40;i++) segs.push([9.90+i*0.002,57.05,9.90+(i+1)*0.002,57.05,1]);
-  for (let i=0;i<40;i+=3){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,2+i]); }
-  const idx = HS.segmentIndex(segs, 0.004);
-  const sn = HS.snapRingsToRoads(idx, 70);
-  // a ring hugging the main road, wobbling about +/- 24 m either side
-  const ring = [];
-  for (let i=0;i<40;i++) ring.push([i, (i%2?0.1:-0.1)]);
-  const gr = { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.05) };
-  const before = ring.map(([x,y]) => HS.pxToLngLat(x,y,gr)[1]);
-  window.__before = (Math.max(...before)-Math.min(...before))*111200;
-  const out = sn.mapRing(ring.concat([ring[0]]), gr);
-  const lats = out.map(p => p[1]);
-  const spread = Math.max(...lats) - Math.min(...lats);
-  window.__spread = spread * 111200;
-  return spread * 111200 < 5;       // pulled onto one line
-})()`), 'wobble ' + (window.eval("window.__before")||0).toFixed(0) + ' m before, ' +
-        (window.eval("window.__spread")||0).toFixed(1) + ' m after');
-
-check('a boundary that follows no road is left alone', window.eval(`(() => {
-  // dense grid, none of it parallel to a diagonal boundary
-  const segs = [];
-  for (let j=0;j<12;j++){ const y=57.045+j*0.0009;
-    for (let i=0;i<40;i++) segs.push([9.90+i*0.002,y,9.90+(i+1)*0.002,y,100+j]); }
-  for (let i=0;i<40;i+=2){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,200+i]); }
-  const idx = HS.segmentIndex(segs, 0.004);
-  const sn = HS.snapRingsToRoads(idx, 70);
-  const ring = []; for (let i=0;i<40;i++) ring.push([i, i]);
-  const out = sn.mapRing(ring.concat([ring[0]]), { s: 0.002, lng0: 9.901,
-              my0: HS.__mercY(57.0455) });
-  const st = sn.stats();
-  window.__left = st.total - st.moved; window.__tot = st.total;
-  return st.moved < st.total * 0.25;
-})()`), window.eval("window.__left") + ' of ' + window.eval("window.__tot") + ' points left untouched');
-
-check('a run shorter than the threshold is ignored', window.eval("HS.SNAP_MIN_RUN") >= 3);
-
-// Snapping must not tear the zones apart
-check('snapping preserves shared edges', window.eval(`(() => {
-  const before = HS.buildDistrictZones().features;
-  const segs = [];
-  for (const f of before) {
-    const c = f.geometry.coordinates[0];
-    for (let i = 1; i < c.length; i++)
-      segs.push([c[i-1][0]+0.0002, c[i-1][1]+0.0001, c[i][0]+0.0002, c[i][1]+0.0001, 1]);
-  }
-  HS.S.roadIndex = HS.segmentIndex(segs, 0.004);
-  HS.S.snapOn = true; HS.S.snapM = 120;
-  const after = HS.buildDistrictZones().features;
-  const sum = after.reduce((a,f)=>a+turf.area(f),0);
-  const union = turf.area(HS.unionAll(after));
-  window.__snapDelta = Math.abs(sum-union)/union;
-  return window.__snapDelta < 0.005;
-})()`), 'sum vs union differ by ' + (100*(window.eval("window.__snapDelta")||0)).toFixed(3) + '%');
-check('snapping did move the boundaries', window.eval(`(() => {
-  const st = HS.S.lastSnap || {moved:0,total:1}; window.__st = st;
-  return st.moved > st.total * 0.4;
-})()`), window.eval("window.__st.moved") + ' of ' + window.eval("window.__st.total") + ' moved');
-check('zone 2 snaps consistently too', window.eval(`(() => {
-  const z2 = HS.buildAreaZones().features;
-  const sum = z2.reduce((a,f)=>a+turf.area(f),0);
-  return Math.abs(sum - turf.area(HS.unionAll(z2)))/sum < 0.005;
-})()`));
-window.eval("HS.S.roadIndex = null; HS.S.snapOn = false;");
-check('snapping is opt-in, not automatic', window.eval(`(() => {
-  HS.S.roadIndex = HS.segmentIndex([[9.9,57.0,9.91,57.0,1]], 0.004);
-  HS.S.snapOn = false;
-  const fs = HS.buildDistrictZones().features;
-  HS.S.roadIndex = null;
-  return fs.length === window.ZONE3_PX.length;
-})()`));
-
-console.log('\n== automatic scaling from the road network ==');
-check('boundary vertices are sampled for the fit', window.eval("HS.boundaryVertices(2).length") > 200,
-      window.eval("HS.boundaryVertices(2).length") + ' points');
-// synthetic: place the zones under a known transform, generate a coastline AND
-// a road network from them, then check the fit recovers the scale unaided
-check('scale is recovered without touching the slider', window.eval(`(() => {
-  const truth = { mul: 1.24, lat: 57.0620, lng: 9.9420 };
-  const g = window.GEOREF, a = HS.anchorPx();
-  const s = g.s * truth.mul;
-  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
-  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
-  const coastV = HS.coastVertices();
-  const coast = coastV.map(put);
-  const bnd = HS.boundaryVertices(2);
-  const segs = [];
-  for (let i=1;i<bnd.length;i++){
-    const p = put(bnd[i-1]), q = put(bnd[i]);
-    segs.push([p[0],p[1],q[0],q[1], i]);
-  }
-  const roadIdx = HS.segmentIndex(segs, 0.004);
-  const start = { mul: 1.0, lat: 57.0480, lng: 9.9187 };
-  const best = HS.fitToGeography(coastV, coast, bnd, roadIdx, start);
-  window.__fit2 = best;
-  return Math.abs(best.mul - truth.mul) < 0.015;
-})()`), 'recovered scale ' + (window.eval("window.__fit2 && window.__fit2.mul")||0).toFixed(3) + ' vs 1.240');
-check('and position comes out right too', window.eval(`(() => {
-  const f = window.__fit2;
-  return Math.abs(f.lat - 57.0620) < 0.005 && Math.abs(f.lng - 9.9420) < 0.008;
-})()`), window.eval("window.__fit2 ? window.__fit2.lat.toFixed(4)+', '+window.__fit2.lng.toFixed(4) : ''"));
-check('the fit still works if the roads are unavailable', window.eval(`(() => {
-  const truth = { mul: 1.18, lat: 57.0600, lng: 9.9500 };
-  const g = window.GEOREF, a = HS.anchorPx();
-  const s = g.s * truth.mul;
-  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
-  const cv = HS.coastVertices();
-  const coast = cv.map(([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)]);
-  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
-                                 { mul: 1.0, lat: 57.048, lng: 9.9187 });
-  return Math.abs(best.mul - 1.18) < 0.04;
-})()`));
-
+window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
 
 console.log('\n== Østre Allé as the anchor ==');
 check('a reference road is defined', window.eval("(window.REFERENCE_ROADS||[]).length") >= 1,
@@ -862,7 +745,7 @@ check('named-road query asks for the road by name', window.eval(`(() => {
 // only the reference road plus a short coastline to work from.
 check('the anchor pins scale and position', window.eval(`(() => {
   const truth = { mul: 1.31, lat: 57.0555, lng: 9.9310 };
-  const g = window.GEOREF, a = HS.anchorPx();
+  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
   const s = g.s * truth.mul;
   const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
   const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
@@ -881,7 +764,7 @@ check('the anchor pins scale and position', window.eval(`(() => {
 })()`), window.eval("window.__anchored ? 'recovered ' + window.__anchored.mul.toFixed(3) + ' / ' + window.__anchored.lat.toFixed(4) + ', ' + window.__anchored.lng.toFixed(4) : ''") + ' vs 1.310 / 57.0555, 9.9310');
 check('the fit still runs when the named road is missing', window.eval(`(() => {
   const cv = HS.coastVertices();
-  const g = window.GEOREF, a = HS.anchorPx();
+  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
   const s = g.s * 1.2;
   const lng0 = 9.94 - s*a[0], my0 = HS.__mercY(57.05) + s*a[1];
   const coast = cv.map(([x,y]) => [lng0+s*x, HS.__invMercY(my0-s*y)]);

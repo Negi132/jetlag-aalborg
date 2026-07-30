@@ -91,55 +91,48 @@ Each level is a **toggle** — tap on, tap off, never duplicated.
 
 ### How zones 2 and 3 were made
 
-Traced from your screenshots, not approximated: boundary lines isolated by colour, the regions
-between them followed, each outline turned into a polygon. Zone 2 is 4 regions, zone 3 is 33.
+Traced from your screenshots by processing the images directly: the drawn boundary lines isolated by
+colour, the regions between them followed, each outline turned into a polygon. The overview inset in
+the corner is detected and masked out first so it can't leak in. Zone 2 is 4 regions, zone 3 is 34.
 
-**Why there were gaps, and how they're gone.** The first version traced each region separately and
-simplified each outline separately — so a border shared by two districts got simplified two different
-ways and the polygons drifted apart by up to the simplification tolerance. Now the boundary network
-is split into **arcs**: each stretch of border shared by exactly two districts. Every arc is
-simplified *once* and handed to both neighbours, so they share an edge exactly.
+The boundary network is split into **arcs** — each stretch of border shared by exactly two districts
+— and every arc is simplified *once*, then given to both neighbours. Measured on the output: the
+districts' areas sum to 263.36 km² against a merged outline of 263.36 km², with **zero overlap and
+zero gaps** on both zone levels.
 
-Measured on the output: worst overlap between any two districts **0.00 px²**, interior gaps
-**0.00 px²**, for both zone levels. Before the arc rewrite those were 57 px² and 687 px².
+The two screenshots are the same view: aligning the fjord gives a scale of exactly 1.000 with an
+18-pixel offset and 96% overlap, so they share one pixel space and one placement.
 
-**Names** come from the screenshot's own red labels — each located in the image, read, and matched
-to the polygon containing it. 27 of 33 are named. The rest are either edge slivers or districts that
-run off the side of the screenshot (Klarup, Storvorde, Stae, Langholt). **Rename a district** in the
-Layers tab fixes any of them: tap the button, tap the district. Names are cosmetic — a zone question
-always uses the polygon.
+**Names** were read from the red labels in the screenshots. 28 of 34 districts are named; the rest
+are edge slivers. **Rename a district** in the Layers tab fixes any of them — tap the button, tap
+the district. Names are cosmetic; a zone question always uses the polygon.
 
-### Placing the zones — automatic, no slider
+### Placing the zones — once, then never again
 
-A screenshot records shape but not position. The app can reach OpenStreetMap, so the placement
-happens there:
+The shapes are already right. All that's left is *where they sit* and *how big they are* — three
+numbers. The **Layers → Place the zones** panel:
 
-> **Layers → Calibrate zones → Place and scale automatically**
+- **Try it automatically.** Anchors on Østre Allé (Midtbyen's southern edge runs along it), the
+  Limfjord shoreline and the street network. Recovers a known scale to within 0.1% in testing.
+- **Drag.** Tap *Drag the zones on the map* and the map stops panning — dragging moves the overlay
+  instead. Tap again to finish.
+- **Nudge.** A directional pad with a step size of 5, 25, 100 or 500 metres, so you can move by an
+  exact distance rather than by feel. Arrow keys work too while dragging is on. Nudges cancel
+  exactly, so tweaking never drifts.
+- **Resize.** ±0.1% and ±1% buttons, around the middle of the screen — so line one landmark up,
+  centre it, then resize until a second one matches. The map centre stays put while it scales.
 
-It anchors on three things, in descending order of usefulness:
+**Then make it permanent.** The panel shows a line like:
 
-1. **Østre Allé.** Midtbyen's southern boundary runs mostly along it, so `data.js` stores that edge
-   as a named reference line. Matching it against the real road fixes position *and* scale in one
-   go — this is much tighter than anything derived from the coast, because it's a direct
-   correspondence between a known line on the map and a known line on the ground. "Mostly" is
-   handled: the fit uses a median, so the stretch that leaves the road doesn't drag the answer.
-2. **The Limfjord shoreline**, for global position.
-3. **The wider street network**, as a scale check.
+```js
+const PLACEMENT = { lat: 57.052140, lng: 9.921800, scale: 1.04230 };
+```
 
-Tested against synthetic placements: with the Østre Allé anchor it recovers a known scale of
-**1.310 as 1.308** and position to four decimal places, from a deliberately bad starting guess. With
-only the coastline it still gets scale to about 1%. Afterwards it reports how far Midtbyen's southern
-edge ended up from Østre Allé, so you can judge the result at a glance.
+Copy it, paste it over the `PLACEMENT` line at the top of `data.js`, commit. The zones then land
+correctly for everyone who opens the site, forever — no calibration, no game link needed. Tested:
+pasting the snippet reproduces the placement to within 0.03 m.
 
-The slider, centre pin and nudge arrows remain as overrides.
-
-*Adding another anchor:* append to `REFERENCE_ROADS` in `data.js` — a road name and the pixel
-polyline of the boundary that follows it. More anchors, tighter fit.
-
-*On speed:* the fit is a search over a few thousand candidate placements, and at full point density
-it took about 15 seconds. Every point set is thinned to a couple of hundred points first, and the
-street-network term is skipped in the coarse passes, which brings it to roughly a second on a laptop
-without measurably changing the answer.
+Until you do that, the placement still rides along in the game link, so you won't lose it.
 
 ### Snapping boundaries to the roads
 
@@ -253,7 +246,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 215 checks — the app, driven headlessly
+node ui.test.mjs         # 189 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves
