@@ -38,6 +38,12 @@ const RADAR_PRESETS = [
 
 const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
 
+/* Aalborg's own WebGIS. Its WFS is the real source for zones 2 and 3 — the
+   traced outlines are only a stand-in. If your browser can reach it, use it:
+   live geometry needs no tracing and no placement, because it arrives with
+   real coordinates. */
+const KORTINFO = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside';
+
 const DEFAULT_SOURCES = {
   zone1: {
     name: 'Zone 1 · Byzone / Landzone',
@@ -1078,6 +1084,71 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+/* ---------- GML ------------------------------------------------------
+   Plandata and GeoServer hand back GeoJSON on request. KortInfo is an
+   older stack and answers in GML whatever you ask for, so parse that too
+   rather than failing at the last step. */
+
+function parseGml(xml) {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if (doc.getElementsByTagNameNS('*', 'ServiceException').length) {
+    const m = doc.getElementsByTagNameNS('*', 'ServiceException')[0];
+    throw new Error((m.textContent || 'service exception').trim().slice(0, 140));
+  }
+  const numbers = (el) => (el.textContent || '').trim().split(/[\s,]+/).map(Number).filter((n) => !isNaN(n));
+
+  function ringsOf(node) {
+    const out = [];
+    // posList (GML3) and coordinates (GML2) both appear in the wild
+    for (const tag of ['posList', 'coordinates']) {
+      for (const el of Array.from(node.getElementsByTagNameNS('*', tag))) {
+        const v = numbers(el);
+        const ring = [];
+        for (let i = 0; i + 1 < v.length; i += 2) ring.push([v[i], v[i + 1]]);
+        if (ring.length >= 4) {
+          if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) {
+            ring.push(ring[0].slice());
+          }
+          out.push(ring);
+        }
+      }
+      if (out.length) break;
+    }
+    return out;
+  }
+
+  const features = [];
+  const members = Array.from(doc.getElementsByTagNameNS('*', 'featureMember'))
+    .concat(Array.from(doc.getElementsByTagNameNS('*', 'member')));
+  const hosts = members.length ? members : [doc.documentElement];
+
+  for (const host of hosts) {
+    const props = {};
+    for (const el of Array.from(host.getElementsByTagNameNS('*', '*'))) {
+      if (el.children.length) continue;
+      const name = el.localName || el.nodeName.replace(/^.*:/, '');
+      if (/^(posList|coordinates|pos|lowerCorner|upperCorner)$/.test(name)) continue;
+      const t = (el.textContent || '').trim();
+      if (t && t.length < 120 && props[name] === undefined) props[name] = t;
+    }
+    const polys = Array.from(host.getElementsByTagNameNS('*', 'Polygon'));
+    const rings = polys.length ? polys.map(ringsOf).filter((r) => r.length)
+                              : (ringsOf(host).length ? [ringsOf(host)] : []);
+    for (const r of rings) {
+      features.push({ type: 'Feature', properties: props,
+                      geometry: { type: 'Polygon', coordinates: r } });
+    }
+    if (!polys.length) {
+      for (const ls of Array.from(host.getElementsByTagNameNS('*', 'LineString'))) {
+        const r = ringsOf(ls);
+        if (r.length) features.push({ type: 'Feature', properties: props,
+          geometry: { type: 'LineString', coordinates: r[0] } });
+      }
+    }
+  }
+  return { type: 'FeatureCollection', features };
+}
+
 /* ---------- coordinate handling -------------------------------------
    Danish services love UTM32 and sometimes hand back lat/lng in the
    wrong order. Both are silent failures — the zones just land in the
@@ -1433,8 +1504,16 @@ async function fetchGeoJson(url) {
   const text = await res.text();
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let gj;
-  try { gj = JSON.parse(text); }
-  catch (_) { throw new Error('Reply was not JSON — the layer name is probably wrong.'); }
+  try {
+    gj = JSON.parse(text);
+  } catch (_) {
+    if (/<\s*[A-Za-z:]*(FeatureCollection|ServiceException|wfs:)/.test(text)) {
+      gj = parseGml(text);
+      if (!gj.features.length) throw new Error('the reply had no geometry in it');
+    } else {
+      throw new Error('reply was neither GeoJSON nor GML — check the layer name');
+    }
+  }
   if (gj.exceptions || gj.success === false) throw new Error(gj.message || 'Service reported an error.');
   if (!gj.type) throw new Error('No GeoJSON in the reply.');
   if (!(gj.features || []).length && gj.type === 'FeatureCollection') {
@@ -1578,7 +1657,8 @@ async function toggleSource(key, btn) {
       key: 'src:' + key, nameField: src.nameField, style: src.style
     });
     if (rec) {
-      setStatus(`${src.name}: ${rec.geojson.features.length} zones on${note ? ' (' + note + ')' : ''}.`);
+      setStatus(`${src.name}: ${rec.geojson.features.length} zones on${note ? ' (' + note + ')' : ''}. ` +
+              `Live data carries real coordinates — placement does not apply to it.`);
     }
   } catch (err) {
     setStatus(`${src.name} failed — ${err.message}. Tap ⚙ and Browse to pick the right layer.`, true);
@@ -2204,6 +2284,36 @@ function applyCal(silent, light) {
 }
 
 $('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
+
+/* The traced outlines are a stand-in. If Aalborg's own WFS answers your
+   browser, live geometry beats them outright: exact boundaries, real
+   coordinates, no placement step at all. */
+$('#calLive').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Asking KortInfo…';
+  setStatus('Asking Aalborg KortInfo which layers it will share…');
+  try {
+    const list = await browseLayers(KORTINFO);
+    ['zone2', 'zone3'].forEach((k) => {
+      S.sources[k].kind = 'wfs';
+      S.sources[k].url = KORTINFO;
+    });
+    renderSourceRows();
+    setStatus(`KortInfo offers ${list.length} layers. Tap ⚙ on zone 2 or zone 3, then ` +
+              `"Browse layers" — look for bydel, kommuneplanomraade or similar. ` +
+              `Live layers arrive with real coordinates, so no placement is needed.`);
+    openSourceEditor('zone3');
+    $('#srcBrowse').click();
+  } catch (err) {
+    setStatus(`KortInfo did not answer: ${err.message}. Its WFS usually needs the site ` +
+              `administrator to enable sharing, and a link from KortInfo's own Linkgenerator. ` +
+              `Paste that URL behind ⚙ if you get one — the traced outlines keep working meanwhile.`, true);
+  } finally {
+    btn.disabled = false; btn.textContent = was;
+  }
+});
 $('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
 
 /* Three districts sit on the crop edge and came through unnamed; any name
@@ -2738,7 +2848,7 @@ window.HS = {
   map, S, CONFIG, draft, drawing, RADAR_PRESETS,
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
-  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
+  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO,
   buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate,
   nudgeCal, scaleCal, setCalMode, placementSnippet, georef,

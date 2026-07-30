@@ -820,6 +820,70 @@ check('the fit still runs when the named road is missing', window.eval(`(() => {
   return Math.abs(best.mul - 1.2) < 0.05;
 })()`));
 
+
+console.log('\n== live boundaries from Aalborg KortInfo ==');
+check('the KortInfo endpoint is wired in', window.eval("HS.KORTINFO").includes('drift.kortinfo.net')
+      && window.eval("HS.KORTINFO").includes('Site=Aalborg'), window.eval("HS.KORTINFO"));
+
+// KortInfo answers in GML, not GeoJSON, so that has to parse too.
+window.__gml = `<?xml version="1.0"?>
+<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs" xmlns:gml="http://www.opengis.net/gml">
+ <gml:featureMember>
+  <ki:bydele xmlns:ki="http://kortinfo.net">
+   <ki:navn>Vestbyen</ki:navn>
+   <ki:geometri>
+    <gml:Polygon srsName="EPSG:25832">
+     <gml:exterior><gml:LinearRing>
+      <gml:posList>552000 6322000 553000 6322000 553000 6323000 552000 6323000 552000 6322000</gml:posList>
+     </gml:LinearRing></gml:exterior>
+    </gml:Polygon>
+   </ki:geometri>
+  </ki:bydele>
+ </gml:featureMember>
+ <gml:featureMember>
+  <ki:bydele xmlns:ki="http://kortinfo.net">
+   <ki:navn>Hasseris</ki:navn>
+   <ki:geometri><gml:Polygon>
+     <gml:exterior><gml:LinearRing>
+      <gml:posList>553000 6322000 554000 6322000 554000 6323000 553000 6323000 553000 6322000</gml:posList>
+     </gml:LinearRing></gml:exterior>
+   </gml:Polygon></ki:geometri>
+  </ki:bydele>
+ </gml:featureMember>
+</wfs:FeatureCollection>`;
+const g = window.eval("HS.parseGml(window.__gml)");
+check('GML parses into features', g.type === 'FeatureCollection' && g.features.length === 2,
+      `${g.features.length} features`);
+check('rings come through closed', window.eval(`(() => {
+  const r = HS.parseGml(window.__gml).features[0].geometry.coordinates[0];
+  return r.length === 5 && r[0][0] === r[4][0] && r[0][1] === r[4][1];
+})()`));
+check('attributes survive, so districts keep their names', g.features[0].properties.navn === 'Vestbyen'
+      && g.features[1].properties.navn === 'Hasseris',
+      g.features.map(f=>f.properties.navn).join(', '));
+check('UTM32 coordinates reproject into Aalborg', window.eval(`(() => {
+  const gj = HS.parseGml(window.__gml);
+  HS.normaliseCoords(gj);
+  const c = gj.features[0].geometry.coordinates[0][0];
+  window.__ll = c;
+  return c[0] > 9.5 && c[0] < 10.5 && c[1] > 56.8 && c[1] < 57.4;
+})()`), window.eval("window.__ll") ? window.eval("window.__ll").map(v=>v.toFixed(4)).join(', ') : '');
+check('a GML service exception is reported, not swallowed', window.eval(`(() => {
+  try {
+    HS.parseGml('<ServiceExceptionReport><ServiceException>Access denied</ServiceException></ServiceExceptionReport>');
+    return false;
+  } catch (e) { window.__ex = e.message; return /Access denied/.test(e.message); }
+})()`), window.eval("window.__ex"));
+check('GML2 coordinates syntax also parses', window.eval(`(() => {
+  const x = HS.parseGml('<FeatureCollection><featureMember><a><Polygon><outerBoundaryIs><LinearRing>' +
+    '<coordinates>9.9,57.0 9.91,57.0 9.91,57.01 9.9,57.01 9.9,57.0</coordinates>' +
+    '</LinearRing></outerBoundaryIs></Polygon></a></featureMember></FeatureCollection>');
+  return x.features.length === 1 && x.features[0].geometry.coordinates[0].length === 5;
+})()`));
+check('the traced outlines still work if KortInfo says no', window.eval(`(() => {
+  return HS.buildDistrictZones().features.length === window.ZONE3_PX.length;
+})()`));
+
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
 
