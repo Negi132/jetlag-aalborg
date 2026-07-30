@@ -99,16 +99,21 @@ The boundary network is split into **arcs** — each stretch of border shared by
 — and every arc is **smoothed and simplified once**, then given to both neighbours. That single
 "once" is what keeps the shared edges identical: zero overlap, zero gaps, measured.
 
-**On smoothness.** A traced pixel contour is a staircase, and running Douglas–Peucker over it turns
-that staircase into a zigzag of straight chords — which is why the first version looked angular. Each
-arc now gets a low-pass filter along its length before simplification, with its endpoints pinned so
-arcs still meet exactly at junctions. Measured across the districts: the mean turn between segments
-is **17.1°, down from 41.7°**, and only 4.7% of corners exceed 45°.
+**Corner-aware processing.** A traced pixel contour is a staircase, so each arc is low-pass filtered
+along its length. But filtering everything equally rounds off the genuine corners too — where
+Midtbyen's boundary turns hard at Vestre Fjordvej, or at the tunnel. So corners are **detected first**
+(a turn angle measured over a wide window, past 45–48°, which ignores staircase noise but catches a
+real bend), pinned in place, and only the stretches between them are smoothed.
 
-It costs nothing in accuracy — in fact it gains some. Because the old setting simplified hard to keep
-the vertex count down, 95% of the smoothed line now sits **closer** to the originally traced pixels
-than the old simplified line did (0.82 px versus 1.02 px). Only genuine sharp corners get rounded, by
-at most about 40 m.
+The result follows the source rather than averaging it. On Midtbyen's ring: **76% of turns are under
+15°** — the long sweep along Østre Allé — while **five hard corners survive, the sharpest at 110°**.
+Across all districts, 63% of turns are under 15° and 17% are over 60°, with almost nothing left in
+the 25–50° band where a staircase artefact would show up.
+
+It is also more faithful than the uniform version, not less: the worst deviation from the originally
+traced pixels drops from 2.22 px to 1.87 px on the districts, and from 3.60 px to 1.81 px on the
+dotted play-zone boundary — because the old error was concentrated exactly at the corners that are
+now preserved. 95% of the line sits within 0.69 px of the trace.
 
 The two screenshots are the same view: aligning the fjord gives a scale of exactly 1.000 with an
 18-pixel offset and 96% overlap, so they share one pixel space and one placement.
@@ -256,7 +261,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 194 checks — the app, driven headlessly
+node ui.test.mjs         # 196 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves

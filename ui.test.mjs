@@ -612,38 +612,45 @@ check('scale and position are both recovered', window.eval(`(() => {
 })()`), 'recovered ' + (window.eval("window.__af && window.__af.mul")||0).toFixed(3) + ' vs 1.220');
 
 
-console.log('\n== boundaries are smooth, not stepped ==');
-const turnStats = (fs) => window.eval(`(() => {
-  const fs = ${fs};
+console.log('\n== boundaries follow the source: smooth curves, sharp corners ==');
+const turnList = (expr) => window.eval(`(() => {
+  const fs = ${expr};
   const turns = [];
   for (const f of fs) {
     const c = f.geometry.coordinates[0];
     const u = [];
     for (let i=1;i<c.length;i++) {
       const dx=(c[i][0]-c[i-1][0])*0.545, dy=c[i][1]-c[i-1][1];
-      const n=Math.hypot(dx,dy); if(n) u.push([dx/n,dy/n]);
+      const n=Math.hypot(dx,dy); if(n>1e-12) u.push([dx/n,dy/n]);
     }
     for (let i=1;i<u.length;i++) {
       const d=Math.max(-1,Math.min(1,u[i-1][0]*u[i][0]+u[i-1][1]*u[i][1]));
       turns.push(Math.acos(d)*180/Math.PI);
     }
   }
-  turns.sort((a,b)=>a-b);
-  return { mean: turns.reduce((a,b)=>a+b,0)/turns.length,
-           sharp: turns.filter(t=>t>45).length/turns.length, n: turns.length };
+  return turns;
 })()`);
-const t3 = turnStats("HS.buildDistrictZones().features");
-const t2 = turnStats("HS.buildAreaZones().features");
-check('district borders turn gently', t3.mean < 25,
-      `mean turn ${t3.mean.toFixed(1)}\u00b0 over ${t3.n} corners`);
-check('few sharp kinks in the districts', t3.sharp < 0.12,
-      `${(100*t3.sharp).toFixed(1)}% of turns exceed 45\u00b0`);
-check('play-zone borders turn gently', t2.mean < 22, `mean turn ${t2.mean.toFixed(1)}\u00b0`);
-check('smoothing did not cost detail', window.eval(`(() => {
-  const v = HS.buildDistrictZones().features
-    .reduce((a,f)=>a+f.geometry.coordinates[0].length,0);
-  window.__v = v;
-  return v > 1500;
+const t3 = turnList("HS.buildDistrictZones().features");
+const gentle3 = t3.filter(t=>t<15).length/t3.length;
+const sharp3  = t3.filter(t=>t>60).length/t3.length;
+check('most of a district border runs gently', gentle3 > 0.5,
+      `${(100*gentle3).toFixed(0)}% of turns under 15\u00b0`);
+check('but real corners are kept sharp', sharp3 > 0.05 && t3.some(t=>t>85),
+      `${(100*sharp3).toFixed(0)}% over 60\u00b0, sharpest ${Math.max(...t3).toFixed(0)}\u00b0`);
+
+// The boundary in the photo: Midtbyen. Smooth along Østre Allé, hard turns
+// at Vestre Fjordvej and the tunnel.
+const tm = turnList("HS.buildAreaZones().features.filter(f=>f.properties.navn.includes('Midtbyen'))");
+const gm = tm.filter(t=>t<15).length/tm.length;
+check('Midtbyen runs smoothly along its long stretches', gm > 0.6,
+      `${(100*gm).toFixed(0)}% of turns under 15\u00b0`);
+check('Midtbyen keeps its hard turns', tm.filter(t=>t>60).length >= 3,
+      `${tm.filter(t=>t>60).length} turns over 60\u00b0, sharpest ${Math.max(...tm).toFixed(0)}\u00b0`);
+check('no staircase left over', t3.filter(t=>t>25 && t<50).length/t3.length < 0.25,
+      `${(100*t3.filter(t=>t>25&&t<50).length/t3.length).toFixed(0)}% in the 25-50\u00b0 band`);
+check('detail was not thrown away', window.eval(`(() => {
+  const v = HS.buildDistrictZones().features.reduce((a,f)=>a+f.geometry.coordinates[0].length,0);
+  window.__v = v; return v > 1500;
 })()`), window.eval("window.__v") + ' vertices across the districts');
 check('and the zones are still perfectly joined', window.eval(`(() => {
   const fs = HS.buildDistrictZones().features;
