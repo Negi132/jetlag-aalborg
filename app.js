@@ -43,33 +43,32 @@ const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
    live geometry needs no tracing and no placement, because it arrives with
    real coordinates. */
 const KORTINFO = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside';
+const SOURCE_CONFIG_VERSION = 1;
 
 const DEFAULT_SOURCES = {
   zone1: {
     name: 'Zone 1 · Byzone / Landzone',
-    note: 'Plandata "Zonekort". If it fails, tap Browse and search for "zonekort".',
-    kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_zonekort_samlet_v', cql: 'komnr=851',
-    nameField: 'zonestatus', style: 'zonekort'
+    note: 'Official Aalborg KortInfo layer TL1433667.',
+    kind: 'wfs', url: KORTINFO,
+    typeName: 'ugis:TL1433667', cql: '', nameField: '', style: 'zonekort'
   },
   zone2: {
-    name: 'Zone 2 · Kommuneplanområder',
-    note: 'Built in: the four play zones, merged from the districts in data.js. ' +
-          'Approximate. Switch to WFS here if you get hold of the official layer.',
-    kind: 'areas', url: '', typeName: '', cql: '', nameField: 'navn', style: 'areas'
+    name: 'Zone 2 · Midtbyen / Nørresundby / Vest / Øst',
+    note: 'Official Aalborg KortInfo layer TL445984. Its four named polygons define the default play area.',
+    kind: 'wfs', url: KORTINFO,
+    typeName: 'ugis:TL445984', cql: '', nameField: '', style: 'areas'
   },
   zone3: {
     name: 'Zone 3 · By- og bydele',
-    note: 'Built in: nearest-centre territories around each district in data.js. ' +
-          'Approximate — edit the coordinates in data.js to sharpen it.',
-    kind: 'districts', url: '', typeName: '', cql: '', nameField: 'navn', style: 'plain'
+    note: 'Official Aalborg KortInfo layer TL445987.',
+    kind: 'wfs', url: KORTINFO,
+    typeName: 'ugis:TL445987', cql: '', nameField: '', style: 'plain'
   },
   zone4: {
     name: 'Zone 4 · Kommuneplanrammer',
-    note: 'Plandata framework areas, coloured by land-use category.',
-    kind: 'wfs', url: PLANDATA,
-    typeName: 'pdk:theme_pdk_kommuneplanramme_alle_vedtaget_v', cql: 'komnr=851',
-    nameField: 'plannr', style: 'rammer'
+    note: 'Official Aalborg KortInfo layer TL445981.',
+    kind: 'wfs', url: KORTINFO,
+    typeName: 'ugis:TL445981', cql: '', nameField: '', style: 'rammer'
   }
 };
 
@@ -179,6 +178,7 @@ const S = {
   layers: [],            // {id,name,color,kind:'poly'|'line',geojson,layer,visible}
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
+  zone2Official: null, // cached official Zone 2 geometry used by the play area
   cal: null,          // where the traced zones sit on the map
   calMode: false,     // dragging the overlay rather than the map
   roadIndex: null,    // loaded road network, for boundary snapping
@@ -439,7 +439,7 @@ function setZonesPlayArea(fit) {
   const hull = zonesPlayArea();
   if (!hull) return false;
   S.playArea = turf.feature(hull.geometry);
-  S.playAreaMeta = { type: 'zones' };
+  S.playAreaMeta = { type: 'zones', source: hasOfficialZonesPlayArea() ? 'kortinfo' : 'fallback' };
   refreshDerivedLayers();
   recompute();
   if (fit !== false) {
@@ -1275,20 +1275,101 @@ function buildDistrictZones() {
   return out.length ? { type: 'FeatureCollection', features: out } : null;
 }
 
-/* The play area is the union of the four play zones. */
+/* The four official Zone 2 polygons are also the default play area. The
+   source has changed names/field casing over time, so identify the areas from
+   every scalar property rather than relying on one brittle name field. */
+const PLAY_ZONE_ALIASES = [
+  { area: 1, name: 'Midtbyen', aliases: ['midtbyen'] },
+  { area: 2, name: 'Nørresundby', aliases: ['norresundby'] },
+  { area: 3, name: 'Vest Aalborg', aliases: ['vest aalborg', 'aalborg vest'] },
+  { area: 4, name: 'Øst Aalborg', aliases: ['ost aalborg', 'aalborg ost'] }
+];
+
+function normaliseZoneText(value) {
+  return String(value == null ? '' : value)
+    .toLowerCase().replace(/æ/g, 'ae').replace(/ø/g, 'o').replace(/å/g, 'a')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function playZoneDef(featureOrProps) {
+  const props = featureOrProps && featureOrProps.properties
+    ? featureOrProps.properties : (featureOrProps || {});
+  if (props.area != null) {
+    const byNumber = PLAY_ZONE_ALIASES.find((z) => z.area === Number(props.area));
+    if (byNumber) return byNumber;
+  }
+  const hay = normaliseZoneText(Object.values(props)
+    .filter((v) => ['string', 'number'].includes(typeof v)).join(' | '));
+  return PLAY_ZONE_ALIASES.find((z) => z.aliases.some((a) => hay.includes(a))) || null;
+}
+
+function prepareOfficialZone2(gj) {
+  if (!gj) return null;
+  const raw = gj.type === 'FeatureCollection' ? gj.features
+            : gj.type === 'Feature' ? [gj] : [];
+  const features = raw.filter((f) => f && f.geometry && /Polygon/.test(f.geometry.type));
+  for (const ft of features) {
+    const def = playZoneDef(ft);
+    if (!def) continue;
+    ft.properties = Object.assign({}, ft.properties, {
+      area: def.area,
+      navn: def.name,
+      playZone: true
+    });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function officialPlayZoneFeatures(gj) {
+  const prepared = prepareOfficialZone2(gj);
+  if (!prepared) return [];
+  const recognised = prepared.features.filter((ft) => !!playZoneDef(ft));
+  const areas = new Set(recognised.map((ft) => playZoneDef(ft).area));
+  // Keep every polygon part belonging to the four areas; some WFS/GML
+  // replies represent a multipart area as several Polygon features.
+  if (areas.size === PLAY_ZONE_ALIASES.length) return recognised;
+  // TL445984 is specifically the four-area Zone 2 layer. KortInfo may omit
+  // display-name properties or split MultiSurface features into several
+  // Polygon members, but every polygon in this exact layer still belongs to
+  // one of the four requested areas.
+  const trustedDefault = typeof S !== 'undefined' && S.sources && S.sources.zone2
+    && S.sources.zone2.url === KORTINFO
+    && String(S.sources.zone2.typeName).toLowerCase() === 'ugis:tl445984';
+  if (trustedDefault && prepared.features.length) return prepared.features;
+  // For a custom source, accept an unnamed response only when it is exactly
+  // four polygons; otherwise require the four names to avoid widening play.
+  return prepared.features.length === PLAY_ZONE_ALIASES.length ? prepared.features : [];
+}
+
+function officialZone2Data() {
+  if (S.zone2Official) return S.zone2Official;
+  const layer = layerByKey('src:zone2');
+  return layer ? layer.geojson : null;
+}
+
+/* Prefer the exact KortInfo geometry. The traced geometry remains a startup
+   and outage fallback so a temporarily unavailable municipal server never
+   makes the game unusable. */
 function zonesPlayArea() {
-  const z = buildAreaZones();
-  return z ? unionAll(z.features) : null;
+  const official = officialPlayZoneFeatures(officialZone2Data());
+  if (official.length) return unionAll(official);
+  const fallback = buildAreaZones();
+  return fallback ? unionAll(fallback.features) : null;
+}
+
+function hasOfficialZonesPlayArea() {
+  return officialPlayZoneFeatures(officialZone2Data()).length > 0;
 }
 
 const AREA_STYLE = () => Object.entries(window.AALBORG_AREAS || {})
   .map(([k, v]) => ({ key: k, label: `${k}. ${v.name}`, color: v.color }));
 
 function areaCategory(props) {
-  const k = props && props.area;
-  if (k == null) return null;
-  const a = (window.AALBORG_AREAS || {})[k];
-  return a ? { key: String(k), label: `${k}. ${a.name}`, color: a.color } : null;
+  const def = playZoneDef(props);
+  if (!def) return null;
+  const a = (window.AALBORG_AREAS || {})[def.area];
+  return a ? { key: String(def.area), label: `${def.area}. ${a.name}`, color: a.color } : null;
 }
 
 function unionAll(features) {
@@ -1651,11 +1732,22 @@ async function toggleSource(key, btn) {
   if (btn) btn.classList.add('is-busy');
   setStatus(`Loading ${src.name}…`);
   try {
-    const gj = await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]);
-    const { note } = normaliseCoords(gj);
+    let gj = (key === 'zone2' && S.zone2Official) ? S.zone2Official
+      : await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]);
+    let note = '';
+    if (!(key === 'zone2' && gj === S.zone2Official)) {
+      ({ note } = normaliseCoords(gj));
+      if (key === 'zone2') {
+        gj = prepareOfficialZone2(gj);
+        S.zone2Official = gj;
+      }
+    }
     const rec = addLayer(src.name, gj, {
       key: 'src:' + key, nameField: src.nameField, style: src.style
     });
+    if (key === 'zone2' && S.playAreaMeta && S.playAreaMeta.type === 'zones') {
+      setZonesPlayArea(false);
+    }
     if (rec) {
       setStatus(`${src.name}: ${rec.geojson.features.length} zones on${note ? ' (' + note + ')' : ''}. ` +
               `Live data carries real coordinates — placement does not apply to it.`);
@@ -1664,6 +1756,36 @@ async function toggleSource(key, btn) {
     setStatus(`${src.name} failed — ${err.message}. Tap ⚙ and Browse to pick the right layer.`, true);
   } finally {
     if (btn) btn.classList.remove('is-busy');
+  }
+}
+
+/* Load official Zone 2 quietly at startup so the four named municipal
+   polygons replace the traced fallback as soon as the service answers. */
+async function loadOfficialZone2PlayArea() {
+  const src = S.sources.zone2;
+  if (!src || src.kind !== 'wfs' || !src.url || !src.typeName || typeof window.fetch !== 'function') {
+    return false;
+  }
+  try {
+    let gj = await fetchFirst([wfsUrl(src)]);
+    normaliseCoords(gj);
+    gj = prepareOfficialZone2(gj);
+    if (!officialPlayZoneFeatures(gj).length) {
+      throw new Error('could not identify all four Zone 2 play areas');
+    }
+    S.zone2Official = gj;
+    if (!S.playAreaMeta || S.playAreaMeta.type === 'zones') {
+      setZonesPlayArea(false);
+      markPlayMode('zones');
+    }
+    renderSourceRows();
+    renderCal();
+    return true;
+  } catch (err) {
+    console.warn('KortInfo Zone 2 unavailable; using traced fallback:', err.message);
+    const status = $('#officialZoneStatus');
+    if (status) status.textContent = 'KortInfo Zone 2 could not be loaded; the traced geometry is temporarily active. Use Reload official Zone 2 to retry.';
+    return false;
   }
 }
 
@@ -2266,6 +2388,12 @@ function renderCal() {
   $('#calScaleVal').textContent = ((c.mul || 1) * 100).toFixed(1) + '%';
   $('#calSpan').textContent = calSpanText();
   $('#calSnippet').value = placementSnippet();
+  const status = $('#officialZoneStatus');
+  if (status) {
+    status.textContent = hasOfficialZonesPlayArea()
+      ? 'Official Zone 2 is active. The play area is the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.'
+      : 'Official Zone 2 loads automatically. Until KortInfo replies, the traced geometry is used only as a temporary fallback.';
+  }
 }
 
 /* Rebuild anything derived from the transform, then repaint. */
@@ -2285,34 +2413,24 @@ function applyCal(silent, light) {
 
 $('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
 
-/* The traced outlines are a stand-in. If Aalborg's own WFS answers your
-   browser, live geometry beats them outright: exact boundaries, real
-   coordinates, no placement step at all. */
+/* The four KortInfo layer IDs are now the defaults. This button retries
+   official Zone 2 and immediately rebuilds the play area from its four named
+   polygons; the calibration controls below affect only the traced fallback. */
 $('#calLive').addEventListener('click', async (e) => {
   const btn = e.target;
   btn.disabled = true;
   const was = btn.textContent;
-  btn.textContent = 'Asking KortInfo…';
-  setStatus('Asking Aalborg KortInfo which layers it will share…');
-  try {
-    const list = await browseLayers(KORTINFO);
-    ['zone2', 'zone3'].forEach((k) => {
-      S.sources[k].kind = 'wfs';
-      S.sources[k].url = KORTINFO;
-    });
-    renderSourceRows();
-    setStatus(`KortInfo offers ${list.length} layers. Tap ⚙ on zone 2 or zone 3, then ` +
-              `"Browse layers" — look for bydel, kommuneplanomraade or similar. ` +
-              `Live layers arrive with real coordinates, so no placement is needed.`);
-    openSourceEditor('zone3');
-    $('#srcBrowse').click();
-  } catch (err) {
-    setStatus(`KortInfo did not answer: ${err.message}. Its WFS usually needs the site ` +
-              `administrator to enable sharing, and a link from KortInfo's own Linkgenerator. ` +
-              `Paste that URL behind ⚙ if you get one — the traced outlines keep working meanwhile.`, true);
-  } finally {
-    btn.disabled = false; btn.textContent = was;
+  btn.textContent = 'Loading official Zone 2…';
+  setStatus('Loading Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from KortInfo…');
+  const ok = await loadOfficialZone2PlayArea();
+  if (ok) {
+    setStatus('Official Zone 2 loaded. The play area now follows the exact union of its four named areas.');
+    toast('Official Zone 2 play area loaded.');
+  } else {
+    setStatus('KortInfo did not answer or all four area names could not be identified. The traced fallback remains active.', true);
   }
+  btn.disabled = false;
+  btn.textContent = was;
 });
 $('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
 
@@ -2540,6 +2658,7 @@ $('#srcSave').addEventListener('click', () => {
   src.nameField = $('#srcName').value.trim();
   $('#srcModal').hidden = true;
   removeLayerByKey('src:' + editingKey);   // force a refetch with the new settings
+  if (editingKey === 'zone2') S.zone2Official = null;
   renderSourceRows();
   toggleSource(editingKey, null);
 });
@@ -2632,7 +2751,7 @@ $('#unitSeg').addEventListener('click', (e) => {
 });
 
 const PLAY_NOTES = {
-  zones:   'Convex hull of Midtbyen, Nørresundby, Vest and Øst Aalborg.',
+  zones:   'Exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from official Zone 2.',
   circle:  'A plain circle, if you want a smaller game.',
   kommune: 'The whole municipality — much bigger than the four play zones.'
 };
@@ -2640,13 +2759,20 @@ const PLAY_NOTES = {
 function markPlayMode(mode) {
   $$('#playSeg button').forEach((b) => b.classList.toggle('is-active', b.dataset.area === mode));
   $('#radiusField').hidden = mode !== 'circle';
-  $('#playNote').textContent = PLAY_NOTES[mode] || '';
+  $('#playNote').textContent = mode === 'zones' && !hasOfficialZonesPlayArea()
+    ? 'Traced fallback while official Zone 2 loads; exact same four-area mode.'
+    : (PLAY_NOTES[mode] || '');
 }
 
 async function setPlayMode(mode) {
   if (mode === 'zones') {
-    if (setZonesPlayArea()) { markPlayMode('zones'); toast('Play area: the four play zones.'); }
-    else toast('Could not build the play zones — check data.js.', true);
+    if (setZonesPlayArea()) {
+      markPlayMode('zones');
+      toast(hasOfficialZonesPlayArea()
+        ? 'Play area: the four official Zone 2 areas.'
+        : 'Play area: traced fallback while KortInfo loads.');
+      if (!hasOfficialZonesPlayArea()) await loadOfficialZone2PlayArea();
+    } else toast('Could not build the four Zone 2 play areas.', true);
     return;
   }
   if (mode === 'circle') {
@@ -2707,7 +2833,8 @@ $('#resetBtn').addEventListener('click', () => {
 
 function serialize() {
   return {
-    v: 2,
+    v: 3,
+    sourceConfigVersion: SOURCE_CONFIG_VERSION,
     units: S.units,
     playAreaMeta: S.playAreaMeta,
     base: S.baseKey,
@@ -2734,8 +2861,14 @@ function deserialize(data) {
   if (!data || !data.constraints) return false;
   S.constraints = data.constraints;
   S.seq = S.constraints.length + 1;
+  S.zone2Official = null;
   if (data.units) S.units = data.units;
-  if (data.sources) S.sources = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SOURCES)), data.sources);
+  // Source settings from older links were based on the traced/legacy defaults.
+  // Do not let them silently replace the four official KortInfo layers.
+  S.sources = JSON.parse(JSON.stringify(DEFAULT_SOURCES));
+  if (data.sourceConfigVersion === SOURCE_CONFIG_VERSION && data.sources) {
+    S.sources = Object.assign(S.sources, data.sources);
+  }
   if (data.cal) S.cal = data.cal;
   if (data.renames) S.renames = data.renames;
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
@@ -2760,6 +2893,7 @@ function deserialize(data) {
   renderCal();
   applyUnits();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
+  loadOfficialZone2PlayArea();
   return true;
 }
 
@@ -2840,16 +2974,22 @@ renderSourceRows();
 renderWmsList();
 renderLayerList();
 renderCal();
-if (!loadFromUrl()) applyUnits();
+const restoredFromUrl = loadFromUrl();
+if (!restoredFromUrl) applyUnits();
 renderToolForm();
+// Do not block first paint: the traced union is already usable. In a real
+// browser this replaces it with the exact official Zone 2 union as soon as
+// KortInfo answers. Test environments without window.fetch keep the fallback.
+if (!restoredFromUrl) loadOfficialZone2PlayArea();
 
 /* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
   map, S, CONFIG, draft, drawing, RADAR_PRESETS,
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
-  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO,
-  buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
+  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
+  buildDistrictZones, buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
+  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate,
   nudgeCal, scaleCal, setCalMode, placementSnippet, georef,
   snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,

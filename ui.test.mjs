@@ -67,6 +67,43 @@ check('play area is the four zones and non-trivial', HULL > 20 && HULL < 400, `$
 check('HUD unit is mi²', $('#hudUnit').textContent === 'mi²');
 check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSeg [data-area="zones"]').className));
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
+check('all four default zone sources use KortInfo', window.eval(`
+  Object.values(HS.S.sources).every(s => s.url === HS.KORTINFO && s.kind === 'wfs')
+`));
+check('default WFS layer IDs are the supplied four', window.eval(`
+  ['ugis:TL1433667','ugis:TL445984','ugis:TL445987','ugis:TL445981']
+    .every((id, i) => HS.S.sources['zone' + (i + 1)].typeName === id)
+`));
+check('Zone 2 request targets TL445984', /typeName=ugis%3ATL445984/.test(
+  window.eval(`HS.wfsUrl(HS.S.sources.zone2)`)));
+check('official source IDs are visible in the Layers UI',
+      ['TL1433667','TL445984','TL445987','TL445981'].every(id => $('#calBox').textContent.includes(id)));
+check('legacy move/scale controls are hidden',
+      ['calAuto','calDrag','calScaleVal','calSnippet','calSnap','calReset']
+        .every(id => doc.getElementById(id).closest('[hidden]')));
+check('play-area note describes an exact union', /Exact union/.test($('#playNote').textContent));
+const officialFixture = {
+  type: 'FeatureCollection',
+  features: [
+    ['Midtbyen', 9.90], ['Nørresundby', 9.92], ['Aalborg Vest', 9.94], ['Øst Aalborg', 9.96]
+  ].map(([name, x]) => ({
+    type: 'Feature', properties: { OmraadeNavn: name },
+    geometry: { type: 'Polygon', coordinates: [[[x,57.00],[x+.01,57.00],[x+.01,57.01],[x,57.01],[x,57.00]]] }
+  }))
+};
+window.__officialFixture = officialFixture;
+check('Zone 2 name matching identifies all four play areas',
+      window.eval(`HS.officialPlayZoneFeatures(window.__officialFixture).length`) === 4);
+check('Zone 2 preparation assigns canonical area numbers',
+      window.eval(`HS.prepareOfficialZone2(window.__officialFixture).features.map(f => f.properties.area).join(',')`) === '1,2,3,4');
+window.__legacyState = {
+  constraints: [],
+  sources: { zone2: { kind: 'areas', url: '', typeName: '' } },
+  playAreaMeta: { type: 'zones' }
+};
+window.eval('HS.deserialize(window.__legacyState)');
+check('legacy links cannot replace official Zone 2 defaults',
+      window.eval(`HS.S.sources.zone2.url === HS.KORTINFO && HS.S.sources.zone2.typeName === 'ugis:TL445984'`));
 
 console.log('\n== tabs ==');
 click(doc.querySelector('[data-tab="layers"]'));

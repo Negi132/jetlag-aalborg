@@ -12,7 +12,7 @@
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=20260731-kortinfo-authoritative">
 </head>
 <body>
 
@@ -111,51 +111,37 @@
       <div class="stack" id="zoneSources"></div>
 
       <div id="calBox" class="calbox">
-        <p class="cal-title">Place the zones — once</p>
-        <p class="hint">The outlines are already the right shape. All that's left is where they sit
-          and how big they are. Set it once, paste the line at the bottom into <code>data.js</code>,
-          and nobody ever has to do this again.</p>
-
-        <button class="ghost-btn wide" id="calLive">Try Aalborg's live boundaries instead</button>
-        <p class="hint">If Aalborg's own map server will share the layers with your browser, you get
-          the exact boundaries with real coordinates and none of this is needed. Worth one tap.</p>
-        <button class="solid-btn wide" id="calAuto" style="margin-top:8px">Try it automatically</button>
-
-        <p class="cal-sub">Move</p>
-        <button class="ghost-btn wide" id="calDrag">Drag the zones on the map</button>
-        <div class="cal-pad">
-          <span></span><button data-nudge="n">↑</button><span></span>
-          <button data-nudge="w">←</button>
-          <select id="calStepSel" title="step size">
-            <option value="5">5 m</option>
-            <option value="25" selected>25 m</option>
-            <option value="100">100 m</option>
-            <option value="500">500 m</option>
-          </select>
-          <button data-nudge="e">→</button>
-          <span></span><button data-nudge="s">↓</button><span></span>
+        <p class="cal-title">Official Aalborg zone sources</p>
+        <p class="hint">These four KortInfo WFS layers are built into the site and are the
+          authoritative defaults. Old saved links cannot replace them unless they were created by
+          this updated version.</p>
+        <div class="official-zone-defaults" aria-label="Default zone sources">
+          <div><strong>Zone 1</strong><code>ugis:TL1433667</code></div>
+          <div><strong>Zone 2</strong><code>ugis:TL445984</code></div>
+          <div><strong>Zone 3</strong><code>ugis:TL445987</code></div>
+          <div><strong>Zone 4</strong><code>ugis:TL445981</code></div>
         </div>
+        <p class="hint" id="officialZoneStatus">Zone 2 loads automatically and defines the play
+          area as the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.</p>
+        <button class="ghost-btn wide" id="calLive">Reload official Zone 2</button>
 
-        <p class="cal-sub">Resize <span class="cal-read" id="calScaleVal">100%</span></p>
-        <div class="cal-row">
-          <button class="ghost-btn" data-scale="0.99">−1%</button>
-          <button class="ghost-btn" data-scale="0.999">−0.1%</button>
-          <button class="ghost-btn" data-scale="1.001">+0.1%</button>
-          <button class="ghost-btn" data-scale="1.01">+1%</button>
+        <!-- Retained only as internal emergency fallback hooks. Hidden means these are not
+             presented as user options when the official coordinate-bearing WFS is configured. -->
+        <div id="legacyCalControls" hidden aria-hidden="true">
+          <button id="calAuto">Auto-place fallback</button>
+          <button id="calDrag">Drag fallback</button>
+          <span id="calScaleVal"></span>
+          <span id="calSpan"></span>
+          <textarea id="calSnippet"></textarea>
+          <select id="calStepSel"><option value="25" selected>25</option></select>
+          <button id="calCopy">Copy</button>
+          <button id="calSnap">Snap</button>
+          <button id="calRename">Rename</button>
+          <button id="calReset">Reset</button>
+          <button data-nudge="n">N</button><button data-nudge="s">S</button>
+          <button data-nudge="w">W</button><button data-nudge="e">E</button>
+          <button data-scale="0.99">-</button><button data-scale="1.01">+</button>
         </div>
-        <p class="hint">Resizes around the middle of the screen, so line up one landmark first,
-          centre it, then resize until a second one matches. Zones span <span id="calSpan">—</span>.</p>
-
-        <p class="cal-sub">Make it permanent</p>
-        <textarea id="calSnippet" class="cal-snippet" readonly rows="2"></textarea>
-        <div class="cal-row">
-          <button class="ghost-btn" id="calCopy">Copy this line</button>
-          <button class="ghost-btn" id="calSnap">Snap to roads</button>
-          <button class="ghost-btn" id="calRename">Rename a district</button>
-          <button class="ghost-btn" id="calReset">Reset</button>
-        </div>
-        <p class="hint">Paste it over the <code>PLACEMENT</code> line in <code>data.js</code> and
-          commit. Until you do, it still rides along in the game link.</p>
       </div>
 
       <p class="section-label">Bus &amp; train routes</p>
@@ -200,7 +186,7 @@
           <button data-area="circle">Circle</button>
           <button data-area="kommune">Aalborg Kommune</button>
         </div>
-        <p class="hint" id="playNote">Convex hull of Midtbyen, Nørresundby, Vest and Øst Aalborg.</p>
+        <p class="hint" id="playNote">Exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from official Zone 2.</p>
       </div>
 
       <div class="field" id="radiusField" hidden>
@@ -290,7 +276,7 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
-<script src="data.js"></script>
-<script src="app.js"></script>
+<script src="data.js?v=20260731-kortinfo-authoritative"></script>
+<script src="app.js?v=20260731-kortinfo-authoritative"></script>
 </body>
 </html>
