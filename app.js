@@ -174,6 +174,8 @@ const S = {
   wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
   cal: null,          // pixel-to-map calibration for the traced zones
+  roadIndex: null,    // loaded road network, for boundary snapping
+  snapM: 70,          // how far a boundary point may be pulled
   renames: {},        // district index -> your own name
   me: null,
   baseKey: 'light',
@@ -1165,8 +1167,9 @@ function georef() {
 
 const pxToLngLat = (x, y, gr) => [gr.lng0 + gr.s * x, invMercY(gr.my0 - gr.s * y)];
 
-function ringToPolygon(ring, props, gr) {
-  const coords = ring.map(([x, y]) => pxToLngLat(x, y, gr));
+function ringToPolygon(ring, props, gr, snapper) {
+  const coords = snapper ? ring.map(([x, y]) => snapper.snapPx(x, y))
+                         : ring.map(([x, y]) => pxToLngLat(x, y, gr));
   if (coords.length < 4) return null;
   const first = coords[0], last = coords[coords.length - 1];
   if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first.slice());
@@ -1176,9 +1179,10 @@ function ringToPolygon(ring, props, gr) {
 /* Zone 2: the four play zones, straight from the traced outlines. */
 function buildAreaZones() {
   const gr = georef();
+  const snapper = S.roadIndex ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
   const out = [];
   for (const z of window.ZONE2_PX || []) {
-    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr);
+    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr, snapper);
     if (f) out.push(f);
   }
   return out.length ? { type: 'FeatureCollection', features: out } : null;
@@ -1188,12 +1192,14 @@ function buildAreaZones() {
    own labels. Renames live in S.renames, keyed by index. */
 function buildDistrictZones() {
   const gr = georef();
+  const snapper = S.roadIndex ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
   const out = [];
   (window.ZONE3_PX || []).forEach((z, i) => {
     const nm = (S.renames && S.renames[i]) || z.name || `District ${i + 1}`;
-    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr);
+    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr, snapper);
     if (f) out.push(f);
   });
+  if (snapper) S.lastSnap = snapper.stats();
   return out.length ? { type: 'FeatureCollection', features: out } : null;
 }
 
@@ -1777,6 +1783,145 @@ async function autoCalibrate(btn) {
   }
 }
 
+/* ---------- snapping boundaries to the roads they follow ---------------
+   Most district borders run down the middle of a street. The traced
+   outlines are pixel-quantised, so they wobble either side of the real
+   line. Pulling each vertex onto the nearest road centreline straightens
+   them out.
+
+   Because neighbouring districts share the *identical* arc coordinates
+   (see data.js), snapping is deterministic per coordinate: both sides of
+   a shared border move together and the zones stay perfectly joined. */
+
+function overpassRoadQuery() {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  return `[out:json][timeout:120];way(${s2},${w},${n},${e})` +
+         `["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"];out geom;`;
+}
+
+/* Road segments, as flat [ax,ay,bx,by] so we can project onto them. */
+function roadSegments(json) {
+  const segs = [];
+  for (const el of (json && json.elements) || []) {
+    const g = el.geometry;
+    if (!Array.isArray(g)) continue;
+    for (let i = 1; i < g.length; i++) {
+      const a = g[i - 1], b = g[i];
+      if (!a || !b || a.lon == null || b.lon == null) continue;
+      segs.push([a.lon, a.lat, b.lon, b.lat]);
+    }
+  }
+  return segs;
+}
+
+/* Nearest point on a segment, in degrees but distance-weighted so a degree
+   of longitude counts for less than a degree of latitude at this latitude. */
+const KX = 0.545;                       // cos(57°), lng degrees -> lat degrees
+
+function projectToSegment(x, y, s) {
+  const ax = s[0], ay = s[1], bx = s[2], by = s[3];
+  const dx = (bx - ax) * KX, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? (((x - ax) * KX) * dx + (y - ay) * dy) / len2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+  const ex = (px - x) * KX, ey = py - y;
+  return { x: px, y: py, d2: ex * ex + ey * ey };
+}
+
+function segmentIndex(segs, cell) {
+  const g = new Map();
+  const put = (i, j, v) => {
+    const k = i + ':' + j;
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(v);
+  };
+  segs.forEach((s) => {
+    const i0 = Math.floor(Math.min(s[0], s[2]) / cell), i1 = Math.floor(Math.max(s[0], s[2]) / cell);
+    const j0 = Math.floor(Math.min(s[1], s[3]) / cell), j1 = Math.floor(Math.max(s[1], s[3]) / cell);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) put(i, j, s);
+  });
+  return {
+    nearest(x, y, maxDeg) {
+      const gi = Math.floor(x / cell), gj = Math.floor(y / cell);
+      const r = Math.max(1, Math.ceil(maxDeg / cell));
+      let best = null;
+      for (let i = gi - r; i <= gi + r; i++) {
+        for (let j = gj - r; j <= gj + r; j++) {
+          const c = g.get(i + ':' + j);
+          if (!c) continue;
+          for (const s of c) {
+            const p = projectToSegment(x, y, s);
+            if (!best || p.d2 < best.d2) best = p;
+          }
+        }
+      }
+      return best;
+    }
+  };
+}
+
+/* Snapped coordinates are cached per rounded pixel coordinate, so a vertex
+   shared by two districts resolves to exactly the same place in both. */
+function snapRingsToRoads(index, toleranceM) {
+  const gr = georef();
+  const tolDeg = (toleranceM / 1000) / 111.2;
+  const cache = new Map();
+  let moved = 0, total = 0;
+
+  const snapPx = (x, y) => {
+    const key = x.toFixed(1) + ',' + y.toFixed(1);
+    if (cache.has(key)) return cache.get(key);
+    const [lng, lat] = pxToLngLat(x, y, gr);
+    const hit = index.nearest(lng, lat, tolDeg);
+    let out = [lng, lat];
+    if (hit && Math.sqrt(hit.d2) <= tolDeg) { out = [hit.x, hit.y]; moved++; }
+    total++;
+    cache.set(key, out);
+    return out;
+  };
+  return { snapPx, stats: () => ({ moved, total }) };
+}
+
+async function snapToRoads(btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Fetching roads…';
+  setStatus('Asking OpenStreetMap for Aalborg\'s streets…');
+  try {
+    const body = 'data=' + encodeURIComponent(overpassRoadQuery());
+    let json = null; const problems = [];
+    for (const url of OVERPASS) {
+      try {
+        const res = await fetch(url, { method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        json = JSON.parse(await res.text());
+        break;
+      } catch (e) { problems.push(e.message); }
+    }
+    if (!json) throw new Error(problems.join(' / '));
+    const segs = roadSegments(json);
+    if (segs.length < 500) throw new Error('the road network came back almost empty');
+
+    btn.textContent = `Snapping to ${segs.length} road segments…`;
+    await new Promise((r) => setTimeout(r, 20));
+    S.roadIndex = segmentIndex(segs, 0.004);
+    S.snapM = S.snapM || 70;
+    refreshDerivedLayers();
+    if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
+    const st = S.lastSnap || { moved: 0, total: 0 };
+    setStatus(`Snapped ${st.moved} of ${st.total} boundary points onto roads ` +
+              `(within ${fmtDist(S.snapM)}). Turn it off again with Reset if it looks wrong.`);
+    toast('Boundaries pulled onto the streets.');
+    saveToUrl();
+  } catch (err) {
+    setStatus(`Could not snap to roads — ${err.message}.`, true);
+  } finally {
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
 /* ---------- calibration ------------------------------------------------ */
 
 function calSpanText() {
@@ -1822,6 +1967,7 @@ $('#calPin').addEventListener('click', () => {
 });
 
 $('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
+$('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
 
 /* Three districts sit on the crop edge and came through unnamed; any name
    can be corrected here. Names never affect a zone answer. */
@@ -1851,6 +1997,7 @@ function tryRename(ft) {
 
 $('#calReset').addEventListener('click', () => {
   S.cal = defaultCal();
+  S.roadIndex = null;            // also drops any road snapping
   applyCal();
 });
 
@@ -2338,6 +2485,8 @@ window.HS = {
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers,
   buildDistrictZones, buildAreaZones, zonesPlayArea, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate, fitCoastline,
+  snapToRoads, snapRingsToRoads, segmentIndex, roadSegments,
+  projectToSegment, overpassRoadQuery,
   coastVertices, parseOverpassPoints, makeIndex, overpassCoastQuery,
   __mercY: mercY, __invMercY: invMercY,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,

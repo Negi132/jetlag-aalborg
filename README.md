@@ -91,49 +91,52 @@ Each level is a **toggle** — tap on, tap off, never duplicated.
 
 ### How zones 2 and 3 were made
 
-The outlines are **traced from your screenshots**, not approximated. The images were processed
-directly: boundary lines isolated by colour, the regions between them followed, each outline turned
-into a polygon. Zone 2 came out as exactly 4 regions, zone 3 as 30.
+Traced from your screenshots, not approximated: boundary lines isolated by colour, the regions
+between them followed, each outline turned into a polygon. Zone 2 is 4 regions, zone 3 is 33.
 
-**No gaps.** The drawn boundary lines are several pixels wide, and the first attempt traced the
-regions *inside* them, which left a gap everywhere a line had been. Every boundary pixel is now
-assigned to whichever region is nearest, so the border lands on the midline of the drawn line and
-neighbours share an edge exactly. The districts' areas now sum to 402.2 km² against a merged
-outline of 401.5 km² — a 0.2% difference, all of it sub-pixel. They overlap by at most one pixel
-(~28 m) rather than leaving any gap.
+**Why there were gaps, and how they're gone.** The first version traced each region separately and
+simplified each outline separately — so a border shared by two districts got simplified two different
+ways and the polygons drifted apart by up to the simplification tolerance. Now the boundary network
+is split into **arcs**: each stretch of border shared by exactly two districts. Every arc is
+simplified *once* and handed to both neighbours, so they share an edge exactly.
 
-**Names** come from the screenshot's own red labels: each label was located in the image, read, and
-matched to the polygon containing it. 27 of 30 districts are named this way, which is why Skalborg
-is now Skalborg. Three are still generic — those sit on the crop edge (Klarup, Storvorde, Stae and
-Langholt run off the side of the screenshot, so their districts merged into the background). Use
-**Rename a district** in the Layers tab to fix any of them: tap the button, tap the district. Names
-are cosmetic — a zone question always uses the polygon, so a wrong label still answers correctly.
+Measured on the output: worst overlap between any two districts **0.00 px²**, interior gaps
+**0.00 px²**, for both zone levels. Before the arc rewrite those were 57 px² and 687 px².
 
-### Placing the zones — your road idea, applied to the shoreline
+**Names** come from the screenshot's own red labels — each located in the image, read, and matched
+to the polygon containing it. 27 of 33 are named. The rest are either edge slivers or districts that
+run off the side of the screenshot (Klarup, Storvorde, Stae, Langholt). **Rename a district** in the
+Layers tab fixes any of them: tap the button, tap the district. Names are cosmetic — a zone question
+always uses the polygon.
 
-You were right that the boundaries follow real features. Better still, a lot of them follow the
-**Limfjord shoreline**, which is unmistakable in a way that a road isn't without knowing its name.
-The tracing recorded which vertices sit on water — 342 of them — and the app can now pull the real
-coastline from OpenStreetMap and slide the zones onto it.
+### Placing the zones, and straightening them onto the streets
 
-> **Layers → Calibrate zones → Fit to the coastline automatically**
+A screenshot records shape but not position, and I couldn't establish that offline: coarse coastline
+data, place-name labels and known district positions all landed about a kilometre out. The app can
+reach OpenStreetMap, so it happens there. Three tools, in the **Layers → Calibrate zones** box:
 
-It fetches the shoreline, then searches scale and position for the placement that puts the traced
-waterline on the real one. The search is symmetric — shrinking everything onto one beach is punished
-because the rest of the coast would then be far from any vertex — so it can't collapse. It reports
-the typical error afterwards so you can judge it.
+**1. Fit to the coastline automatically.** Many zone edges follow the Limfjord, and the tracing
+recorded which vertices sit on water. The app pulls the real shoreline and searches scale and
+position for the placement that lines the two up. The search is symmetric, so it can't cheat by
+shrinking everything onto one beach. Against a synthetic placement it recovers a known transform to
+within 0.2% of scale and about 10 m of position.
 
-Tested against a synthetic placement, it recovers a known transform to within 0.2% of scale and
-about 10 m of position.
+**2. Snap boundaries to the roads.** Your point about roads is right, and it's a better fit for
+*shape* than for placement: most district borders run down the middle of a street, while the traced
+outlines are pixel-quantised and wobble either side of it. This pulls each boundary point onto the
+nearest road centreline (within 70 m by default), which straightens them out.
 
-If it misses, the manual route is still there: tap the button, tap Nytorv, then use the scale slider
-and the fine nudge arrows. Either way it saves into the game link, and one calibration fixes both
-zone levels at once, because both screenshots share a pixel space.
+The reason this doesn't tear the zones apart: neighbouring districts share *identical* arc
+coordinates, and snapping is cached per coordinate, so both sides of a shared border resolve to the
+same point and move together. Tested — after snapping, the districts' areas still sum to their union
+to within 0.000%.
 
-Why this is needed at all: a screenshot records shape but not position. I could not establish that
-offline — fitting against coarse coastline data, place-name labels, and known district positions all
-landed about a kilometre out, worse than the districts are wide. The app, unlike me, can reach
-OpenStreetMap, so the fit happens there.
+**3. Manual.** Tap the button, tap Nytorv, then the scale slider and the nudge arrows. **Reset**
+clears both the calibration and any road snapping.
+
+All of it saves into the game link, and one calibration fixes both zone levels, because both
+screenshots share a pixel space (zone 2 scaled by 1.20 to match zone 3, verified by aligning the
+fjord).
 
 ### The play area
 
@@ -222,7 +225,7 @@ HS.setCircularPlayArea(HS.map.getCenter(), 4)
 ```
 npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom
 node geometry.test.mjs   # 33 checks  — the constraint maths
-node ui.test.mjs         # 194 checks — the app, driven headlessly
+node ui.test.mjs         # 203 checks — the app, driven headlessly
 ```
 
 `geometry.test.mjs` checks the maths against analytically known answers: that a "no" radar leaves

@@ -118,6 +118,9 @@
         <p class="hint">Uses OpenStreetMap's shoreline. Many zone edges follow the Limfjord, so
           this usually lands close. Check the fjord edges afterwards.</p>
         <button class="ghost-btn wide" id="calPin" style="margin-top:8px">Or: tap here, then tap Nytorv</button>
+        <button class="ghost-btn wide" id="calSnap" style="margin-top:8px">Snap boundaries to the roads</button>
+        <p class="hint">Do this after calibrating. Most district borders run down a street, so this
+          straightens the traced outlines onto the real road centrelines.</p>
         <div class="field" style="margin-top:10px">
           <label for="calScale">2 · Scale — <span id="calScaleVal">100%</span>, zones span <span id="calSpan">—</span></label>
           <input type="range" id="calScale" min="50" max="200" step="1" value="100">
