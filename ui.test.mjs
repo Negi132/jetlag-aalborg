@@ -412,6 +412,31 @@ check('all five NT bus families are configured', ntTables.length === 5, ntTables
 check('yellow/local bus table is included', ntTables.includes('rutekortweb.ntmap_lokalbus_murl'));
 check('telebus table is included', ntTables.includes('rutekortweb.ntmap_telebus_murl'));
 check('bus source prefers the combined NT loader', window.eval("HS.ROUTE_SOURCES.bus.kind") === 'nt-all');
+window.__ntCapsLayers = [
+  {name:'rutekortweb:ntmap_regionalbus_murl', title:'Regionalbus'},
+  {name:'rutekortweb:ntmap_regionalbus_biforloeb_murl', title:'Regionalbus biforløb'},
+  {name:'rutekortweb:ntmap_lokalbus_biforloeb_murl', title:'Lokalbus biforløb'},
+  {name:'rutekortweb:ntmap_tog_murl', title:'Tog'}
+];
+const discoveredBusTables = window.eval("HS.ntBusLayerDefs(window.__ntCapsLayers).map(x=>x.table)");
+check('WFS discovery includes regional branch runs', discoveredBusTables.includes('rutekortweb.ntmap_regionalbus_biforloeb_murl'));
+check('WFS discovery includes local branch runs', discoveredBusTables.includes('rutekortweb.ntmap_lokalbus_biforloeb_murl'));
+check('WFS discovery excludes trains', !discoveredBusTables.includes('rutekortweb.ntmap_tog_murl'));
+check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
+window.__stopsFixture = [
+  {type:'node',lat:57.043,lon:9.918,tags:{name:'Aalborg St. (Perron C9)'}},
+  {type:'node',lat:57.042,lon:9.910,tags:{name:'Prinsensgade (Aalborg)'}},
+  {type:'node',lat:57.039,lon:9.899,tags:{name:'Sankt Jørgens Gade (Hasserisgade)'}},
+  {type:'node',lat:57.034,lon:9.879,tags:{name:'Fyrrebakken (Hasserisvej)'}},
+  {type:'node',lat:57.031,lon:9.864,tags:{name:'Hundeklemmen'}},
+  {type:'node',lat:57.028,lon:9.850,tags:{name:'Nørholmsvej (Under Lien)'}},
+  {type:'node',lat:57.025,lon:9.820,tags:{name:'Nældevej'}},
+  {type:'node',lat:57.020,lon:9.760,tags:{name:'Nørholm'}},
+  {type:'node',lat:57.015,lon:9.720,tags:{name:'Klitgård'}}
+];
+window.__parsedStops = window.eval("HS.parseOverpassStops({elements:window.__stopsFixture})");
+const matched38Stops = window.eval("HS.matchSupplementStops(window.__parsedStops, HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS[0])");
+check('route 38 stop names match despite parenthetical text', matched38Stops.length >= 8, `got ${matched38Stops.length}`);
 const extractedRefs = window.eval("HS.extractRouteRefs({rutenr:'Linje 11, 12 og 14'}).join(', ')");
 check('combined line-number fields are parsed', extractedRefs === '11, 12, 14', extractedRefs);
 window.__sharedRoutes = {type:'FeatureCollection',features:[
@@ -475,6 +500,16 @@ const ntFeature = (ref, y = 57.04) => ({
 window.fetch = async (url) => {
   const text = String(url);
   window.__tried.push(text);
+  if (/GetCapabilities/i.test(text)) return { ok:true, status:200, text:async()=>`<WFS_Capabilities><FeatureTypeList>
+    <FeatureType><Name>rutekortweb:ntmap_bybus_murl</Name><Title>Bybus</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_regionalbus_murl</Name><Title>Regionalbus</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_regionalbus_biforloeb_murl</Name><Title>Regionalbus biforløb</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_xbus_murl</Name><Title>Expresbus</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_lokalbus_murl</Name><Title>Lokalbus</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_telebus_murl</Name><Title>Telebus</Title></FeatureType>
+    <FeatureType><Name>rutekortweb:ntmap_tog_murl</Name><Title>Tog</Title></FeatureType>
+  </FeatureTypeList></WFS_Capabilities>` };
+  if (text.includes('ntmap_regionalbus_biforloeb_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('38',57.047)]}) };
   if (text.includes('ntmap_bybus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('2')]}) };
   if (text.includes('ntmap_regionalbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('950X',57.045)]}) };
   if (text.includes('ntmap_xbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('970X',57.05)]}) };
@@ -488,12 +523,14 @@ await new Promise(r => setTimeout(r, 120));
 check('every NT bus family was requested', window.eval('HS.NT_BUS_TABLES.every(t=>window.__tried.some(u=>u.includes(t.table.split(".").pop())))'));
 check('route layer ended up loaded', window.eval("!!HS.layerByKey('route:bus')"));
 check('loaded as tappable lines', window.eval("(HS.layerByKey('route:bus')||{}).kind") === 'line');
-check('all numbered routes are counted', window.eval("HS.layerByKey('route:bus').routeCount") === 7,
+check('all numbered routes are counted', window.eval("HS.layerByKey('route:bus').routeCount") === 8,
       `got ${window.eval("HS.layerByKey('route:bus').routeCount")}`);
 check('local routes 11, 12 and 14 are present', window.eval("['11','12','14'].every(r=>HS.layerByKey('route:bus').routeRefs.includes(r))"));
+check('small regional route 38 is loaded from a branch layer', window.eval("HS.layerByKey('route:bus').routeRefs.includes('38')"));
+check('branch layer was requested dynamically', window.__tried.some(u=>u.includes('ntmap_regionalbus_biforloeb_murl')));
 check('periodic route labels were created', window.eval("HS.layerByKey('route:bus').labelLayer.getLayers().length") > 0);
 check('route row now shows on', /is-on/.test($('#routeSources').innerHTML));
-check('status reports numbered routes', /7 numbered routes on/.test($('#zoneStatus').textContent),
+check('status reports numbered routes', /8 numbered routes on/.test($('#zoneStatus').textContent),
       $('#zoneStatus').textContent.slice(0, 90));
 const callsBefore = window.__tried.length;
 click(doc.querySelectorAll('#routeSources .src-main')[0]);

@@ -164,10 +164,16 @@ underneath the explicit polygons and remains tappable for zone questions.
 ### Bus and train routes
 
 The **All bus routes** toggle combines NT's separate vector layers for city buses, regional buses,
-X buses, local buses and telebuses. This is important in Aalborg because routes such as 11 and 14
-are present in NT's own yellow-route layers but are not consistently mapped as complete route
-relations in OpenStreetMap. OSM is now a fallback and supplements any NT family that temporarily
-fails to load.
+X buses, local buses and telebuses. It now reads NT's WFS layer catalogue at load time and includes
+both the main layers and their separate **biforløb** (branch/secondary-run) layers. This matters for
+smaller services and route branches that are visible in NT's map but were absent when the website
+requested only the five main tables — including route **38** through Hasseris toward Nørholm and
+Klitgård.
+
+OpenStreetMap remains a general fallback. As a final safety net, route 38 is checked explicitly: if
+neither NT nor OSM supplied it, the app finds its named stops in OpenStreetMap and routes a line
+through them on the road network. That supplement is never added when an official route 38 feature
+is already present, so it cannot create a duplicate.
 
 Each numbered route receives a deterministic colour and a slightly different dash phase. Shared
 street corridors therefore show several colours instead of one route painting over every route

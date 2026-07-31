@@ -172,6 +172,36 @@ const NT_BUS_TABLES = [
   { key: 'telebus', label: 'telebus', table: 'rutekortweb.ntmap_telebus_murl' }
 ];
 
+/* NT's public map also publishes secondary/branch runs as separate layers
+   ("biforløb"). Their exact table names can change, so discover them from
+   WFS capabilities instead of maintaining another brittle hard-coded list. */
+const NT_ROUTE_WFS = `${GC2}/wfs/nt/rutekortweb/4326`;
+const NT_BUS_LAYER_WORDS = /(?:bybus|regionalbus|lokalbus|telebus|xbus|expresbus)/i;
+const NT_BUS_LAYER_EXCLUDE = /(?:stoppested|station|zone|takst|tog|train|bane)/i;
+
+/* A small route can occasionally be absent even from NT's public vector map.
+   These definitions are a final fallback: locate the listed public-transport
+   stops in OpenStreetMap and ask OSRM to follow the road network through them.
+   The route is inserted only when no loaded source already contains its ref. */
+const REQUIRED_BUS_ROUTE_SUPPLEMENTS = [
+  {
+    ref: '38',
+    name: 'Aalborg St. – Klitgård via Hasseris',
+    anchors: [
+      ['Aalborg St', 'Aalborg Station', 'Aalborg Busterminal'],
+      ['Prinsensgade'],
+      ['Sankt Jørgens Gade', 'Sct Jørgens Gade'],
+      ['Skovbakkevej'],
+      ['Fyrrebakken'],
+      ['Hundeklemmen'],
+      ['Nørholmsvej'],
+      ['Nældevej'],
+      ['Nørholm'],
+      ['Klitgård', 'Klitgaard']
+    ]
+  }
+];
+
 const ROUTE_PALETTE = [
   '#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#8f5bd7', '#d97706',
   '#00a6a6', '#c44569', '#6a994e', '#4361ee', '#b56576', '#118ab2',
@@ -181,7 +211,7 @@ const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
 
 const ROUTE_SOURCES = {
   bus:   { name: 'All bus routes',
-           meta: 'NT official · city, regional, X, local and telebus',
+           meta: 'NT official · main and branch routes, plus missing-route fallback',
            kind: 'nt-all', tables: NT_BUS_TABLES, fallbackFilter: '["route"="bus"]' },
   train: { name: 'Train lines', meta: 'OpenStreetMap · tappable', kind: 'overpass',
            filter: '["route"~"^(train|light_rail)$"]' }
@@ -2022,8 +2052,165 @@ function dedupeRouteFeatures(features) {
   });
 }
 
+function ntBusLayerDefs(layers) {
+  const defs = [];
+  for (const layer of layers || []) {
+    const hay = `${layer.name || ''} ${layer.title || ''} ${layer.abstract || ''}`;
+    if (!NT_BUS_LAYER_WORDS.test(hay) || NT_BUS_LAYER_EXCLUDE.test(hay)) continue;
+    const raw = String(layer.name || '').split(':').pop();
+    if (!raw) continue;
+    const table = `rutekortweb.${raw}`;
+    const lower = hay.toLowerCase();
+    let key = 'other', label = layer.title || raw;
+    if (lower.includes('bybus')) { key = 'city'; label = 'city'; }
+    else if (lower.includes('regionalbus')) { key = 'regional'; label = 'regional'; }
+    else if (lower.includes('lokalbus')) { key = 'local'; label = 'local'; }
+    else if (lower.includes('telebus')) { key = 'telebus'; label = 'telebus'; }
+    else if (lower.includes('xbus') || lower.includes('expresbus')) { key = 'xbus'; label = 'X bus'; }
+    if (/biforl|branch|sideforl/i.test(hay)) label += ' branches';
+    defs.push({ key, label, table, discovered: true });
+  }
+  const byTable = new Map();
+  [...NT_BUS_TABLES, ...defs].forEach((d) => byTable.set(d.table, d));
+  return Array.from(byTable.values());
+}
+
+async function discoverNtBusTables() {
+  const res = await fetch(capsUrl(NT_ROUTE_WFS));
+  if (!res.ok) throw new Error(`capabilities HTTP ${res.status}`);
+  const layers = parseWfsCapabilities(await res.text());
+  const defs = ntBusLayerDefs(layers);
+  return defs.length ? defs : NT_BUS_TABLES.slice();
+}
+
+function hasRouteRef(gj, ref) {
+  const wanted = String(ref);
+  return ((gj && gj.features) || []).some((ft) => extractRouteRefs(ft.properties).includes(wanted));
+}
+
+function normaliseStopName(value) {
+  return String(value || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/æ/g, 'ae').replace(/ø/g, 'o').replace(/å/g, 'a')
+    .replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function overpassBusStopQuery() {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  return `[out:json][timeout:75];(` +
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"];` +
+    `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"];` +
+    `way(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"];` +
+    `);out center tags;`;
+}
+
+function parseOverpassStops(json) {
+  const out = [];
+  for (const el of (json && json.elements) || []) {
+    const tags = el.tags || {};
+    const name = tags.name || tags['name:da'] || tags.official_name;
+    const lat = el.lat ?? (el.center && el.center.lat);
+    const lon = el.lon ?? (el.center && el.center.lon);
+    if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    out.push({ name, norm: normaliseStopName(name), coordinates: [lon, lat] });
+  }
+  return out;
+}
+
+function stopMatchesAlias(stop, alias) {
+  const a = normaliseStopName(alias);
+  if (!a || !stop.norm) return false;
+  return stop.norm === a || stop.norm.startsWith(a + ' ') || stop.norm.includes(' ' + a + ' ') ||
+    (a.length >= 7 && stop.norm.includes(a));
+}
+
+function matchSupplementStops(stops, definition) {
+  const chosen = [];
+  let previous = CONFIG.center.slice().reverse(); // [lng,lat]
+  for (const aliases of definition.anchors || []) {
+    const candidates = (stops || []).filter((s) => aliases.some((a) => stopMatchesAlias(s, a)));
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => {
+      const da = turf.distance(turf.point(previous), turf.point(a.coordinates), { units: 'kilometers' });
+      const db = turf.distance(turf.point(previous), turf.point(b.coordinates), { units: 'kilometers' });
+      return da - db;
+    });
+    const selected = candidates[0];
+    if (!chosen.length || turf.distance(turf.point(chosen[chosen.length - 1]), turf.point(selected.coordinates),
+        { units: 'meters' }) > 20) {
+      chosen.push(selected.coordinates);
+      previous = selected.coordinates;
+    }
+  }
+  return chosen;
+}
+
+async function fetchOverpassStops() {
+  const errors = [];
+  for (const base of OVERPASS) {
+    try {
+      const res = await fetch(base, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams({ data: overpassBusStopQuery() }).toString()
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const stops = parseOverpassStops(await res.json());
+      if (stops.length) return stops;
+      throw new Error('no named stops');
+    } catch (err) { errors.push(err.message); }
+  }
+  throw new Error(errors.join(' / ') || 'could not load bus stops');
+}
+
+async function routeThroughStops(coords) {
+  if (!coords || coords.length < 2) return null;
+  const points = coords.map((c) => `${c[0].toFixed(6)},${c[1].toFixed(6)}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${points}?overview=full&geometries=geojson&steps=false`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`routing HTTP ${res.status}`);
+  const json = await res.json();
+  const geometry = json && json.routes && json.routes[0] && json.routes[0].geometry;
+  if (!geometry || geometry.type !== 'LineString' || geometry.coordinates.length < 2) {
+    throw new Error('routing service returned no line');
+  }
+  return geometry;
+}
+
+async function addMissingBusRouteSupplements(gj) {
+  const missing = REQUIRED_BUS_ROUTE_SUPPLEMENTS.filter((d) => !hasRouteRef(gj, d.ref));
+  if (!missing.length) return [];
+  let stops;
+  try { stops = await fetchOverpassStops(); }
+  catch (_) { return []; }
+  const added = [];
+  for (const def of missing) {
+    const coords = matchSupplementStops(stops, def);
+    if (coords.length < Math.max(5, Math.ceil((def.anchors || []).length * .55))) continue;
+    let geometry;
+    try { geometry = await routeThroughStops(coords); }
+    catch (_) { geometry = { type: 'LineString', coordinates: coords }; }
+    const ft = {
+      type: 'Feature', geometry,
+      properties: {
+        ref: def.ref, name: def.name, __displayName: def.ref,
+        __routeRefs: [def.ref], __routeName: def.name,
+        __routeClass: 'stop-routed supplement', __supplement: true
+      }
+    };
+    gj.features.push(ft); added.push(def.ref);
+  }
+  return added;
+}
+
 async function fetchNtBusRoutes() {
-  const results = await Promise.all(NT_BUS_TABLES.map(async (def) => {
+  let tableDefs = NT_BUS_TABLES.slice();
+  let discovered = false;
+  try {
+    tableDefs = await discoverNtBusTables();
+    discovered = tableDefs.some((d) => d.discovered);
+  } catch (_) { /* fixed main tables remain the fallback */ }
+
+  const results = await Promise.all(tableDefs.map(async (def) => {
     try {
       const gj = await fetchFirst(gc2Urls(def.table));
       normaliseCoords(gj);
@@ -2063,7 +2250,11 @@ async function fetchNtBusRoutes() {
     throw new Error(reasons || 'no bus routes were returned');
   }
   const gj = { type: 'FeatureCollection', features };
-  return { gj, loaded, failed, summary: routeSummary(gj) };
+  const supplemented = await addMissingBusRouteSupplements(gj);
+  gj.features = dedupeRouteFeatures(gj.features);
+  if (discovered) loaded.push('discovered branch layers');
+  if (supplemented.length) loaded.push(`stop-routed ${supplemented.join(', ')}`);
+  return { gj, loaded: Array.from(new Set(loaded)), failed, supplemented, summary: routeSummary(gj) };
 }
 
 /* ---------- OpenStreetMap routes via Overpass -------------------------- */
@@ -3453,6 +3644,9 @@ window.HS = {
   parseOverpassRoutes, overpassQuery, fetchOverpass, fetchNtBusRoutes,
   extractRouteRefs, routeTokens, routeColor, routeStyle, annotateRouteGeoJson,
   prepareRouteDisplayGeoJson, routeLabelPoints, routeSummary, NT_BUS_TABLES, ROUTE_SOURCES,
+  NT_ROUTE_WFS, ntBusLayerDefs, discoverNtBusTables, hasRouteRef,
+  REQUIRED_BUS_ROUTE_SUPPLEMENTS, normaliseStopName, parseOverpassStops,
+  matchSupplementStops, addMissingBusRouteSupplements, overpassBusStopQuery,
   areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, RAMME_OTHER, RAMME_LEGEND, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
