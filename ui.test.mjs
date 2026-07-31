@@ -921,6 +921,36 @@ check('the traced outlines still work if KortInfo says no', window.eval(`(() => 
   return HS.buildDistrictZones().features.length === window.ZONE3_PX.length;
 })()`));
 
+console.log('\n== official zone labels ==');
+check('Zone 3 rejects the four parent-area names as district labels', window.eval(`(() => {
+  const districts = ['Vestbyen','Hasseris','Skalborg','Vejgaard','Gug','Kærby','Nørre Tranders','Sønder Tranders'];
+  const features = districts.map((name, i) => ({ type:'Feature', geometry:null, properties:{
+    navn: i < 4 ? 'Vest Aalborg' : 'Øst Aalborg',
+    bydelsnavn: name,
+    objectid: 100000 + i
+  }}));
+  const gj = { type:'FeatureCollection', features };
+  window.__zone3Field = HS.inferNameField(features, 'zone3');
+  HS.prepareSourceLabels(gj, 'zone3', '');
+  window.__zone3Labels = gj.features.map((f) => f.properties.__displayName);
+  return window.__zone3Field === 'bydelsnavn' &&
+         window.__zone3Labels.join('|') === districts.join('|');
+})()`), window.eval("window.__zone3Field + ': ' + window.__zone3Labels.join(', ')"));
+
+check('Zone 4 creates a labelled X area for uncovered land', window.eval(`(() => {
+  const centre = turf.centroid(HS.S.playArea);
+  const covered = turf.buffer(centre, 0.15, { units:'kilometers' });
+  covered.properties = { anvendelse:'Boligområde', plannr:'1.1.B1' };
+  const base = turf.featureCollection([covered]);
+  const rec = HS.addLayer('Zone 4 fixture', base, {
+    key:'test:zone4-catchall', style:'rammer', sourceKey:'zone4', baseGeojson:base
+  });
+  window.__zone4Catch = rec && rec.geojson.features.find((f) => f.properties && f.properties.__zone4Other);
+  return !!window.__zone4Catch && HS.rammeCategory(window.__zone4Catch.properties).key === 'X' &&
+         HS.featureName(window.__zone4Catch, rec) === 'X · Uden kommuneplanramme';
+})()`), window.eval("window.__zone4Catch ? window.__zone4Catch.properties.__displayName : 'missing'"));
+check('the X catch-all appears in the Zone 4 legend', /X · Uden kommuneplanramme/.test($('#legend').textContent));
+
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
 

@@ -43,7 +43,7 @@ const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
    live geometry needs no tracing and no placement, because it arrives with
    real coordinates. */
 const KORTINFO = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside';
-const SOURCE_CONFIG_VERSION = 1;
+const SOURCE_CONFIG_VERSION = 2;
 
 const DEFAULT_SOURCES = {
   zone1: {
@@ -60,13 +60,13 @@ const DEFAULT_SOURCES = {
   },
   zone3: {
     name: 'Zone 3 · By- og bydele',
-    note: 'Official Aalborg KortInfo layer TL445987.',
+    note: 'Official Aalborg KortInfo layer TL445987. District names are auto-detected instead of using its Zone 2 parent field.',
     kind: 'wfs', url: KORTINFO,
     typeName: 'ugis:TL445987', cql: '', nameField: '', style: 'plain'
   },
   zone4: {
     name: 'Zone 4 · Kommuneplanrammer',
-    note: 'Official Aalborg KortInfo layer TL445981.',
+    note: 'Official Aalborg KortInfo layer TL445981. Uncovered or unclassified land is shown as X · Uden kommuneplanramme.',
     kind: 'wfs', url: KORTINFO,
     typeName: 'ugis:TL445981', cql: '', nameField: '', style: 'rammer'
   }
@@ -97,11 +97,19 @@ const RAMME_STYLE = [
   { key: 'L', match: 'landsby',              label: 'L · Landsby',                  color: '#a5714e' },
   { key: 'B', match: 'boligområde',          label: 'B · Boligområde',              color: '#f0a184' }
 ];
+/* A real, selectable Zone 4 category for everything inside the play area that
+   is not covered by a recognised kommuneplanramme. X is unused by Aalborg's
+   official land-use letters, so it cannot be confused with a real category. */
+const RAMME_OTHER = {
+  key: 'X', label: 'X · Uden kommuneplanramme', color: '#566b7f'
+};
+const RAMME_LEGEND = [...RAMME_STYLE, RAMME_OTHER];
 
 /* Which land-use category a kommuneplanramme belongs to. Services differ on
    field names, so try the words first, then the letter buried in the plan
    number (Aalborg numbers rammer like "1.1.C2"). */
 function rammeCategory(props) {
+  if (props && props.__zone4Other) return RAMME_OTHER;
   const vals = Object.values(props || {}).filter((v) => typeof v === 'string');
   const hay = vals.join(' | ').toLowerCase();
   for (const c of RAMME_STYLE) if (hay.includes(c.match)) return c;
@@ -115,9 +123,9 @@ function rammeCategory(props) {
   }
   for (const v of vals) {
     const m = v.match(/(?:^|[.\s_-])([BCDGHILMORST])\s?\d/);
-    if (m) return RAMME_STYLE.find((c) => c.key === m[1]) || null;
+    if (m) return RAMME_STYLE.find((c) => c.key === m[1]) || RAMME_OTHER;
   }
-  return null;
+  return RAMME_OTHER;
 }
 
 function zonekortCategory(props) {
@@ -452,12 +460,14 @@ function setZonesPlayArea(fit) {
    rebuilt whenever it moves. Same for the landzone backdrop. */
 function refreshDerivedLayers() {
   for (const rec of S.layers.slice()) {
-    if (!rec.derived) continue;
-    const gj = rec.derived === 'areas' ? buildAreaZones() : buildDistrictZones();
+    let gj = null;
+    if (rec.derived) gj = rec.derived === 'areas' ? buildAreaZones() : buildDistrictZones();
+    else if (rec.baseGeojson && ['zonekort', 'rammer'].includes(rec.style)) gj = rec.baseGeojson;
     if (!gj) continue;
     const wasVisible = rec.visible;
     const fresh = addLayer(rec.name, gj, {
-      key: rec.key, nameField: rec.nameField, style: rec.style, derived: rec.derived
+      key: rec.key, nameField: rec.nameField, style: rec.style, derived: rec.derived,
+      sourceKey: rec.sourceKey, baseGeojson: rec.baseGeojson || gj
     });
     if (fresh && !wasVisible) setLayerVisible(fresh, false);
   }
@@ -1190,6 +1200,7 @@ const NAME_KEYS = ['navn', 'name', 'plannavn', 'zonestatus', 'linjenavn', 'ruten
 
 function featureName(ft, layer) {
   const p = ft.properties || {};
+  if (p.__displayName != null && String(p.__displayName).trim()) return String(p.__displayName);
   if (layer && layer.nameField && p[layer.nameField] != null) return String(p[layer.nameField]);
   for (const k of NAME_KEYS) {
     const hit = Object.keys(p).find((x) => x.toLowerCase() === k);
@@ -1197,6 +1208,87 @@ function featureName(ft, layer) {
   }
   const first = Object.entries(p).find(([, v]) => typeof v === 'string' && v.trim());
   return first ? first[1] : 'Unnamed';
+}
+
+function labelValue(v) {
+  if (!['string', 'number'].includes(typeof v)) return '';
+  const text = String(v).trim();
+  return text && text.length <= 160 ? text : '';
+}
+
+function zone2LikeLabel(value) {
+  const n = normaliseZoneText(value);
+  return PLAY_ZONE_ALIASES.some((z) => z.aliases.some((a) => n === a || n.includes(a)));
+}
+
+/* KortInfo layers often carry both a parent-area name and the feature's own
+   name. A generic "navn" lookup therefore made Zone 3 display Midtbyen,
+   Øst Aalborg, etc. repeatedly. Pick a label column from the entire layer:
+   a district field must have substantially more than four distinct values,
+   while IDs, dates, geometry metadata and parent-area fields are penalised. */
+function rankedNameFields(features, sourceKey) {
+  const keys = new Set();
+  for (const ft of features || []) {
+    for (const [key, value] of Object.entries(ft.properties || {})) {
+      if (!key.startsWith('__') && labelValue(value)) keys.add(key);
+    }
+  }
+  const total = Math.max(1, (features || []).length);
+  return [...keys].map((key) => {
+    const values = (features || []).map((ft) => labelValue((ft.properties || {})[key])).filter(Boolean);
+    const distinct = new Set(values.map((v) => normaliseZoneText(v))).size;
+    const coverage = values.length / total;
+    const alpha = values.filter((v) => /[A-Za-zÆØÅæøå]/.test(v)).length / Math.max(1, values.length);
+    const sensible = values.filter((v) => v.length >= 2 && v.length <= 70 && !/^https?:/i.test(v)).length /
+                     Math.max(1, values.length);
+    const k = normaliseZoneText(key);
+    let score = coverage * 80 + alpha * 35 + sensible * 25 + Math.min(distinct, 80) * 3;
+
+    if (/^(navn|name|titel|betegnelse)$/.test(k)) score += 45;
+    if (/navn|name|titel|betegnelse/.test(k)) score += 25;
+    if (sourceKey === 'zone3') {
+      if (/bydel|distrikt|delomrade|lokalomrade|bynavn|stednavn/.test(k)) score += 150;
+      if (/kommuneplan|hovedomrade|storomrade|zone ?2|parent|overordnet/.test(k)) score -= 170;
+      if (distinct <= 4) score -= 180;
+      else score += Math.min(120, distinct * 4);
+    } else if (sourceKey === 'zone4') {
+      if (/ramme.*navn|plannavn|omrade.*navn/.test(k)) score += 110;
+      if (/ramme.*nr|plannr|plannummer|rammekode/.test(k)) score += 80;
+    }
+    if (/^(id|fid|gid|objectid|ogc fid|shape|areal|area|length|dato|date|status|aktiv)$/.test(k)) score -= 220;
+    if (/id$|uuid|guid|timestamp|oprettet|rettet|version|geometri|geometry/.test(k)) score -= 110;
+    if (values.some((v) => /^\d{6,}$/.test(v))) score -= 55;
+    return { key, score, distinct, coverage };
+  }).sort((a, b) => b.score - a.score || b.distinct - a.distinct);
+}
+
+function inferNameField(features, sourceKey) {
+  const ranked = rankedNameFields(features, sourceKey);
+  return ranked.length ? ranked[0].key : '';
+}
+
+function prepareSourceLabels(gj, sourceKey, configuredField) {
+  const features = gj && gj.type === 'FeatureCollection' ? gj.features
+                 : gj && gj.type === 'Feature' ? [gj] : [];
+  if (!features.length) return '';
+  const ranked = rankedNameFields(features, sourceKey);
+  const requested = configuredField && ranked.find((r) => r.key === configuredField);
+  const primary = requested ? requested.key : (ranked[0] ? ranked[0].key : '');
+  const candidates = [primary, ...ranked.map((r) => r.key)].filter((v, i, a) => v && a.indexOf(v) === i);
+
+  for (const ft of features) {
+    const props = ft.properties || (ft.properties = {});
+    let value = labelValue(props[primary]);
+    // Zone 3's parent-area field has only the four Zone 2 names. Even if the
+    // server calls that field "navn", prefer the first district-like value.
+    if (sourceKey === 'zone3' && zone2LikeLabel(value)) {
+      value = candidates.map((k) => labelValue(props[k]))
+        .find((v) => v && !zone2LikeLabel(v)) || value;
+    }
+    if (!value) value = candidates.map((k) => labelValue(props[k])).find(Boolean) || 'Unnamed';
+    props.__displayName = value;
+  }
+  return '__displayName';
 }
 
 /* ---------- layers ---------------------------------------------------- */
@@ -1394,7 +1486,8 @@ function addLayer(name, geojson, opts = {}) {
   const lines = raw.filter((f) => f && f.geometry && /LineString/.test(f.geometry.type));
 
   const kind = opts.kind || (lines.length > polys.length ? 'line' : 'poly');
-  const feats = kind === 'line' ? lines : polys;
+  const sourceFeats = (kind === 'line' ? lines : polys).slice();
+  const feats = sourceFeats.slice();
   if (!feats.length) {
     toast(`${name}: no ${kind === 'line' ? 'lines' : 'polygons'} in that data.`, true);
     return null;
@@ -1403,20 +1496,34 @@ function addLayer(name, geojson, opts = {}) {
   if (opts.key) removeLayerByKey(opts.key);
 
   const color = LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
-  const fcol = { type: 'FeatureCollection', features: feats };
-  // Plandata's zonekort usually ships only byzone and sommerhus polygons,
-  // which left landzone invisible. Fill the rest of the play area in as
-  // landzone so it renders green and can be picked for zone questions.
+  // Zone 1 and Zone 4 are classifications, not complete polygon blankets.
+  // Give the unclassified remainder of the play area a real feature so it is
+  // coloured, named and selectable just like an official polygon.
   if ((opts.style === 'zonekort') && kind === 'poly' && S.playArea) {
     const covered = unionAll(feats);
     const rest = covered ? gDifference(S.playArea, covered) : turf.clone(S.playArea);
     if (rest) {
-      rest.properties = { navn: 'Landzone', zonestatus: 'Landzone' };
+      rest.properties = { navn: 'Landzone', zonestatus: 'Landzone', __displayName: 'Landzone' };
       feats.unshift(rest);   // first = drawn first = underneath the byzones
     }
   }
+  if ((opts.style === 'rammer') && kind === 'poly' && S.playArea) {
+    const covered = unionAll(feats);
+    const rest = covered ? gDifference(S.playArea, covered) : turf.clone(S.playArea);
+    if (rest) {
+      rest.properties = {
+        navn: RAMME_OTHER.label,
+        __displayName: RAMME_OTHER.label,
+        __zone4Other: true
+      };
+      feats.unshift(rest);   // draw the catch-all beneath official Zone 4 polygons
+    }
+  }
 
+  const fcol = { type: 'FeatureCollection', features: feats };
+  const baseGeojson = opts.baseGeojson || { type: 'FeatureCollection', features: sourceFeats };
   const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
+                baseGeojson, sourceKey: opts.sourceKey || null,
                 nameField: opts.nameField || '', style: opts.style || 'plain',
                 derived: opts.derived || null, visible: true, layer: null };
 
@@ -1433,11 +1540,11 @@ function addLayer(name, geojson, opts = {}) {
     style: styleOf,
     onEachFeature: (ft, lyr) => {
       // Zone 4's colours are hard to tell apart, so tapping an area names the
-      // land-use letter rather than the plan number.
+      // land-use category. The synthetic X area is therefore labelled too.
       let tip = featureName(ft, rec);
       if (rec.style === 'rammer') {
         const cat = rammeCategory(ft.properties);
-        tip = cat ? cat.key : '?';
+        tip = cat ? cat.label : RAMME_OTHER.label;
       }
       lyr.bindTooltip(tip, { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
@@ -1523,7 +1630,7 @@ function renderLegend() {
   box.innerHTML = active.map((l) => {
     // RAMME_STYLE is ordered for matching (D before B and so on); show it
     // alphabetically instead.
-    const cats = l.style === 'rammer' ? RAMME_STYLE.slice().sort((a, b) => a.key.localeCompare(b.key))
+    const cats = l.style === 'rammer' ? RAMME_LEGEND.slice().sort((a, b) => a.key.localeCompare(b.key))
               : l.style === 'areas' ? AREA_STYLE()
               : ZONEKORT_STYLE;
     const used = cats.filter((c) =>
@@ -1719,7 +1826,8 @@ async function toggleSource(key, btn) {
     const gj = src.kind === 'areas' ? buildAreaZones() : buildDistrictZones();
     if (!gj) { setStatus(`${src.name}: could not build the zones — check data.js.`, true); return; }
     const rec = addLayer(src.name, gj, {
-      key: 'src:' + key, nameField: 'navn', style: src.style, derived: src.kind
+      key: 'src:' + key, nameField: 'navn', style: src.style, derived: src.kind,
+      sourceKey: key, baseGeojson: gj
     });
     if (rec) setStatus(`${src.name}: ${rec.geojson.features.length} zones on (approximate — built from data.js).`);
     return;
@@ -1742,8 +1850,10 @@ async function toggleSource(key, btn) {
         S.zone2Official = gj;
       }
     }
+    const displayNameField = prepareSourceLabels(gj, key, src.nameField);
     const rec = addLayer(src.name, gj, {
-      key: 'src:' + key, nameField: src.nameField, style: src.style
+      key: 'src:' + key, nameField: displayNameField || src.nameField, style: src.style,
+      sourceKey: key, baseGeojson: gj
     });
     if (key === 'zone2' && S.playAreaMeta && S.playAreaMeta.type === 'zones') {
       setZonesPlayArea(false);
@@ -3000,10 +3110,11 @@ window.HS = {
   __mercY: mercY, __invMercY: invMercY,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
   parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,
-  rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, ZONEKORT_STYLE,
+  rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, RAMME_OTHER, RAMME_LEGEND, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
   serialize, deserialize, b64encode, b64decode,
   constraintPolygon, halfPlane, voronoiCell, normaliseCoords, featureName,
+  inferNameField, rankedNameFields, prepareSourceLabels,
   renderToolForm, selectTool, switchTab,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };

@@ -129,12 +129,26 @@ provided the **four zones** play-area mode is selected.
 The name matcher searches every scalar WFS property and tolerates differences such as `Øst Aalborg`
 versus `Aalborg Øst`, so the play area does not depend on one undocumented KortInfo field name.
 
+### Zone 3 names
+
+KortInfo's Zone 3 response can contain both the four parent Zone 2 names and the actual district name.
+The app now examines the whole layer and selects the label field with district-level variety instead
+of blindly taking the first property called `navn`. A field that contains only Midtbyen,
+Nørresundby, Vest Aalborg and Øst Aalborg is explicitly rejected as a Zone 3 label source.
+
+### Zone 4 catch-all
+
+Zone 4 now includes a synthetic category **X · Uden kommuneplanramme**. It is used both for official
+features whose land-use category cannot be recognised and for the part of the current play area that
+is not covered by any Zone 4 polygon. The X area is coloured, shown in the legend, labelled on tap,
+and can be selected in a zone question like every official area.
+
 ### Offline fallback
 
 The traced Zone 2 and Zone 3 geometry remains in `data.js` only so the site still starts when the
 municipal WFS is unavailable. The **Official zones & fallback** panel can retry the official Zone 2
-source. Its drag, resize, automatic placement, and road-snapping tools apply only to the traced
-fallback; official WFS geometry already has real coordinates and ignores calibration.
+source. No placement or scaling controls are exposed because official WFS geometry already has real
+coordinates.
 
 The fallback boundary network is stored as shared arcs, with corner-aware smoothing applied once per
 arc before the same coordinates are handed to both neighbouring areas. That keeps the fallback free
