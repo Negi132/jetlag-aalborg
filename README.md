@@ -278,3 +278,23 @@ canonical assignment of area numbers 1–4. The fallback calibration tests remai
 is still used when KortInfo is unavailable.
 
 Worth running if you change how a question type works. Both caught real bugs while this was built.
+
+### Question preview mode
+
+Every map-cutting question form now has **Preview on map**. Preview geometry is kept in a separate
+Leaflet pane and never enters the game log or URL state. It compares the potential answer with the
+area currently left after previously logged answers and reports the remaining area.
+
+For Radar, turn preview on and tap the map to place the centre; further taps move it. While previewing,
+you can switch between every Radar distance card and the circle updates immediately. Choose Yes or No
+to see the resulting cut.
+
+For Thermometer, the first map tap sets the start. The selected card distance is drawn as a travel
+ring and a draggable handle stays constrained to that ring. Dragging it previews the Hotter/Colder
+bisector for different possible travel directions.
+
+### Bus and train stops
+
+The Layers tab has a separate **Bus & train stops** toggle. It loads OpenStreetMap bus stops, railway
+stations, halts and tram stops. Bus and rail points use different symbols, appear from zoom level 12,
+and can be tapped directly while preparing Matching or Measuring questions.

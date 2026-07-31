@@ -221,6 +221,11 @@ const ROUTE_SOURCES = {
            filter: '["route"~"^(train|light_rail)$"]' }
 };
 
+const TRANSIT_STOP_SOURCE = {
+  name: 'Bus & train stops',
+  meta: 'OpenStreetMap · bus stops, rail stations and halts'
+};
+
 const WMS_PRESETS = [
   { name: 'NT route map', url: `${GC2}/wms/nt/rutekortweb`,
     layers: 'ntmap_bybus_murl,ntmap_regionalbus_murl,ntmap_xbus_murl,ntmap_lokalbus_murl,ntmap_telebus_murl,ntmap_tog_murl' }
@@ -246,6 +251,8 @@ const S = {
   me: null,
   baseKey: 'light',
   fogOpacity: 0.62,
+  transitStops: { loaded: false, visible: false, loading: false, geojson: null, layer: null,
+                  busCount: 0, trainCount: 0 },
   seq: 1
 };
 
@@ -463,7 +470,10 @@ map.createPane('wmsPane');       map.getPane('wmsPane').style.zIndex = 350;
 map.createPane('zonePane');      map.getPane('zonePane').style.zIndex = 410;
 map.createPane('routePane');     map.getPane('routePane').style.zIndex = 420;
 map.createPane('fogPane');       map.getPane('fogPane').style.zIndex = 430;
+map.createPane('previewPane');   map.getPane('previewPane').style.zIndex = 442;
+map.createPane('stopPane');      map.getPane('stopPane').style.zIndex = 446;
 map.createPane('evidPane');      map.getPane('evidPane').style.zIndex = 450;
+map.createPane('previewHandlePane'); map.getPane('previewHandlePane').style.zIndex = 458;
 map.createPane('routeLabelPane');map.getPane('routeLabelPane').style.zIndex = 465;
 map.createPane('drawPane');      map.getPane('drawPane').style.zIndex = 470;
 
@@ -478,6 +488,8 @@ const BASES = {
 BASES.light.addTo(map);
 
 const fogLayer = L.layerGroup([], { pane: 'fogPane' }).addTo(map);
+const previewShapeLayer = L.layerGroup([], { pane: 'previewPane' }).addTo(map);
+const previewHandleLayer = L.layerGroup([], { pane: 'previewHandlePane' }).addTo(map);
 const evidLayer = L.layerGroup([], { pane: 'evidPane' }).addTo(map);
 const drawLayer = L.layerGroup([], { pane: 'drawPane' }).addTo(map);
 let meMarker = null;
@@ -533,20 +545,29 @@ function refreshDerivedLayers() {
 
 /* ---------- the core ------------------------------------------------ */
 
-function recompute() {
-  if (!S.playArea) return;
-
+function solveCurrentArea(extraConstraint) {
+  if (!S.playArea) return { possible: null, dead: true };
   let possible = turf.clone(S.playArea);
   let dead = false;
-
-  for (const c of S.constraints) {
-    if (!c.active) continue;
+  const constraints = S.constraints.filter((c) => c.active);
+  if (extraConstraint) constraints.push(extraConstraint);
+  for (const c of constraints) {
     const poly = constraintPolygon(c);
-    if (!poly) { c.error = true; continue; }
-    c.error = false;
+    if (!poly) {
+      if (!extraConstraint || c !== extraConstraint) c.error = true;
+      continue;
+    }
+    if (!extraConstraint || c !== extraConstraint) c.error = false;
     possible = gIntersect(possible, poly);
     if (!possible) { dead = true; break; }
   }
+  return { possible, dead };
+}
+
+function recompute() {
+  if (!S.playArea) return;
+
+  const { possible, dead } = solveCurrentArea();
 
   drawFog(possible);
   drawEvidence();
@@ -666,6 +687,27 @@ map.on('click', (e) => {
     endPick();
     fn(coord);
     if (window.innerWidth <= 820) openSheet();
+    return;
+  }
+  if (questionPreview.active && questionPreview.type === activeTool) {
+    if (activeTool === 'radar') {
+      draft.center = coord;
+      renderToolForm();
+      return;
+    }
+    if (activeTool === 'thermometer') {
+      const radiusM = thermometerPreviewRadius();
+      if (!draft.a) {
+        draft.a = coord;
+        if (radiusM > 0) {
+          draft.b = turf.destination(turf.point(coord), radiusM / 1000, 90,
+            { units: 'kilometers' }).geometry.coordinates;
+        }
+      } else if (radiusM > 0) {
+        draft.b = constrainToRadius(draft.a, coord, radiusM);
+      }
+      renderToolForm();
+    }
   }
 });
 
@@ -731,6 +773,7 @@ $('#drawFinish').addEventListener('click', () => {
 let activeTool = null;
 let selectedQuestion = null;
 const draft = {};
+const questionPreview = { active: false, type: null, metrics: null };
 
 const QUESTION_DECK = [
   {
@@ -924,6 +967,7 @@ function renderQuestionDeck() {
 }
 
 function chooseQuestion(type, card) {
+  deactivateQuestionPreview();
   activeTool = type.tool;
   selectedQuestion = { typeKey: type.key, title: type.title, meta: type.meta, ...card };
   for (const k of Object.keys(draft)) delete draft[k];
@@ -948,6 +992,7 @@ function chooseQuestion(type, card) {
 }
 
 function closeQuestionForm() {
+  deactivateQuestionPreview();
   activeTool = null;
   selectedQuestion = null;
   for (const k of Object.keys(draft)) delete draft[k];
@@ -958,6 +1003,7 @@ function closeQuestionForm() {
 /* Kept for internal tools and geometry tests; the small-game UI enters through chooseQuestion. */
 function selectTool(key) {
   if (activeTool === key) { closeQuestionForm(); return; }
+  deactivateQuestionPreview();
   activeTool = key;
   selectedQuestion = null;
   for (const k of Object.keys(draft)) delete draft[k];
@@ -990,6 +1036,7 @@ function renderToolForm() {
     </div>`;
   box.querySelector('.question-back').addEventListener('click', closeQuestionForm);
   TOOLS[activeTool].build(box);
+  syncQuestionPreview();
 }
 
 renderQuestionDeck();
@@ -1050,6 +1097,7 @@ function smallInput(box, key, label, placeholder) {
 }
 
 function actions(box, ready, onAdd, addLabel = 'Log answer') {
+  if (previewCapableTool()) addPreviewControls(box);
   const wrap = document.createElement('div');
   wrap.className = 'form-actions';
   const add = document.createElement('button');
@@ -1065,7 +1113,216 @@ function actions(box, ready, onAdd, addLabel = 'Log answer') {
   box.appendChild(wrap);
 }
 
+function previewCapableTool(tool = activeTool) {
+  return ['radar', 'thermometer', 'measuring', 'nearest', 'transit', 'zone', 'area'].includes(tool);
+}
+
+function deactivateQuestionPreview() {
+  questionPreview.active = false;
+  questionPreview.type = null;
+  questionPreview.metrics = null;
+  previewShapeLayer.clearLayers();
+  previewHandleLayer.clearLayers();
+}
+
+function previewConstraintFromDraft() {
+  switch (activeTool) {
+    case 'radar':
+      return draft.center && draft.radiusM && draft.answer
+        ? { type: 'radar', center: draft.center, radiusM: draft.radiusM, answer: draft.answer }
+        : null;
+    case 'thermometer':
+      return draft.a && draft.b && draft.answer
+        ? { type: 'thermometer', a: draft.a, b: draft.b, answer: draft.answer }
+        : null;
+    case 'measuring':
+      return draft.seeker && draft.target && draft.answer
+        ? { type: 'measuring', seeker: draft.seeker, target: draft.target, answer: draft.answer }
+        : null;
+    case 'nearest':
+      return draft.points && draft.points.length && draft.index != null && draft.answer &&
+             (!draft.radiusM || draft.seeker)
+        ? { type: 'nearest', points: draft.points.slice(), index: draft.index,
+            radiusM: draft.radiusM || null, seeker: draft.seeker || null, answer: draft.answer }
+        : null;
+    case 'transit':
+      return draft.lineGeom && draft.bufferM && draft.answer
+        ? { type: 'transit', geometry: draft.lineGeom, bufferM: draft.bufferM, answer: draft.answer }
+        : null;
+    case 'zone':
+      return draft.zoneGeometry && draft.answer
+        ? { type: 'zone', geometry: draft.zoneGeometry, answer: draft.answer }
+        : null;
+    case 'area':
+      return draft.geometry && draft.answer
+        ? { type: 'area', geometry: draft.geometry, answer: draft.answer }
+        : null;
+    default:
+      return null;
+  }
+}
+
+function constrainToRadius(origin, target, radiusM) {
+  if (!origin || !target || !(radiusM > 0)) return target;
+  let bearing = 90;
+  try { bearing = turf.bearing(turf.point(origin), turf.point(target)); } catch (_) { /* east */ }
+  return turf.destination(turf.point(origin), radiusM / 1000, bearing,
+    { units: 'kilometers' }).geometry.coordinates;
+}
+
+function thermometerPreviewRadius() {
+  if (draft.requiredDistanceM > 0) return draft.requiredDistanceM;
+  if (draft.a && draft.b) {
+    return turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
+  }
+  return 0;
+}
+
+function previewInstruction() {
+  if (!questionPreview.active) return '';
+  if (activeTool === 'radar') {
+    if (!draft.center) return 'Tap the map to place the radar. Tap again to move it.';
+    if (!draft.answer) return 'The radius is shown. Choose Yes or No to preview the actual cut.';
+  }
+  if (activeTool === 'thermometer') {
+    if (!draft.a) return 'Tap the map to set the starting point.';
+    if (!draft.answer) return 'Drag the circular handle, then choose Hotter or Colder to preview the cut.';
+  }
+  if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
+  return '';
+}
+
+function updatePreviewImpactText() {
+  const el = $('#previewImpactText');
+  if (!el) return;
+  const instruction = previewInstruction();
+  if (instruction) { el.textContent = instruction; return; }
+  const m = questionPreview.metrics;
+  if (!m) { el.textContent = 'Preview is active. Nothing has been logged.'; return; }
+  const [amount, unit] = fmtArea(m.afterM2);
+  const pct = m.beforeM2 ? (m.afterM2 / m.beforeM2) * 100 : 0;
+  el.textContent = `${amount} ${unit} would remain — ${trimNum(pct.toFixed(pct < 10 ? 1 : 0))}% of the area currently in play.`;
+}
+
+function renderPreviewShapes() {
+  previewShapeLayer.clearLayers();
+  questionPreview.metrics = null;
+  if (!questionPreview.active || !S.playArea || questionPreview.type !== activeTool) {
+    updatePreviewImpactText();
+    return;
+  }
+  const P = '#67e8f9';
+  const R = '#a78bfa';
+  const markerStyle = { pane: 'previewPane', radius: 5, color: P, weight: 2,
+    fillColor: '#0d141d', fillOpacity: 1, interactive: false };
+
+  if (activeTool === 'radar' && draft.center && draft.radiusM) {
+    L.circle([draft.center[1], draft.center[0]], { pane: 'previewPane', radius: draft.radiusM,
+      color: P, weight: 2.2, opacity: .95, dashArray: '7 5', fillColor: P,
+      fillOpacity: .055, interactive: false }).addTo(previewShapeLayer);
+    L.circleMarker([draft.center[1], draft.center[0]], markerStyle).addTo(previewShapeLayer);
+  }
+
+  if (activeTool === 'thermometer' && draft.a) {
+    const radiusM = thermometerPreviewRadius();
+    if (radiusM > 0) {
+      L.circle([draft.a[1], draft.a[0]], { pane: 'previewPane', radius: radiusM,
+        color: P, weight: 1.8, opacity: .82, dashArray: '5 5', fill: false,
+        interactive: false }).addTo(previewShapeLayer);
+    }
+    L.circleMarker([draft.a[1], draft.a[0]], markerStyle).addTo(previewShapeLayer);
+    if (draft.b) {
+      L.polyline([[draft.a[1], draft.a[0]], [draft.b[1], draft.b[0]]], {
+        pane: 'previewPane', color: P, weight: 2.2, opacity: .95, interactive: false
+      }).addTo(previewShapeLayer);
+    }
+  }
+
+  const c = previewConstraintFromDraft();
+  if (!c) { updatePreviewImpactText(); return; }
+  const before = solveCurrentArea().possible;
+  const after = solveCurrentArea(c).possible;
+  if (!before) { updatePreviewImpactText(); return; }
+  const removed = after ? gDifference(before, after) : turf.clone(before);
+  if (removed) {
+    L.geoJSON(removed, { pane: 'previewPane', interactive: false,
+      style: { color: R, weight: 1, opacity: .7, dashArray: '3 4',
+               fillColor: R, fillOpacity: .28 } }).addTo(previewShapeLayer);
+  }
+  if (after) {
+    L.geoJSON(after, { pane: 'previewPane', interactive: false,
+      style: { color: P, weight: 2.4, opacity: .95, fill: false } }).addTo(previewShapeLayer);
+  }
+  questionPreview.metrics = { beforeM2: turf.area(before), afterM2: after ? turf.area(after) : 0 };
+  updatePreviewImpactText();
+}
+
+function renderPreviewHandles() {
+  previewHandleLayer.clearLayers();
+  if (!questionPreview.active || questionPreview.type !== activeTool || activeTool !== 'thermometer') return;
+  const radiusM = thermometerPreviewRadius();
+  if (!draft.a || !(radiusM > 0)) return;
+  if (!draft.b) draft.b = turf.destination(turf.point(draft.a), radiusM / 1000, 90,
+    { units: 'kilometers' }).geometry.coordinates;
+  draft.b = constrainToRadius(draft.a, draft.b, radiusM);
+  renderPreviewShapes();
+
+  const handle = L.marker([draft.b[1], draft.b[0]], {
+    pane: 'previewHandlePane', draggable: true, keyboard: true,
+    title: 'Drag to preview a possible end point',
+    icon: L.divIcon({ className: 'question-preview-handle-icon',
+      html: '<span class="question-preview-handle" aria-hidden="true"></span>',
+      iconSize: [28, 28], iconAnchor: [14, 14] })
+  }).addTo(previewHandleLayer);
+  handle.on('drag', (e) => {
+    const ll = e.target.getLatLng();
+    draft.b = constrainToRadius(draft.a, [ll.lng, ll.lat], radiusM);
+    e.target.setLatLng([draft.b[1], draft.b[0]]);
+    renderPreviewShapes();
+  });
+  handle.on('dragend', () => renderToolForm());
+}
+
+function syncQuestionPreview() {
+  if (!questionPreview.active || questionPreview.type !== activeTool) {
+    previewShapeLayer.clearLayers();
+    previewHandleLayer.clearLayers();
+    return;
+  }
+  renderPreviewShapes();
+  renderPreviewHandles();
+}
+
+function addPreviewControls(box) {
+  const section = document.createElement('section');
+  section.className = 'question-preview-controls' + (questionPreview.active ? ' is-active' : '');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = questionPreview.active ? 'solid-btn wide' : 'ghost-btn wide';
+  button.textContent = questionPreview.active ? 'Exit preview mode' : 'Preview on map';
+  button.addEventListener('click', () => {
+    const turningOn = !questionPreview.active || questionPreview.type !== activeTool;
+    if (turningOn) {
+      questionPreview.active = true;
+      questionPreview.type = activeTool;
+    } else {
+      deactivateQuestionPreview();
+    }
+    renderToolForm();
+    if (turningOn && window.innerWidth <= 820) closeSheet();
+  });
+  const text = document.createElement('p');
+  text.id = 'previewImpactText';
+  text.className = 'question-preview-impact';
+  text.textContent = questionPreview.active
+    ? 'Preview is active. Nothing has been logged.'
+    : 'Shows the possible cut without adding anything to the Log.';
+  section.append(button, text);
+  box.appendChild(section);
+}
+
 function commit(c) {
+  deactivateQuestionPreview();
   c.id = uid();
   c.active = true;
   S.constraints.unshift(c);
@@ -1146,6 +1403,47 @@ function radarForm(box) {
     });
     custom.appendChild(inp);
     box.appendChild(custom);
+  }
+
+  if (questionPreview.active && selectedQuestion && selectedQuestion.typeKey === 'radar') {
+    const radarType = QUESTION_DECK.find((q) => q.key === 'radar');
+    const cards = radarType && radarType.groups && radarType.groups[0] ? radarType.groups[0].cards : [];
+    const switcher = document.createElement('div');
+    switcher.className = 'field radar-preview-switcher';
+    switcher.innerHTML = '<label>Change Radar card while previewing</label>';
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    cards.forEach(([label, phrase, note, data]) => {
+      const b = document.createElement('button');
+      const isCustom = !!(data && data.custom);
+      const active = isCustom ? draft.customRadius : (!draft.customRadius && draft.label === (data.radiusLabel || label));
+      b.className = 'chip' + (active ? ' is-active' : '');
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        selectedQuestion.label = label;
+        selectedQuestion.phrase = phrase;
+        selectedQuestion.note = note || '';
+        selectedQuestion.data = data || {};
+        draft.customRadius = isCustom;
+        if (isCustom) {
+          const value = Number(draft.customValue);
+          const factors = { mi: MI, ft: FT, km: 1000, m: 1 };
+          if (value > 0) {
+            draft.radiusM = value * factors[draft.customUnit || 'mi'];
+            draft.label = `${value} ${draft.customUnit || 'mi'}`;
+          } else {
+            draft.radiusM = null; draft.label = null;
+          }
+        } else {
+          draft.radiusM = data.radiusM;
+          draft.label = data.radiusLabel || label;
+        }
+        renderToolForm();
+      });
+      chips.appendChild(b);
+    });
+    switcher.appendChild(chips);
+    box.appendChild(switcher);
   }
 
   answerSeg(box, [['yes', 'Yes'], ['no', 'No']]);
@@ -1400,7 +1698,18 @@ function zoneForm(box) {
   const sel = document.createElement('select');
   sel.innerHTML = '<option value="">Choose a zone…</option>' + zones.map((z, i) =>
     `<option value="${i}"${String(draft.zoneIdx) === String(i) ? ' selected' : ''}>${escapeHtml(featureName(z.ft, z.zl))} — ${escapeHtml(z.zl.name)}</option>`).join('');
-  sel.addEventListener('change', () => { draft.zoneIdx = sel.value; renderToolForm(); });
+  if (draft.zoneIdx !== '' && draft.zoneIdx != null && zones[Number(draft.zoneIdx)]) {
+    const selected = zones[Number(draft.zoneIdx)];
+    draft.zoneGeometry = selected.ft.geometry;
+    draft.zoneName = featureName(selected.ft, selected.zl);
+  }
+  sel.addEventListener('change', () => {
+    draft.zoneIdx = sel.value;
+    const selected = zones[Number(sel.value)];
+    draft.zoneGeometry = selected ? selected.ft.geometry : null;
+    draft.zoneName = selected ? featureName(selected.ft, selected.zl) : '';
+    renderToolForm();
+  });
   f.appendChild(sel);
   box.appendChild(f);
 
@@ -1411,9 +1720,8 @@ function zoneForm(box) {
 
   answerSeg(box, [['yes', 'Same zone'], ['no', 'Different zone']]);
   actions(box, draft.zoneIdx !== '' && draft.zoneIdx != null && draft.answer, () => {
-    const z = zones[Number(draft.zoneIdx)];
-    commit({ type: 'zone', geometry: z.ft.geometry,
-             zoneName: featureName(z.ft, z.zl), answer: draft.answer });
+    commit({ type: 'zone', geometry: draft.zoneGeometry,
+             zoneName: draft.zoneName, answer: draft.answer });
   });
 }
 
@@ -1953,7 +2261,12 @@ function addLayer(name, geojson, opts = {}) {
           S.layers.filter((l) => l.kind === 'poly')
             .forEach((zl) => (zl.geojson.features || []).forEach((f2) => all.push(f2)));
           const idx = all.indexOf(ft);
-          if (idx >= 0) { draft.zoneIdx = String(idx); renderToolForm(); openSheet(); }
+          if (idx >= 0) {
+            draft.zoneIdx = String(idx);
+            draft.zoneGeometry = ft.geometry;
+            draft.zoneName = featureName(ft, rec);
+            renderToolForm(); openSheet();
+          }
         }
         if (kind === 'line' && activeTool === 'transit') {
           L.DomEvent.stopPropagation(e);
@@ -2368,7 +2681,10 @@ function syncRouteLabels(rec) {
   if (!show && map.hasLayer(rec.labelLayer)) map.removeLayer(rec.labelLayer);
 }
 
-map.on('zoomend', () => S.layers.forEach(syncRouteLabels));
+map.on('zoomend', () => {
+  S.layers.forEach(syncRouteLabels);
+  syncTransitStops();
+});
 
 function routeFeatureSignature(ft) {
   const refs = extractRouteRefs(ft.properties).join(',');
@@ -2457,6 +2773,122 @@ function parseOverpassStops(json) {
     out.push({ name, norm: normaliseStopName(name), coordinates: [lon, lat] });
   }
   return out;
+}
+
+function overpassTransitStopsQuery() {
+  const [s2, w, n, e] = OVERPASS_BBOX;
+  return `[out:json][timeout:90];(` +
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"];` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="platform"];` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="stop_position"];` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="station"];` +
+    `nwr(${s2},${w},${n},${e})["railway"~"^(station|halt|tram_stop)$"];` +
+    `);out center tags;`;
+}
+
+function parseTransitStops(json) {
+  const features = [];
+  const seen = new Set();
+  for (const el of (json && json.elements) || []) {
+    const tags = el.tags || {};
+    const lat = el.lat ?? (el.center && el.center.lat);
+    const lon = el.lon ?? (el.center && el.center.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const railway = String(tags.railway || '').toLowerCase();
+    const pt = String(tags.public_transport || '').toLowerCase();
+    const isTrain = /^(station|halt|tram_stop|platform|stop)$/.test(railway) ||
+      tags.train === 'yes' || tags.light_rail === 'yes';
+    const isBus = tags.highway === 'bus_stop' || tags.bus === 'yes' ||
+      (!isTrain && /^(platform|stop_position|station)$/.test(pt) && tags.ferry !== 'yes');
+    if (!isTrain && !isBus) continue;
+    const kind = isTrain ? 'train' : 'bus';
+    const name = tags.name || tags['name:da'] || tags.official_name ||
+      (kind === 'train' ? 'Unnamed rail stop' : 'Unnamed bus stop');
+    const key = `${kind}:${Math.round(lon * 1e6)}:${Math.round(lat * 1e6)}:${normaliseStopName(name)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    features.push(turf.point([lon, lat], {
+      name, __displayName: name, __stopKind: kind,
+      route_ref: tags.route_ref || tags.ref || '', shelter: tags.shelter || ''
+    }));
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function buildTransitStopLayer(gj) {
+  const group = L.layerGroup([], { pane: 'stopPane' });
+  for (const ft of (gj && gj.features) || []) {
+    if (!ft.geometry || ft.geometry.type !== 'Point') continue;
+    const c = ft.geometry.coordinates;
+    const p = ft.properties || {};
+    const train = p.__stopKind === 'train';
+    const marker = L.circleMarker([c[1], c[0]], {
+      pane: 'stopPane', radius: train ? 6 : 4,
+      color: train ? '#c4b5fd' : '#fde68a', weight: train ? 2.2 : 1.8,
+      fillColor: train ? '#7c3aed' : '#d97706', fillOpacity: .92
+    });
+    marker.bindTooltip(`${train ? 'Train' : 'Bus'} · ${p.name || 'Unnamed stop'}`, {
+      className: 'stop-tip', direction: 'top', offset: [0, -5], sticky: true
+    });
+    marker.on('click', (e) => {
+      L.DomEvent.stopPropagation(e);
+      marker.openTooltip();
+      if (activeTool === 'measuring') {
+        draft.target = c.slice();
+        draft.targetName = p.name || (train ? 'rail station' : 'bus stop');
+        renderToolForm(); openSheet();
+      } else if (activeTool === 'nearest') {
+        draft.points = draft.points || [];
+        if (!draft.points.some((x) => turf.distance(turf.point(x), turf.point(c), { units: 'meters' }) < 3)) {
+          draft.points.push(c.slice());
+        }
+        renderToolForm(); openSheet();
+      }
+    });
+    marker.addTo(group);
+  }
+  return group;
+}
+
+function syncTransitStops() {
+  const rec = S.transitStops;
+  if (!rec || !rec.layer) return;
+  const show = rec.visible && map.getZoom() >= 12;
+  if (show && !map.hasLayer(rec.layer)) rec.layer.addTo(map);
+  if (!show && map.hasLayer(rec.layer)) map.removeLayer(rec.layer);
+}
+
+async function toggleTransitStops(btn) {
+  const rec = S.transitStops;
+  if (rec.loaded) {
+    rec.visible = !rec.visible;
+    syncTransitStops();
+    renderSourceRows();
+    return;
+  }
+  if (rec.loading) return;
+  rec.loading = true;
+  if (btn) btn.classList.add('is-busy');
+  setStatus('Loading bus and train stops…');
+  try {
+    const gj = parseTransitStops(await overpassJson(overpassTransitStopsQuery()));
+    if (!gj.features.length) throw new Error('the map service returned no stops');
+    rec.geojson = gj;
+    rec.busCount = gj.features.filter((f) => f.properties.__stopKind === 'bus').length;
+    rec.trainCount = gj.features.filter((f) => f.properties.__stopKind === 'train').length;
+    rec.layer = buildTransitStopLayer(gj);
+    rec.loaded = true;
+    rec.visible = true;
+    syncTransitStops();
+    setStatus(`Transit stops: ${rec.busCount} bus stops and ${rec.trainCount} train/rail stops loaded. ` +
+      'They appear from zoom level 12 and can be tapped when building Matching or Measuring questions.');
+  } catch (err) {
+    setStatus(`Bus and train stops failed — ${err.message}.`, true);
+  } finally {
+    rec.loading = false;
+    if (btn) btn.classList.remove('is-busy');
+    renderSourceRows();
+  }
 }
 
 function stopMatchesAlias(stop, alias) {
@@ -3529,6 +3961,18 @@ function renderSourceRows() {
                      : (r.meta || r.table);
     rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
   });
+
+  const sbox = $('#stopSources');
+  if (sbox) {
+    sbox.innerHTML = '';
+    const stops = S.transitStops;
+    const state = !stops.loaded ? 'idle' : stops.visible ? 'on' : 'off';
+    const counts = stops.loaded
+      ? `${stops.busCount} bus · ${stops.trainCount} rail${state === 'on' ? '' : ' · hidden'}`
+      : TRANSIT_STOP_SOURCE.meta;
+    sbox.appendChild(sourceRow(TRANSIT_STOP_SOURCE.name, counts, state,
+      (btn) => toggleTransitStops(btn), null));
+  }
 }
 
 function renderWmsList() {
@@ -3823,6 +4267,7 @@ function serialize() {
     playAreaMeta: S.playAreaMeta,
     base: S.baseKey,
     fog: S.fogOpacity,
+    transitStopsVisible: !!S.transitStops.visible,
     sources: S.sources,
     cal: S.cal,
     renames: S.renames,
@@ -3877,6 +4322,7 @@ function deserialize(data) {
   renderCal();
   applyUnits();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
+  if (data.transitStopsVisible) toggleTransitStops();
   loadOfficialZone2PlayArea();
   return true;
 }
@@ -3989,12 +4435,15 @@ window.HS = {
   NT_ROUTE_WFS, ntBusLayerDefs, discoverNtBusTables, hasRouteRef,
   REQUIRED_BUS_ROUTE_SUPPLEMENTS, normaliseStopName, parseOverpassStops,
   matchSupplementStops, addMissingBusRouteSupplements, overpassBusStopQuery,
+  overpassTransitStopsQuery, parseTransitStops, buildTransitStopLayer,
+  toggleTransitStops, syncTransitStops, TRANSIT_STOP_SOURCE,
   areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, RAMME_OTHER, RAMME_LEGEND, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
   serialize, deserialize, b64encode, b64decode,
   constraintPolygon, halfPlane, voronoiCell, normaliseCoords, featureName,
   inferNameField, rankedNameFields, prepareSourceLabels,
-  renderToolForm, selectTool, switchTab,
+  renderToolForm, selectTool, switchTab, questionPreview,
+  previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, solveCurrentArea,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };

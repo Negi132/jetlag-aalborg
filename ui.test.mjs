@@ -1056,6 +1056,42 @@ check('Zone 4 creates a labelled X area for uncovered land', window.eval(`(() =>
 })()`), window.eval("window.__zone4Catch ? window.__zone4Catch.properties.__displayName : 'missing'"));
 check('the X catch-all appears in the Zone 4 legend', /X · Uden kommuneplanramme/.test($('#legend').textContent));
 
+console.log('\n== question preview mode ==');
+check('the Layers tab contains a transit-stops toggle', !!$('#stopSources'));
+check('Radar preview is non-committing and computes an impact', window.eval(`(() => {
+  HS.selectTool('radar');
+  HS.draft.center = [9.9217,57.0488];
+  HS.draft.radiusM = 0.5 * 1609.344;
+  HS.draft.answer = 'yes';
+  HS.questionPreview.active = true;
+  HS.questionPreview.type = 'radar';
+  const before = HS.S.constraints.length;
+  HS.syncQuestionPreview();
+  return HS.S.constraints.length === before && HS.questionPreview.metrics &&
+         HS.questionPreview.metrics.afterM2 < HS.questionPreview.metrics.beforeM2;
+})()`));
+check('Thermometer handle stays on the selected travel ring', window.eval(`(() => {
+  const a = [9.9217,57.0488];
+  const raw = [9.95,57.06];
+  const b = HS.constrainToRadius(a, raw, 804.672);
+  const d = turf.distance(turf.point(a), turf.point(b), {units:'kilometers'})*1000;
+  return Math.abs(d-804.672) < 0.5;
+})()`));
+
+console.log('\n== bus and train stops ==');
+check('stop query requests both bus and railway features', window.eval(`(() => {
+  const q = HS.overpassTransitStopsQuery();
+  return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$');
+})()`));
+check('stop parser classifies bus and train points', window.eval(`(() => {
+  const gj = HS.parseTransitStops({elements:[
+    {type:'node',id:1,lat:57.04,lon:9.91,tags:{highway:'bus_stop',name:'Test bus'}},
+    {type:'node',id:2,lat:57.05,lon:9.92,tags:{railway:'station',name:'Test station'}}
+  ]});
+  return gj.features.length === 2 && gj.features[0].properties.__stopKind === 'bus' &&
+         gj.features[1].properties.__stopKind === 'train';
+})()`));
+
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
 
