@@ -719,39 +719,213 @@ $('#drawFinish').addEventListener('click', () => {
 /* ---------- tool forms ---------------------------------------------- */
 
 let activeTool = null;
+let selectedQuestion = null;
 const draft = {};
+
+const QUESTION_DECK = [
+  {
+    key: 'matching', tool: 'nearest', number: 1, title: 'Matching',
+    meta: 'Cost: draw 3, pick 1 · Time limit: 5 min',
+    example: 'Is your nearest _____ the same as my nearest _____?',
+    groups: [
+      { title: 'Transit', cards: [
+        ['Commercial airport', 'commercial airport'],
+        ['Transit line', 'transit line'],
+        ['Station name length', 'station name length'],
+        ['Street / path', 'street or path']
+      ]},
+      { title: 'Administrative zones', cards: [
+        ['1st zone', '1st administrative zone'],
+        ['2nd zone', '2nd administrative zone'],
+        ['3rd zone', '3rd administrative zone'],
+        ['4th zone', '4th administrative zone']
+      ]},
+      { title: 'Natural', cards: [
+        ['Mountain', 'mountain'],
+        ['Landmass', 'landmass', 'In Aalborg this essentially asks whether the hider is in Nørresundby or south of the Limfjord.'],
+        ['Park', 'park']
+      ]},
+      { title: 'Places of interest', cards: [
+        ['Amusement park', 'amusement park'], ['Zoo', 'zoo'],
+        ['Aquarium', 'aquarium'], ['Golf course', 'golf course'],
+        ['Museum', 'museum'], ['Movie theater', 'movie theater']
+      ]},
+      { title: 'Public utilities', cards: [
+        ['Hospital', 'hospital'], ['Library', 'library'],
+        ['Foreign consulate', 'foreign consulate']
+      ]}
+    ]
+  },
+  {
+    key: 'measuring', tool: 'measuring', number: 2, title: 'Measuring',
+    meta: 'Cost: draw 3, pick 1 · Time limit: 5 min',
+    example: 'Compared to me, are you closer to or further from _____?',
+    groups: [
+      { title: 'Transit', cards: [
+        ['Commercial airport', 'a commercial airport'],
+        ['High-speed train line', 'a high-speed train line'],
+        ['Rail station', 'a rail station']
+      ]},
+      { title: 'Borders', cards: [
+        ['International border', 'an international border'],
+        ['1st zone border', 'a 1st zone border'],
+        ['2nd zone border', 'a 2nd zone border']
+      ]},
+      { title: 'Natural', cards: [
+        ['Sea level', 'sea level'], ['Body of water', 'a body of water'],
+        ['Coastline', 'a coastline'], ['Mountain', 'a mountain'], ['Park', 'a park']
+      ]},
+      { title: 'Places of interest', cards: [
+        ['Amusement park', 'an amusement park'], ['Zoo', 'a zoo'],
+        ['Aquarium', 'an aquarium'], ['Golf course', 'a golf course'],
+        ['Museum', 'a museum'], ['Movie theater', 'a movie theater']
+      ]},
+      { title: 'Public interest', cards: [
+        ['Hospital', 'a hospital'], ['Library', 'a library'],
+        ['Foreign consulate', 'a foreign consulate']
+      ]}
+    ]
+  },
+  { key: 'pending3', number: 3, title: 'Question type 3', pending: true },
+  { key: 'pending4', number: 4, title: 'Question type 4', pending: true },
+  { key: 'pending5', number: 5, title: 'Question type 5', pending: true },
+  { key: 'pending6', number: 6, title: 'Question type 6', pending: true }
+];
 
 const TOOLS = {
   radar:       { title: 'Radar',       q: '“Are you within ___ of me?”', build: radarForm },
   thermometer: { title: 'Thermometer', q: '“After travelling ___, am I hotter or colder?”', build: thermoForm },
   measuring:   { title: 'Measuring',   q: '“Compared to me, are you closer to or further from ___?”', build: measuringForm },
-  nearest:     { title: 'Matching / tentacles', q: '“Is your nearest ___ the same as mine?”', build: nearestForm },
+  nearest:     { title: 'Matching',    q: '“Is your nearest ___ the same as mine?”', build: nearestForm },
   transit:     { title: 'Transit line', q: '“Will the bus I am on stop at your station?”', build: transitForm },
   zone:        { title: 'Zone match',  q: 'Same administrative zone as the seeker?', build: zoneForm },
   area:        { title: 'Free shape',  q: 'For photo clues, sightlines, hunches — anything you can draw.', build: areaForm }
 };
 
-$$('.tool').forEach((btn) => btn.addEventListener('click', () => selectTool(btn.dataset.tool)));
+function cardQuestionSentence(type, phrase) {
+  if (type === 'matching') return `Is your nearest ${phrase} the same as my nearest ${phrase}?`;
+  if (type === 'measuring') return `Compared to me, are you closer to or further from ${phrase}?`;
+  return '';
+}
 
+function renderQuestionDeck() {
+  const deck = $('#questionDeck');
+  if (!deck) return;
+  deck.hidden = !!activeTool;
+  if (activeTool) return;
+  deck.innerHTML = '';
+
+  QUESTION_DECK.forEach((type, typeIndex) => {
+    if (type.pending) {
+      const pending = document.createElement('section');
+      pending.className = 'question-type is-pending';
+      pending.innerHTML = `<div class="question-type-summary">
+        <span class="question-number">${type.number}</span>
+        <span class="question-heading"><strong>${escapeHtml(type.title)}</strong>
+        <small>Details will be added when this question type is defined.</small></span>
+        <span class="question-status">Coming later</span>
+      </div>`;
+      deck.appendChild(pending);
+      return;
+    }
+
+    const details = document.createElement('details');
+    details.className = 'question-type';
+    details.open = typeIndex === 0;
+    const summary = document.createElement('summary');
+    summary.className = 'question-type-summary';
+    summary.innerHTML = `<span class="question-number">${type.number}</span>
+      <span class="question-heading"><strong>${escapeHtml(type.title)}</strong>
+      <small>${escapeHtml(type.meta)}</small></span>
+      <span class="question-chevron" aria-hidden="true">⌄</span>`;
+    details.appendChild(summary);
+
+    const body = document.createElement('div');
+    body.className = 'question-type-body';
+    body.innerHTML = `<p class="question-example">${escapeHtml(type.example)}</p>`;
+
+    type.groups.forEach((group) => {
+      const section = document.createElement('section');
+      section.className = 'question-card-group';
+      section.innerHTML = `<h3>${escapeHtml(group.title)}</h3>`;
+      const grid = document.createElement('div');
+      grid.className = 'question-card-grid';
+      group.cards.forEach(([label, phrase, note]) => {
+        const btn = document.createElement('button');
+        btn.className = 'question-card';
+        btn.type = 'button';
+        btn.dataset.questionType = type.key;
+        btn.dataset.card = label;
+        btn.innerHTML = `<span>${escapeHtml(label)}</span>${note ? `<small>${escapeHtml(note)}</small>` : ''}`;
+        btn.addEventListener('click', () => chooseQuestion(type, { label, phrase, note: note || '' }));
+        grid.appendChild(btn);
+      });
+      section.appendChild(grid);
+      body.appendChild(section);
+    });
+    details.appendChild(body);
+    deck.appendChild(details);
+  });
+}
+
+function chooseQuestion(type, card) {
+  activeTool = type.tool;
+  selectedQuestion = { typeKey: type.key, title: type.title, meta: type.meta, ...card };
+  for (const k of Object.keys(draft)) delete draft[k];
+  if (activeTool === 'nearest') draft.categoryName = card.phrase;
+  if (activeTool === 'measuring') draft.targetName = card.phrase;
+  endPick(); stopDrawing();
+  renderToolForm();
+  const pane = document.querySelector('[data-pane="ask"]');
+  if (pane) pane.scrollTop = 0;
+}
+
+function closeQuestionForm() {
+  activeTool = null;
+  selectedQuestion = null;
+  for (const k of Object.keys(draft)) delete draft[k];
+  endPick(); stopDrawing();
+  renderToolForm();
+}
+
+/* Kept for internal tools and geometry tests; the small-game UI enters through chooseQuestion. */
 function selectTool(key) {
-  if (activeTool === key) { activeTool = null; endPick(); stopDrawing(); renderToolForm(); return; }
+  if (activeTool === key) { closeQuestionForm(); return; }
   activeTool = key;
+  selectedQuestion = null;
   for (const k of Object.keys(draft)) delete draft[k];
   endPick(); stopDrawing();
   renderToolForm();
 }
 
 function renderToolForm() {
-  $$('.tool').forEach((b) => b.classList.toggle('is-active', b.dataset.tool === activeTool));
+  renderQuestionDeck();
   const box = $('#toolForm');
   const empty = $('#askEmpty');
-  if (!activeTool) { box.hidden = true; box.innerHTML = ''; empty.hidden = false; return; }
-  empty.hidden = true;
+  if (!activeTool) {
+    box.hidden = true; box.innerHTML = '';
+    if (empty) empty.hidden = true;
+    return;
+  }
+  if (empty) empty.hidden = true;
   box.hidden = false;
-  box.innerHTML = `<p class="form-title">${TOOLS[activeTool].title}</p>
-                   <p class="form-q">${TOOLS[activeTool].q}</p>`;
+
+  const title = selectedQuestion ? `${selectedQuestion.title} · ${selectedQuestion.label}` : TOOLS[activeTool].title;
+  const question = selectedQuestion
+    ? cardQuestionSentence(selectedQuestion.typeKey, selectedQuestion.phrase)
+    : TOOLS[activeTool].q;
+  box.innerHTML = `<button type="button" class="question-back ghost-btn">← All question types</button>
+    <div class="selected-question-head">
+      <p class="form-title">${escapeHtml(title)}</p>
+      ${selectedQuestion ? `<p class="selected-question-meta">${escapeHtml(selectedQuestion.meta)}</p>` : ''}
+      <p class="form-q">${escapeHtml(question)}</p>
+      ${selectedQuestion && selectedQuestion.note ? `<p class="selected-question-note">${escapeHtml(selectedQuestion.note)}</p>` : ''}
+    </div>`;
+  box.querySelector('.question-back').addEventListener('click', closeQuestionForm);
   TOOLS[activeTool].build(box);
 }
+
+renderQuestionDeck();
 
 function slot(box, key, label, opts = {}) {
   const el = document.createElement('button');
@@ -819,7 +993,7 @@ function actions(box, ready, onAdd) {
   const cancel = document.createElement('button');
   cancel.className = 'ghost-btn';
   cancel.textContent = 'Cancel';
-  cancel.addEventListener('click', () => selectTool(activeTool));
+  cancel.addEventListener('click', closeQuestionForm);
   wrap.append(add, cancel);
   box.appendChild(wrap);
 }
@@ -829,6 +1003,7 @@ function commit(c) {
   c.active = true;
   S.constraints.unshift(c);
   activeTool = null;
+  selectedQuestion = null;
   renderToolForm();
   recompute();
   switchTab('log');

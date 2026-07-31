@@ -38,6 +38,17 @@ basemaps ship in the **Game** tab: Plain, Streets, Satellite.
 
 ---
 
+## Small-game question deck
+
+The **Ask** tab is organised like the small version's physical question deck rather than as a list
+of geometry tools. Each question type shows its card cost, time limit, example wording, and its
+individual cards grouped by subject. Matching and Measuring are implemented first; four reserved
+question-type panels are present for the remaining categories.
+
+Selecting a card opens the existing map workflow with the card text already filled in. On phones,
+the deck uses one-column touch targets and the answer controls remain reachable at the bottom of
+the sheet.
+
 ## How each question narrows the map
 
 Every answer becomes a polygon of *places the hider could still be*. They all get intersected

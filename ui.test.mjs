@@ -67,6 +67,20 @@ check('play area is the four zones and non-trivial', HULL > 20 && HULL < 400, `$
 check('HUD unit is mi²', $('#hudUnit').textContent === 'mi²');
 check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSeg [data-area="zones"]').className));
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
+
+
+console.log('\n== small-game question deck ==');
+check('six question-type panels render', doc.querySelectorAll('.question-type').length === 6,
+      `${doc.querySelectorAll('.question-type').length}`);
+check('Matching shows draw/pick cost and five-minute limit', /draw 3, pick 1/i.test($('#questionDeck').textContent) && /5 min/i.test($('#questionDeck').textContent));
+check('Matching card list includes route and landmass cards', /Transit line/.test($('#questionDeck').textContent) && /Landmass/.test($('#questionDeck').textContent));
+check('Measuring card list includes coastline and foreign consulate', /Coastline/.test($('#questionDeck').textContent) && /Foreign consulate/.test($('#questionDeck').textContent));
+const parkCard = doc.querySelector('[data-question-type="matching"][data-card="Park"]');
+click(parkCard);
+check('a Matching card opens the answer workspace', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent));
+check('selected card pre-fills the category', $('#toolForm input[type="text"]').value === 'park', $('#toolForm input[type="text"]').value);
+click($('#toolForm .question-back'));
+check('back returns to the six-category deck', !$('#questionDeck').hidden && $('#toolForm').hidden);
 check('all four default zone sources use KortInfo', window.eval(`
   Object.values(HS.S.sources).every(s => s.url === HS.KORTINFO && s.kind === 'wfs')
 `));
@@ -112,7 +126,7 @@ click(doc.querySelector('[data-tab="ask"]'));
 check('ask pane returns', doc.querySelector('[data-pane="ask"]').classList.contains('is-active'));
 
 console.log('\n== radar flow ==');
-click(doc.querySelector('[data-tool="radar"]'));
+window.eval("selectTool('radar')");
 check('radar form renders', !$('#toolForm').hidden && /Radar/.test($('#toolForm').textContent));
 check('radar offers the deck\u2019s imperial radii', doc.querySelectorAll('#toolForm .chip').length === 9, doc.querySelector('#toolForm .chip').textContent + ' \u2026 ' + [...doc.querySelectorAll('#toolForm .chip')].pop().textContent);
 check('Log answer starts disabled', doc.querySelector('#toolForm .solid-btn').disabled === true);
@@ -159,7 +173,7 @@ check('empty-state message returns', !$('#logEmpty').hidden);
 
 console.log('\n== thermometer flow ==');
 click(doc.querySelector('[data-tab="ask"]'));
-click(doc.querySelector('[data-tool="thermometer"]'));
+window.eval("selectTool('thermometer')");
 click(doc.querySelectorAll('#toolForm .slot')[0]);
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
 click(doc.querySelectorAll('#toolForm .slot')[1]);
@@ -175,7 +189,7 @@ check('thermometer removed roughly half the map', (() => { const v = parseFloat(
 
 console.log('\n== free-shape drawing ==');
 click(doc.querySelector('[data-tab="ask"]'));
-click(doc.querySelector('[data-tool="area"]'));
+window.eval("selectTool('area')");
 click(doc.querySelector('#toolForm .ghost-btn'));
 check('draw hint bar appears', !$('#drawHint').hidden);
 check('Finish is disabled with no points', $('#drawFinish').disabled);
@@ -198,7 +212,7 @@ window.eval(`HS.addLayer('Test districts', {type:'FeatureCollection',features:[
 check('hand-loaded layer listed', doc.querySelectorAll('#zoneLayers .zone-row').length === 1);
 check('zone count shown', /2/.test(doc.querySelector('.zone-count').textContent));
 click(doc.querySelector('[data-tab="ask"]'));
-click(doc.querySelector('[data-tool="zone"]'));
+window.eval("selectTool('zone')");
 check('zone dropdown populated', doc.querySelectorAll('#toolForm select option').length === 3);
 check('zone names appear', /Vestbyen/.test($('#toolForm').textContent));
 
@@ -232,7 +246,7 @@ window.eval(`HS.addLayer('Test bus lines', {type:'FeatureCollection',features:[
 check('line layer loaded as lines', window.eval("HS.S.layers.filter(l=>l.kind==='line').length") === 1);
 check('line layer counted with ln suffix', /ln/.test($('#zoneLayers').textContent));
 click(doc.querySelector('[data-tab="ask"]'));
-click(doc.querySelector('[data-tool="transit"]'));
+window.eval("selectTool('transit')");
 check('transit form renders', /Transit line/.test($('#toolForm').textContent));
 check('buffer defaults to a quarter mile', Math.abs(window.eval('HS.draft.bufferM') - 402.336) < 0.01);
 // select the route programmatically the same way a map tap would
