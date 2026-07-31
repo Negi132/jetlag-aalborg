@@ -75,6 +75,24 @@ check('six question-type panels render', doc.querySelectorAll('.question-type').
 check('Matching shows draw/pick cost and five-minute limit', /draw 3, pick 1/i.test($('#questionDeck').textContent) && /5 min/i.test($('#questionDeck').textContent));
 check('Matching card list includes route and landmass cards', /Transit line/.test($('#questionDeck').textContent) && /Landmass/.test($('#questionDeck').textContent));
 check('Measuring card list includes coastline and foreign consulate', /Coastline/.test($('#questionDeck').textContent) && /Foreign consulate/.test($('#questionDeck').textContent));
+check('Thermometer has exactly the half-mile and three-mile cards', (() => {
+  const cards = [...doc.querySelectorAll('[data-question-type="thermometer"]')].map((e) => e.dataset.card);
+  return cards.join('|') === '½ mile|3 miles';
+})());
+check('Radar contains all nine fixed distances plus Custom', (() => {
+  const cards = [...doc.querySelectorAll('[data-question-type="radar"]')].map((e) => e.dataset.card);
+  return cards.length === 10 && cards.includes('¼ mile') && cards.includes('100 miles') && cards.includes('Custom');
+})());
+check('Tentacles shows its full rule but is disabled for the small game', (() => {
+  const panel = [...doc.querySelectorAll('.question-type')].find((e) => /Tentacles/.test(e.textContent));
+  return panel && panel.classList.contains('is-disabled') && /draw 4, pick 2/i.test(panel.textContent) && /medium and large/i.test(panel.textContent);
+})());
+check('Photos contains all six prompts and the 10-minute small-game limit', (() => {
+  const cards = doc.querySelectorAll('[data-question-type="photos"]');
+  return cards.length === 6 && /10 min/i.test($('#questionDeck').textContent) &&
+    !!doc.querySelector('[data-question-type="photos"][data-card="A tree"]') &&
+    !!doc.querySelector('[data-question-type="photos"][data-card="Any building visible from the station"]');
+})());
 const parkCard = doc.querySelector('[data-question-type="matching"][data-card="Park"]');
 click(parkCard);
 check('a Matching card opens the answer workspace', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent));
@@ -128,7 +146,7 @@ check('ask pane returns', doc.querySelector('[data-pane="ask"]').classList.conta
 console.log('\n== radar flow ==');
 window.eval("selectTool('radar')");
 check('radar form renders', !$('#toolForm').hidden && /Radar/.test($('#toolForm').textContent));
-check('radar offers the deck\u2019s imperial radii', doc.querySelectorAll('#toolForm .chip').length === 9, doc.querySelector('#toolForm .chip').textContent + ' \u2026 ' + [...doc.querySelectorAll('#toolForm .chip')].pop().textContent);
+check('radar offers the deck\u2019s imperial radii', doc.querySelectorAll('#toolForm .chip').length === 13, doc.querySelector('#toolForm .chip').textContent + ' \u2026 ' + [...doc.querySelectorAll('#toolForm .chip')].pop().textContent);
 check('Log answer starts disabled', doc.querySelector('#toolForm .solid-btn').disabled === true);
 
 // pick the centre slot, then simulate a map tap
@@ -228,9 +246,13 @@ check('fmtDist small values in feet', window.eval("HS.fmtDist(150)") === '490 ft
 check('fmtDist switches to miles', window.eval("HS.fmtDist(1609.344)") === '1 mi', window.eval("HS.fmtDist(1609.344)"));
 check('quarter mile reads as miles', window.eval("HS.fmtDist(402.336)") === '0.25 mi', window.eval("HS.fmtDist(402.336)"));
 check('900 ft still reads as feet', window.eval("HS.fmtDist(900*0.3048)") === '900 ft', window.eval("HS.fmtDist(900*0.3048)"));
-check('radar presets are imperial', window.eval("HS.RADAR_PRESETS.map(p=>p.label).join(',')") === '250 ft,500 ft,1000 ft,1500 ft,\u00bc mi,\u00bd mi,1 mi,3 mi,5 mi',
+check('radar presets are imperial', window.eval("HS.RADAR_PRESETS.map(p=>p.label).join(',')") === '250 ft,500 ft,1000 ft,1500 ft,\u00bc mi,\u00bd mi,1 mi,3 mi,5 mi,10 mi,25 mi,50 mi,100 mi',
       window.eval("HS.RADAR_PRESETS.map(p=>p.label).join(',')"));
 check('1 mi preset is exactly 1609.344 m', window.eval("HS.RADAR_PRESETS[6].m") === 1609.344);
+check('a photo log is neutral and leaves the full play area possible', window.eval(`(() => {
+  const p = HS.constraintPolygon({type:'photo', subject:'A tree'});
+  return p && Math.abs(turf.area(p) - turf.area(HS.S.playArea)) < 0.01;
+})()`));
 // switch to metric and back
 click(doc.querySelector('#unitSeg [data-units="metric"]'));
 check('metric switch changes the unit label', $('#hudUnit').textContent === 'km\u00b2', $('#hudUnit').textContent);

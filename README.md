@@ -41,13 +41,18 @@ basemaps ship in the **Game** tab: Plain, Streets, Satellite.
 ## Small-game question deck
 
 The **Ask** tab is organised like the small version's physical question deck rather than as a list
-of geometry tools. Each question type shows its card cost, time limit, example wording, and its
-individual cards grouped by subject. Matching and Measuring are implemented first; four reserved
-question-type panels are present for the remaining categories.
+of geometry tools. Each of the six question types shows its card cost, time limit, example wording,
+and the available cards:
 
-Selecting a card opens the existing map workflow with the card text already filled in. On phones,
-the deck uses one-column touch targets and the answer controls remain reachable at the bottom of
-the sheet.
+- **Matching** and **Measuring** open their existing map workflows with the selected subject filled in.
+- **Thermometer** provides the ½-mile and 3-mile cards and records the card's minimum-travel rule.
+- **Radar** provides ¼, ½, 1, 3, 5, 10, 25, 50 and 100 miles plus a Custom card.
+- **Tentacles** remains visible with its full rule, but is deliberately disabled because it belongs
+  only to medium and large games.
+- **Photos** contains all six small-game prompts and their framing instructions. Logging a photo
+  records the question without changing the possible map area.
+
+On phones, the deck uses one-column touch targets, a tall bottom sheet, and sticky answer controls.
 
 ## How each question narrows the map
 
@@ -62,12 +67,13 @@ together, and whatever survives is the bright area.
 | **Thermometer** — "after travelling ___, am I hotter or colder?" | The perpendicular bisector between your start and end point. *Hotter* keeps the half nearer the end point. |
 | **Measuring** — "compared to me, are you closer to or further from ___?" | A circle centred on the thing, with a radius equal to *your* distance from it. |
 | **Matching** — "is your nearest ___ the same as mine?" | Drop a pin on every candidate in the play area and tap the one nearest you. The map splits into nearest-point territories; you keep yours, or everything but yours. |
-| **Tentacles** | Same as matching, plus a radius limit around you. Also handles "not within reach". |
+| **Tentacles** | Shown for reference, but disabled in this small-game Aalborg build. |
 | **Zone** | Same district / parish / postal code as you — one tap on a loaded zone layer. |
-| **Free shape** | Draw anything by hand. This is your catch-all for photo clues, sightlines, and hunches. |
+| **Photos** | Records the requested photo and its framing rule without narrowing the map directly. |
+| **Free shape** | Draw anything by hand when a received photo lets you rule out a region. |
 
-**Units.** The app defaults to feet and miles to match the US deck. Radar presets are the deck's
-own values — 250 / 500 / 1000 / 1500 ft, then ¼, ½, 1, 3 and 5 miles — and the area readout is in
+**Units.** The app defaults to feet and miles to match the US deck. Radar cards are the small deck's
+¼, ½, 1, 3, 5, 10, 25, 50 and 100 miles, plus Custom — and the area readout is in
 mi². There's a metric toggle in the **Game** tab if you ever play with a European deck; it converts
 everything already logged, because distances are stored in metres internally and only formatted on
 the way out.

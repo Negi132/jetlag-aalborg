@@ -29,7 +29,11 @@ const RADAR_PRESETS = [
   { label: '½ mi',    m: 0.5 * MI },
   { label: '1 mi',    m: 1 * MI },
   { label: '3 mi',    m: 3 * MI },
-  { label: '5 mi',    m: 5 * MI }
+  { label: '5 mi',    m: 5 * MI },
+  { label: '10 mi',   m: 10 * MI },
+  { label: '25 mi',   m: 25 * MI },
+  { label: '50 mi',   m: 50 * MI },
+  { label: '100 mi',  m: 100 * MI }
 ];
 
 /* ---------- data sources ------------------------------------------
@@ -401,6 +405,8 @@ function constraintPolygon(c) {
       if (!buf) return null;
       return c.answer === 'yes' ? buf : invert(buf);
     }
+    case 'photo':
+      return turf.clone(play);
     case 'zone':
     case 'area': {
       const poly = c.geometry ? turf.feature(c.geometry) : null;
@@ -418,7 +424,8 @@ function constraintLabel(c) {
       return { kind: 'Radar', text: `Within ${c.label || fmtDist(c.radiusM)} of the seeker`,
                ans: c.answer === 'yes' ? 'Yes' : 'No' };
     case 'thermometer':
-      return { kind: 'Thermometer', text: `Moved ${fmtDist(c.travelM)}`,
+      return { kind: 'Thermometer',
+               text: c.requiredDistanceLabel ? `At least ${c.requiredDistanceLabel} · endpoints ${fmtDist(c.travelM)} apart` : `Moved ${fmtDist(c.travelM)}`,
                ans: c.answer === 'hotter' ? 'Hotter' : 'Colder' };
     case 'measuring':
       return { kind: 'Measuring', text: `Compared to seeker, vs ${c.targetName || 'target'}`,
@@ -437,6 +444,9 @@ function constraintLabel(c) {
     case 'area':
       return { kind: 'Free shape', text: c.name || 'Hand-drawn area',
                ans: c.answer === 'yes' ? 'Inside' : 'Outside' };
+    case 'photo':
+      return { kind: 'Photo', text: c.subject || 'Photo prompt',
+               ans: c.note ? `Received · ${c.note}` : 'Received' };
     default:
       return { kind: '?', text: '', ans: '' };
   }
@@ -786,17 +796,65 @@ const QUESTION_DECK = [
       ]}
     ]
   },
-  { key: 'pending3', number: 3, title: 'Question type 3', pending: true },
-  { key: 'pending4', number: 4, title: 'Question type 4', pending: true },
-  { key: 'pending5', number: 5, title: 'Question type 5', pending: true },
-  { key: 'pending6', number: 6, title: 'Question type 6', pending: true }
+  {
+    key: 'thermometer', tool: 'thermometer', number: 3, title: 'Thermometer',
+    meta: 'Cost: draw 2, pick 1 · Time limit: 5 min',
+    example: "I've just travelled at least [distance]. Am I hotter or colder?",
+    groups: [
+      { title: 'Distance', cards: [
+        ['½ mile', '½ mile', '', { distanceM: 0.5 * MI, distanceLabel: '½ mile' }],
+        ['3 miles', '3 miles', '', { distanceM: 3 * MI, distanceLabel: '3 miles' }]
+      ]}
+    ]
+  },
+  {
+    key: 'radar', tool: 'radar', number: 4, title: 'Radar',
+    meta: 'Cost: draw 2, pick 1 · Time limit: 5 min',
+    example: 'Are you within [distance] of me?',
+    groups: [
+      { title: 'Distance', cards: [
+        ['¼ mile', '¼ mile', '', { radiusM: 0.25 * MI, radiusLabel: '¼ mile' }],
+        ['½ mile', '½ mile', '', { radiusM: 0.5 * MI, radiusLabel: '½ mile' }],
+        ['1 mile', '1 mile', '', { radiusM: 1 * MI, radiusLabel: '1 mile' }],
+        ['3 miles', '3 miles', '', { radiusM: 3 * MI, radiusLabel: '3 miles' }],
+        ['5 miles', '5 miles', '', { radiusM: 5 * MI, radiusLabel: '5 miles' }],
+        ['10 miles', '10 miles', '', { radiusM: 10 * MI, radiusLabel: '10 miles' }],
+        ['25 miles', '25 miles', '', { radiusM: 25 * MI, radiusLabel: '25 miles' }],
+        ['50 miles', '50 miles', '', { radiusM: 50 * MI, radiusLabel: '50 miles' }],
+        ['100 miles', '100 miles', '', { radiusM: 100 * MI, radiusLabel: '100 miles' }],
+        ['Custom', 'a custom distance', 'Enter the distance after selecting this card.', { custom: true }]
+      ]}
+    ]
+  },
+  {
+    key: 'tentacles', number: 5, title: 'Tentacles', disabled: true,
+    meta: 'Cost: draw 4, pick 2 · Time limit: 5 min',
+    example: 'Of all the [places] within [distance] of me, which are you closest to? I must also be within [distance].',
+    disabledNote: 'Tentacles is available only in medium and large games. It is intentionally disabled for this Aalborg small-game website.'
+  },
+  {
+    key: 'photos', tool: 'photo', number: 6, title: 'Photos',
+    meta: 'Cost: draw 1, pick 1 · Time limit: 10 min in small/medium games · 20 min in large games',
+    example: 'Send a photo of _____.',
+    groups: [
+      { title: 'Photo prompt', cards: [
+        ['A tree', 'a tree', 'Must include the entire tree.'],
+        ['The sky', 'the sky', 'Place the phone on the ground and shoot directly upward.'],
+        ['Tallest structure in your sightline', 'the tallest structure in your sightline', 'Use the tallest structure from your current perspective. Include its top and both sides, with the top in the upper third of the frame.'],
+        ['You', 'you', 'Use selfie mode. Hold your arm parallel to the ground and fully extended.'],
+        ['Widest street', 'the widest street', 'Include both sides of the street.'],
+        ['Any building visible from the station', 'any building visible from the station', 'Stand directly outside a transit-station entrance. If there are multiple entrances, choose one. Include the roof and both sides, with the top of the building in the upper third of the frame.']
+      ]}
+    ]
+  }
 ];
 
 const TOOLS = {
   radar:       { title: 'Radar',       q: '“Are you within ___ of me?”', build: radarForm },
-  thermometer: { title: 'Thermometer', q: '“After travelling ___, am I hotter or colder?”', build: thermoForm },
+  thermometer: { title: 'Thermometer', q: "“I've just travelled at least ___. Am I hotter or colder?”", build: thermoForm },
   measuring:   { title: 'Measuring',   q: '“Compared to me, are you closer to or further from ___?”', build: measuringForm },
   nearest:     { title: 'Matching',    q: '“Is your nearest ___ the same as mine?”', build: nearestForm },
+  photo:       { title: 'Photos',      q: '“Send a photo of ___.”', build: photoForm },
   transit:     { title: 'Transit line', q: '“Will the bus I am on stop at your station?”', build: transitForm },
   zone:        { title: 'Zone match',  q: 'Same administrative zone as the seeker?', build: zoneForm },
   area:        { title: 'Free shape',  q: 'For photo clues, sightlines, hunches — anything you can draw.', build: areaForm }
@@ -805,6 +863,9 @@ const TOOLS = {
 function cardQuestionSentence(type, phrase) {
   if (type === 'matching') return `Is your nearest ${phrase} the same as my nearest ${phrase}?`;
   if (type === 'measuring') return `Compared to me, are you closer to or further from ${phrase}?`;
+  if (type === 'thermometer') return `I've just travelled at least ${phrase}. Am I hotter or colder?`;
+  if (type === 'radar') return `Are you within ${phrase} of me?`;
+  if (type === 'photos') return `Send a photo of ${phrase}.`;
   return '';
 }
 
@@ -816,48 +877,42 @@ function renderQuestionDeck() {
   deck.innerHTML = '';
 
   QUESTION_DECK.forEach((type, typeIndex) => {
-    if (type.pending) {
-      const pending = document.createElement('section');
-      pending.className = 'question-type is-pending';
-      pending.innerHTML = `<div class="question-type-summary">
-        <span class="question-number">${type.number}</span>
-        <span class="question-heading"><strong>${escapeHtml(type.title)}</strong>
-        <small>Details will be added when this question type is defined.</small></span>
-        <span class="question-status">Coming later</span>
-      </div>`;
-      deck.appendChild(pending);
-      return;
-    }
-
     const details = document.createElement('details');
-    details.className = 'question-type';
+    details.className = 'question-type' + (type.disabled ? ' is-disabled' : '');
+    if (type.disabled) details.setAttribute('aria-disabled', 'true');
     details.open = typeIndex === 0;
     const summary = document.createElement('summary');
     summary.className = 'question-type-summary';
     summary.innerHTML = `<span class="question-number">${type.number}</span>
       <span class="question-heading"><strong>${escapeHtml(type.title)}</strong>
       <small>${escapeHtml(type.meta)}</small></span>
-      <span class="question-chevron" aria-hidden="true">⌄</span>`;
+      ${type.disabled ? '<span class="question-status">Small game: disabled</span>' : '<span class="question-chevron" aria-hidden="true">⌄</span>'}`;
     details.appendChild(summary);
 
     const body = document.createElement('div');
     body.className = 'question-type-body';
     body.innerHTML = `<p class="question-example">${escapeHtml(type.example)}</p>`;
+    if (type.disabled) {
+      const note = document.createElement('p');
+      note.className = 'question-disabled-note';
+      note.textContent = type.disabledNote || 'This question type is disabled in the small game.';
+      body.appendChild(note);
+    }
 
-    type.groups.forEach((group) => {
+    (type.groups || []).forEach((group) => {
       const section = document.createElement('section');
       section.className = 'question-card-group';
       section.innerHTML = `<h3>${escapeHtml(group.title)}</h3>`;
       const grid = document.createElement('div');
       grid.className = 'question-card-grid';
-      group.cards.forEach(([label, phrase, note]) => {
+      group.cards.forEach(([label, phrase, note, data]) => {
         const btn = document.createElement('button');
         btn.className = 'question-card';
         btn.type = 'button';
         btn.dataset.questionType = type.key;
         btn.dataset.card = label;
         btn.innerHTML = `<span>${escapeHtml(label)}</span>${note ? `<small>${escapeHtml(note)}</small>` : ''}`;
-        btn.addEventListener('click', () => chooseQuestion(type, { label, phrase, note: note || '' }));
+        btn.addEventListener('click', () => chooseQuestion(type, { label, phrase, note: note || '', data: data || {} }));
         grid.appendChild(btn);
       });
       section.appendChild(grid);
@@ -874,6 +929,18 @@ function chooseQuestion(type, card) {
   for (const k of Object.keys(draft)) delete draft[k];
   if (activeTool === 'nearest') draft.categoryName = card.phrase;
   if (activeTool === 'measuring') draft.targetName = card.phrase;
+  if (activeTool === 'thermometer') {
+    draft.requiredDistanceM = card.data.distanceM;
+    draft.requiredDistanceLabel = card.data.distanceLabel || card.label;
+  }
+  if (activeTool === 'radar') {
+    draft.customRadius = !!card.data.custom;
+    if (card.data.radiusM) {
+      draft.radiusM = card.data.radiusM;
+      draft.label = card.data.radiusLabel || card.label;
+    }
+  }
+  if (activeTool === 'photo') draft.photoSubject = card.phrase;
   endPick(); stopDrawing();
   renderToolForm();
   const pane = document.querySelector('[data-pane="ask"]');
@@ -982,12 +1049,12 @@ function smallInput(box, key, label, placeholder) {
   box.appendChild(f);
 }
 
-function actions(box, ready, onAdd) {
+function actions(box, ready, onAdd, addLabel = 'Log answer') {
   const wrap = document.createElement('div');
   wrap.className = 'form-actions';
   const add = document.createElement('button');
   add.className = 'solid-btn';
-  add.textContent = 'Log answer';
+  add.textContent = addLabel;
   add.disabled = !ready;
   add.addEventListener('click', onAdd);
   const cancel = document.createElement('button');
@@ -1014,38 +1081,72 @@ function commit(c) {
 function radarForm(box) {
   slot(box, 'center', 'Where you asked from');
 
-  const f = document.createElement('div');
-  f.className = 'field';
-  f.innerHTML = '<label>Radius</label>';
-  const chips = document.createElement('div');
-  chips.className = 'chips';
-  RADAR_PRESETS.forEach((p) => {
-    const b = document.createElement('button');
-    b.className = 'chip' + (draft.label === p.label ? ' is-active' : '');
-    b.textContent = p.label;
-    b.addEventListener('click', () => {
-      draft.radiusM = p.m; draft.label = p.label; renderToolForm();
+  if (selectedQuestion && selectedQuestion.typeKey === 'radar' && !draft.customRadius) {
+    const fixed = document.createElement('div');
+    fixed.className = 'selected-distance';
+    fixed.innerHTML = `<span>Card distance</span><strong>${escapeHtml(draft.label || selectedQuestion.label)}</strong>`;
+    box.appendChild(fixed);
+  } else if (selectedQuestion && selectedQuestion.typeKey === 'radar' && draft.customRadius) {
+    const custom = document.createElement('div');
+    custom.className = 'field';
+    custom.innerHTML = '<label>Custom radius</label>';
+    const row = document.createElement('div');
+    row.className = 'inline custom-distance-row';
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '0.01'; inp.step = 'any'; inp.inputMode = 'decimal';
+    inp.placeholder = 'Distance';
+    inp.value = draft.customValue || '';
+    const unit = document.createElement('select');
+    unit.innerHTML = '<option value="mi">miles</option><option value="ft">feet</option><option value="km">kilometres</option><option value="m">metres</option>';
+    unit.value = draft.customUnit || 'mi';
+    const update = () => {
+      const value = Number(inp.value);
+      draft.customValue = inp.value;
+      draft.customUnit = unit.value;
+      if (!(value > 0)) { draft.radiusM = null; draft.label = null; return; }
+      const factors = { mi: MI, ft: FT, km: 1000, m: 1 };
+      const labels = { mi: value === 1 ? 'mile' : 'miles', ft: 'ft', km: 'km', m: 'm' };
+      draft.radiusM = value * factors[unit.value];
+      draft.label = `${value} ${labels[unit.value]}`;
+    };
+    inp.addEventListener('change', () => { update(); renderToolForm(); });
+    unit.addEventListener('change', () => { update(); renderToolForm(); });
+    row.append(inp, unit);
+    custom.appendChild(row);
+    box.appendChild(custom);
+  } else {
+    const f = document.createElement('div');
+    f.className = 'field';
+    f.innerHTML = '<label>Radius</label>';
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    RADAR_PRESETS.forEach((p) => {
+      const b = document.createElement('button');
+      b.className = 'chip' + (draft.label === p.label ? ' is-active' : '');
+      b.textContent = p.label;
+      b.addEventListener('click', () => {
+        draft.radiusM = p.m; draft.label = p.label; renderToolForm();
+      });
+      chips.appendChild(b);
     });
-    chips.appendChild(b);
-  });
-  f.appendChild(chips);
-  box.appendChild(f);
+    f.appendChild(chips);
+    box.appendChild(f);
 
-  const custom = document.createElement('div');
-  custom.className = 'field';
-  custom.innerHTML = `<label>Or type a radius (${smallUnit()})</label>`;
-  const inp = document.createElement('input');
-  inp.type = 'number'; inp.min = '1'; inp.step = '10';
-  inp.placeholder = S.units === 'metric' ? 'metres' : 'feet';
-  if (draft.radiusM && /^\d+ /.test(draft.label || '')) inp.value = Math.round(mToSmall(draft.radiusM));
-  inp.addEventListener('change', () => {
-    draft.radiusM = inp.value ? smallToM(Number(inp.value)) : null;
-    // Remember how it was typed, so a 1500 ft radar never redisplays as 0.28 mi.
-    draft.label = inp.value ? `${Number(inp.value)} ${smallUnit()}` : null;
-    renderToolForm();
-  });
-  custom.appendChild(inp);
-  box.appendChild(custom);
+    const custom = document.createElement('div');
+    custom.className = 'field';
+    custom.innerHTML = `<label>Or type a radius (${smallUnit()})</label>`;
+    const inp = document.createElement('input');
+    inp.type = 'number'; inp.min = '1'; inp.step = '10';
+    inp.placeholder = S.units === 'metric' ? 'metres' : 'feet';
+    if (draft.radiusM && /^\d+ /.test(draft.label || '')) inp.value = Math.round(mToSmall(draft.radiusM));
+    inp.addEventListener('change', () => {
+      draft.radiusM = inp.value ? smallToM(Number(inp.value)) : null;
+      draft.label = inp.value ? `${Number(inp.value)} ${smallUnit()}` : null;
+      renderToolForm();
+    });
+    custom.appendChild(inp);
+    box.appendChild(custom);
+  }
 
   answerSeg(box, [['yes', 'Yes'], ['no', 'No']]);
   actions(box, draft.center && draft.radiusM && draft.answer, () =>
@@ -1058,17 +1159,46 @@ function thermoForm(box) {
   slot(box, 'a', 'Start point');
   slot(box, 'b', 'End point');
 
+  const required = draft.requiredDistanceM || 0;
+  let straightM = 0;
+  if (required) {
+    const fixed = document.createElement('div');
+    fixed.className = 'selected-distance';
+    fixed.innerHTML = `<span>Minimum travel distance</span><strong>${escapeHtml(draft.requiredDistanceLabel || fmtDist(required))}</strong>`;
+    box.appendChild(fixed);
+  }
+
   if (draft.a && draft.b) {
-    const m = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
+    straightM = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
     const p = document.createElement('p');
-    p.className = 'hint';
-    p.textContent = `You travelled ${fmtDist(m)} in a straight line.`;
+    p.className = 'hint' + (required && straightM >= required ? ' is-valid' : '');
+    p.textContent = `Your start and end points are ${fmtDist(straightM)} apart in a straight line.`;
     box.appendChild(p);
+
+    if (required && straightM < required) {
+      const confirm = document.createElement('label');
+      confirm.className = 'travel-confirm';
+      confirm.innerHTML = `<input type="checkbox" ${draft.distanceConfirmed ? 'checked' : ''}>
+        <span>I confirm the actual route travelled was at least ${escapeHtml(draft.requiredDistanceLabel || fmtDist(required))}.</span>`;
+      confirm.querySelector('input').addEventListener('change', (e) => {
+        draft.distanceConfirmed = e.target.checked;
+        renderToolForm();
+      });
+      box.appendChild(confirm);
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.textContent = 'The thermometer boundary uses the start and end points. The card minimum concerns the route you actually travelled, which can be longer than the straight-line separation.';
+      box.appendChild(note);
+    }
   }
   answerSeg(box, [['hotter', 'Hotter'], ['colder', 'Colder']]);
-  actions(box, draft.a && draft.b && draft.answer, () => {
+  const distanceOkay = !required || straightM >= required || draft.distanceConfirmed;
+  actions(box, draft.a && draft.b && draft.answer && distanceOkay, () => {
     const m = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
-    commit({ type: 'thermometer', a: draft.a, b: draft.b, travelM: m, answer: draft.answer });
+    commit({ type: 'thermometer', a: draft.a, b: draft.b, travelM: m,
+             requiredDistanceM: required || null,
+             requiredDistanceLabel: draft.requiredDistanceLabel || null,
+             answer: draft.answer });
   });
 }
 
@@ -1149,8 +1279,11 @@ function nearestForm(box) {
   hint.textContent = 'Add every one of these inside the play area, then tap the one nearest to you.';
   box.appendChild(hint);
 
-  smallInput(box, 'radiusM', 'Tentacle radius — leave blank for a plain matching question', '');
-  if (draft.radiusM) slot(box, 'seeker', 'Tentacle centre (you)');
+  const tentaclesAllowed = !selectedQuestion || selectedQuestion.typeKey !== 'matching';
+  if (tentaclesAllowed) {
+    smallInput(box, 'radiusM', 'Tentacle radius — leave blank for a plain matching question', '');
+    if (draft.radiusM) slot(box, 'seeker', 'Tentacle centre (you)');
+  }
 
   answerSeg(box, [['yes', 'Match'], ['no', 'No match']]);
 
@@ -1161,6 +1294,40 @@ function nearestForm(box) {
     categoryName: draft.categoryName, radiusM: draft.radiusM || null,
     seeker: draft.seeker || null, answer: draft.answer
   }));
+}
+
+/* --- photos --- */
+function photoForm(box) {
+  const prompt = document.createElement('section');
+  prompt.className = 'photo-prompt-card';
+  prompt.innerHTML = `<p class="photo-prompt-title">${escapeHtml(cardQuestionSentence('photos', selectedQuestion ? selectedQuestion.phrase : (draft.photoSubject || 'the selected subject')))}</p>
+    ${selectedQuestion && selectedQuestion.note ? `<p>${escapeHtml(selectedQuestion.note)}</p>` : ''}
+    <p class="photo-time-note">Small-game time limit: 10 minutes.</p>`;
+  box.appendChild(prompt);
+
+  const noteField = document.createElement('div');
+  noteField.className = 'field';
+  noteField.innerHTML = '<label>Optional note</label>';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'e.g. received at 14:32';
+  input.value = draft.photoNote || '';
+  input.addEventListener('input', () => { draft.photoNote = input.value; });
+  noteField.appendChild(input);
+  box.appendChild(noteField);
+
+  const help = document.createElement('p');
+  help.className = 'hint';
+  help.textContent = 'Photo cards do not directly eliminate an area on the map. Logging one records that it was asked and received; use Free shape separately if the photo lets the seekers rule out an area.';
+  box.appendChild(help);
+
+  actions(box, true, () => commit({
+    type: 'photo',
+    subject: selectedQuestion ? selectedQuestion.label : (draft.photoSubject || 'Photo'),
+    prompt: selectedQuestion ? cardQuestionSentence('photos', selectedQuestion.phrase) : 'Send a photo.',
+    instruction: selectedQuestion ? selectedQuestion.note : '',
+    note: draft.photoNote || ''
+  }), 'Log photo received');
 }
 
 /* --- transit line --- */
