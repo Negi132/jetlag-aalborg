@@ -95,10 +95,10 @@ check('Photos contains all six prompts and the 10-minute small-game limit', (() 
 })());
 const parkCard = doc.querySelector('[data-question-type="matching"][data-card="Park"]');
 click(parkCard);
-check('a Matching card opens the answer workspace', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent));
+check('a Matching card opens the answer workspace inline', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent) && !!$('#toolForm').closest('[data-question-slot="matching"]'));
 check('selected card pre-fills the category', $('#toolForm input[type="text"]').value === 'park', $('#toolForm input[type="text"]').value);
 click($('#toolForm .question-back'));
-check('back returns to the six-category deck', !$('#questionDeck').hidden && $('#toolForm').hidden);
+check('close keeps the six-category deck and hides the workspace', !$('#questionDeck').hidden && $('#toolForm').hidden);
 check('all four default zone sources use KortInfo', window.eval(`
   Object.values(HS.S.sources).every(s => s.url === HS.KORTINFO && s.kind === 'wfs')
 `));
@@ -1057,6 +1057,7 @@ check('Zone 4 creates a labelled X area for uncovered land', window.eval(`(() =>
 check('the X catch-all appears in the Zone 4 legend', /X · Uden kommuneplanramme/.test($('#legend').textContent));
 
 console.log('\n== question preview mode ==');
+check('NT Route Map picture-overlay button is absent', !/NT route map/i.test(doc.querySelector('[data-pane="layers"]').textContent));
 check('the Layers tab contains a transit-stops toggle', !!$('#stopSources'));
 check('Radar preview is non-committing and computes an impact', window.eval(`(() => {
   HS.selectTool('radar');
@@ -1076,6 +1077,20 @@ check('Thermometer handle stays on the selected travel ring', window.eval(`(() =
   const b = HS.constrainToRadius(a, raw, 804.672);
   const d = turf.distance(turf.point(a), turf.point(b), {units:'kilometers'})*1000;
   return Math.abs(d-804.672) < 0.5;
+})()`));
+
+check('Thermometer preview exposes a bisector without requiring an answer', window.eval(`(() => {
+  const before = HS.S.constraints.length;
+  HS.selectTool('thermometer');
+  HS.draft.a = [9.90, 57.04];
+  HS.draft.b = [9.96, 57.04];
+  delete HS.draft.answer;
+  HS.questionPreview.active = true;
+  HS.questionPreview.type = 'thermometer';
+  HS.renderToolForm();
+  const split = thermometerBisectorLine(HS.draft.a, HS.draft.b);
+  return before === HS.S.constraints.length && split && split.geometry.coordinates.length > 2 &&
+    HS.questionPreview.metrics === null;
 })()`));
 
 console.log('\n== bus and train stops ==');

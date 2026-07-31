@@ -226,11 +226,6 @@ const TRANSIT_STOP_SOURCE = {
   meta: 'OpenStreetMap · bus stops, rail stations and halts'
 };
 
-const WMS_PRESETS = [
-  { name: 'NT route map', url: `${GC2}/wms/nt/rutekortweb`,
-    layers: 'ntmap_bybus_murl,ntmap_regionalbus_murl,ntmap_xbus_murl,ntmap_lokalbus_murl,ntmap_telebus_murl,ntmap_tog_murl' }
-];
-
 /* ---------- state -------------------------------------------------- */
 
 const S = {
@@ -356,6 +351,22 @@ function halfPlane(a, b, towardB) {
   const far = edge.slice().reverse()
     .map((p) => turf.destination(p, L * 2, dir).geometry.coordinates);
   return turf.polygon([[...edge, ...far, edge[0]]]);
+}
+
+function thermometerBisectorLine(a, b) {
+  if (!a || !b) return null;
+  const mid = turf.midpoint(turf.point(a), turf.point(b)).geometry.coordinates;
+  const brg = turf.bearing(turf.point(a), turf.point(b));
+  const L = Math.max(20, playSpanKm() * 1.5);
+  const STEPS = 64;
+  const edge = [];
+  for (let i = -STEPS; i <= STEPS; i++) {
+    const d = (i / STEPS) * L;
+    edge.push(d === 0 ? mid
+      : turf.destination(mid, Math.abs(d), d > 0 ? brg + 90 : brg - 90,
+          { units: 'kilometers' }).geometry.coordinates);
+  }
+  return turf.lineString(edge);
 }
 
 function voronoiCell(points, i) {
@@ -915,15 +926,17 @@ function cardQuestionSentence(type, phrase) {
 function renderQuestionDeck() {
   const deck = $('#questionDeck');
   if (!deck) return;
-  deck.hidden = !!activeTool;
-  if (activeTool) return;
+  deck.hidden = false;
   deck.innerHTML = '';
 
   QUESTION_DECK.forEach((type, typeIndex) => {
+    const isActiveType = !!(selectedQuestion && selectedQuestion.typeKey === type.key);
     const details = document.createElement('details');
-    details.className = 'question-type' + (type.disabled ? ' is-disabled' : '');
+    details.className = 'question-type' + (type.disabled ? ' is-disabled' : '') +
+      (isActiveType ? ' has-active-question' : '');
+    details.dataset.questionPanel = type.key;
     if (type.disabled) details.setAttribute('aria-disabled', 'true');
-    details.open = typeIndex === 0;
+    details.open = isActiveType || (!activeTool && typeIndex === 0);
     const summary = document.createElement('summary');
     summary.className = 'question-type-summary';
     summary.innerHTML = `<span class="question-number">${type.number}</span>
@@ -935,6 +948,12 @@ function renderQuestionDeck() {
     const body = document.createElement('div');
     body.className = 'question-type-body';
     body.innerHTML = `<p class="question-example">${escapeHtml(type.example)}</p>`;
+
+    const inlineSlot = document.createElement('div');
+    inlineSlot.className = 'question-inline-slot';
+    inlineSlot.dataset.questionSlot = type.key;
+    body.appendChild(inlineSlot);
+
     if (type.disabled) {
       const note = document.createElement('p');
       note.className = 'question-disabled-note';
@@ -950,7 +969,8 @@ function renderQuestionDeck() {
       grid.className = 'question-card-grid';
       group.cards.forEach(([label, phrase, note, data]) => {
         const btn = document.createElement('button');
-        btn.className = 'question-card';
+        const selected = isActiveType && selectedQuestion && selectedQuestion.label === label;
+        btn.className = 'question-card' + (selected ? ' is-selected' : '');
         btn.type = 'button';
         btn.dataset.questionType = type.key;
         btn.dataset.card = label;
@@ -988,7 +1008,8 @@ function chooseQuestion(type, card) {
   endPick(); stopDrawing();
   renderToolForm();
   const pane = document.querySelector('[data-pane="ask"]');
-  if (pane) pane.scrollTop = 0;
+  const panel = document.querySelector(`[data-question-panel="${type.key}"]`);
+  if (pane && panel) pane.scrollTop = Math.max(0, panel.offsetTop - 8);
 }
 
 function closeQuestionForm() {
@@ -1012,22 +1033,31 @@ function selectTool(key) {
 }
 
 function renderToolForm() {
-  renderQuestionDeck();
   const box = $('#toolForm');
   const empty = $('#askEmpty');
+  const askPane = document.querySelector('[data-pane="ask"]');
+  // The workspace is physically moved into the active accordion. Rescue it
+  // before rebuilding the deck, otherwise deck.innerHTML would destroy it.
+  if (box && box.closest('#questionDeck') && askPane) askPane.insertBefore(box, empty || null);
+  renderQuestionDeck();
   if (!activeTool) {
     box.hidden = true; box.innerHTML = '';
+    if (askPane && box.parentElement !== askPane) askPane.insertBefore(box, empty || null);
     if (empty) empty.hidden = true;
     return;
   }
   if (empty) empty.hidden = true;
+  if (selectedQuestion) {
+    const inlineSlot = document.querySelector(`[data-question-slot="${selectedQuestion.typeKey}"]`);
+    if (inlineSlot) inlineSlot.appendChild(box);
+  }
   box.hidden = false;
 
   const title = selectedQuestion ? `${selectedQuestion.title} · ${selectedQuestion.label}` : TOOLS[activeTool].title;
   const question = selectedQuestion
     ? cardQuestionSentence(selectedQuestion.typeKey, selectedQuestion.phrase)
     : TOOLS[activeTool].q;
-  box.innerHTML = `<button type="button" class="question-back ghost-btn">← All question types</button>
+  box.innerHTML = `<button type="button" class="question-back ghost-btn">Close question</button>
     <div class="selected-question-head">
       <p class="form-title">${escapeHtml(title)}</p>
       ${selectedQuestion ? `<p class="selected-question-meta">${escapeHtml(selectedQuestion.meta)}</p>` : ''}
@@ -1186,7 +1216,8 @@ function previewInstruction() {
   }
   if (activeTool === 'thermometer') {
     if (!draft.a) return 'Tap the map to set the starting point.';
-    if (!draft.answer) return 'Drag the circular handle, then choose Hotter or Colder to preview the cut.';
+    if (!draft.b) return 'Drag the circular handle to choose a possible end point.';
+    return 'The cyan line is the map split. Hotter and colder simply keep opposite sides of it.';
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
@@ -1235,7 +1266,15 @@ function renderPreviewShapes() {
       L.polyline([[draft.a[1], draft.a[0]], [draft.b[1], draft.b[0]]], {
         pane: 'previewPane', color: P, weight: 2.2, opacity: .95, interactive: false
       }).addTo(previewShapeLayer);
+      const split = thermometerBisectorLine(draft.a, draft.b);
+      if (split) {
+        L.geoJSON(split, { pane: 'previewPane', interactive: false,
+          style: { color: P, weight: 3, opacity: 1, dashArray: '10 7', fill: false }
+        }).addTo(previewShapeLayer);
+      }
     }
+    updatePreviewImpactText();
+    return;
   }
 
   const c = previewConstraintFromDraft();
@@ -3222,8 +3261,8 @@ async function toggleRoute(key, btn) {
                 `Labels repeat along the network; shared corridors list every bus using them.`);
     }
   } catch (err) {
-    setStatus(`${r.name} failed — ${err.message}. Turn on the NT route map picture overlay instead ` +
-              `and trace your route with the Bus route question's trace button.`, true);
+    setStatus(`${r.name} failed — ${err.message}. You can still trace the needed route ` +
+              `with the Bus route question's trace button.`, true);
   } finally {
     if (btn) btn.classList.remove('is-busy');
   }
@@ -3977,43 +4016,13 @@ function renderSourceRows() {
 
 function renderWmsList() {
   const box = $('#wmsList');
-  box.innerHTML = '';
-  WMS_PRESETS.forEach((p) => {
-    const ex = S.wms.find((w) => w.name === p.name);
-    const state = !ex ? 'idle' : ex.visible ? 'on' : 'off';
-    box.appendChild(sourceRow(p.name,
-      state === 'idle' ? 'Picture overlay — readable, not tappable'
-                       : (state === 'on' ? 'on' : 'hidden'),
-      state, () => toggleWms(p), null));
-  });
+  if (box) box.innerHTML = '';
 }
 
-function toggleWms(preset) {
-  const ex = S.wms.find((w) => w.name === preset.name);
-  if (ex) {
-    ex.visible = !ex.visible;
-    if (ex.visible) ex.leaflet.addTo(map); else map.removeLayer(ex.leaflet);
-    renderWmsList();
-    return;
-  }
-  addWms(preset.name, preset.url, preset.layers);
-}
-
-function addWms(name, url, layers) {
-  const lyr = L.tileLayer.wms(url, {
-    layers, format: 'image/png', transparent: true, pane: 'wmsPane', opacity: 0.9
-  });
-  let warned = false;
-  lyr.on('tileerror', () => {
-    if (warned) return;
-    warned = true;
-    setStatus(`${name}: the image service did not answer. Check the URL behind ⚙.`, true);
-  });
-  lyr.addTo(map);
-  S.wms.push({ id: uid(), name, url, layers, visible: true, leaflet: lyr });
-  renderWmsList();
-  return lyr;
-}
+/* Compatibility no-ops for old imported state. The inactive NT picture overlay
+   has been removed; route data is loaded as usable vector geometry instead. */
+function toggleWms() { return null; }
+function addWms() { return null; }
 
 /* --- source editor --- */
 let editingKey = null;
@@ -4271,7 +4280,6 @@ function serialize() {
     sources: S.sources,
     cal: S.cal,
     renames: S.renames,
-    wms: S.wms.map((w) => ({ name: w.name, url: w.url, layers: w.layers, visible: w.visible })),
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
       delete o.error;
@@ -4315,9 +4323,6 @@ function deserialize(data) {
     S.playAreaMeta = m;
     markPlayMode(m.mode === 'kommune' ? 'kommune' : 'circle');
   }
-  (data.wms || []).forEach((w) => { if (w.visible) addWms(w.name, w.url, w.layers); });
-  renderWmsList();
-
   renderSourceRows();
   renderCal();
   applyUnits();
