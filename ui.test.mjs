@@ -406,6 +406,25 @@ check('first is the GC2 SQL API', /api\/v2\/sql\/nt/.test(u[0]));
 check('second is the GC2 WFS', /\/wfs\/nt\/rutekortweb\/4326/.test(u[1]), u[1].slice(0,60));
 check('WFS strategy strips the schema from typeName', /typeName=ntmap_bybus_murl/.test(u[1]));
 
+console.log('\n== complete NT bus families and route labels ==');
+const ntTables = window.eval('HS.NT_BUS_TABLES.map(x=>x.table)');
+check('all five NT bus families are configured', ntTables.length === 5, ntTables.join(' | '));
+check('yellow/local bus table is included', ntTables.includes('rutekortweb.ntmap_lokalbus_murl'));
+check('telebus table is included', ntTables.includes('rutekortweb.ntmap_telebus_murl'));
+check('bus source prefers the combined NT loader', window.eval("HS.ROUTE_SOURCES.bus.kind") === 'nt-all');
+const extractedRefs = window.eval("HS.extractRouteRefs({rutenr:'Linje 11, 12 og 14'}).join(', ')");
+check('combined line-number fields are parsed', extractedRefs === '11, 12, 14', extractedRefs);
+window.__sharedRoutes = {type:'FeatureCollection',features:[
+  {type:'Feature',properties:{rutenr:'11'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}},
+  {type:'Feature',properties:{rutenr:'12'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}},
+  {type:'Feature',properties:{rutenr:'14'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}}
+]};
+window.eval("HS.annotateRouteGeoJson(window.__sharedRoutes, 'local')");
+const sharedLabels = window.eval("HS.routeLabelPoints(window.__sharedRoutes).map(x=>x.text)");
+check('shared corridor labels contain every bus', sharedLabels.includes('11, 12, 14'), sharedLabels.join(' | '));
+const routeDisplay = window.eval("HS.prepareRouteDisplayGeoJson(window.__sharedRoutes)");
+check('one coloured display path is made per bus', routeDisplay.features.length === 3, `got ${routeDisplay.features.length}`);
+check('different route numbers receive different colours', new Set(routeDisplay.features.map(f=>f.properties.__routeColor)).size === 3);
 
 console.log('\n== Overpass route parsing ==');
 window.__op = {
@@ -447,22 +466,35 @@ check('query asks for geometry', /out geom;/.test(q));
 check('query bounded to greater Aalborg', /relation\(56\.94,9\.7,57\.18,10\.25\)/.test(q), q.slice(0,64));
 check('query filters to bus route relations', /\["type"="route"\]\["route"="bus"\]/.test(q));
 
-console.log('\n== routes load, second Overpass mirror is the fallback ==');
+console.log('\n== combined NT bus routes load ==');
 window.__tried = [];
+const ntFeature = (ref, y = 57.04) => ({
+  type:'Feature', properties:{rutenr:ref},
+  geometry:{type:'LineString',coordinates:[[9.88,y],[9.98,y]]}
+});
 window.fetch = async (url) => {
-  window.__tried.push(url);
-  if (url.includes('overpass-api.de')) return { ok: false, status: 504, text: async () => 'gateway' };
-  return { ok: true, status: 200, text: async () => JSON.stringify(window.__op) };
+  const text = String(url);
+  window.__tried.push(text);
+  if (text.includes('ntmap_bybus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('2')]}) };
+  if (text.includes('ntmap_regionalbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('950X',57.045)]}) };
+  if (text.includes('ntmap_xbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('970X',57.05)]}) };
+  if (text.includes('ntmap_lokalbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('11, 12, 14',57.055)]}) };
+  if (text.includes('ntmap_telebus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('99',57.06)]}) };
+  return { ok:false, status:404, text:async()=>'' };
 };
 click(doc.querySelector('[data-tab="layers"]'));
 click(doc.querySelectorAll('#routeSources .src-main')[0]);
-await new Promise(r => setTimeout(r, 80));
-check('both Overpass mirrors were tried', window.__tried.length === 2, `tried ${window.__tried.length}`);
+await new Promise(r => setTimeout(r, 120));
+check('every NT bus family was requested', window.eval('HS.NT_BUS_TABLES.every(t=>window.__tried.some(u=>u.includes(t.table.split(".").pop())))'));
 check('route layer ended up loaded', window.eval("!!HS.layerByKey('route:bus')"));
 check('loaded as tappable lines', window.eval("(HS.layerByKey('route:bus')||{}).kind") === 'line');
+check('all numbered routes are counted', window.eval("HS.layerByKey('route:bus').routeCount") === 7,
+      `got ${window.eval("HS.layerByKey('route:bus').routeCount")}`);
+check('local routes 11, 12 and 14 are present', window.eval("['11','12','14'].every(r=>HS.layerByKey('route:bus').routeRefs.includes(r))"));
+check('periodic route labels were created', window.eval("HS.layerByKey('route:bus').labelLayer.getLayers().length") > 0);
 check('route row now shows on', /is-on/.test($('#routeSources').innerHTML));
-check('status reports the count', /2 route lines on/.test($('#zoneStatus').textContent),
-      $('#zoneStatus').textContent.slice(0, 60));
+check('status reports numbered routes', /7 numbered routes on/.test($('#zoneStatus').textContent),
+      $('#zoneStatus').textContent.slice(0, 90));
 const callsBefore = window.__tried.length;
 click(doc.querySelectorAll('#routeSources .src-main')[0]);
 await new Promise(r => setTimeout(r, 30));

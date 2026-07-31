@@ -152,28 +152,44 @@ function categoryFor(styleKey, props) {
 /* NT's route map runs on GC2, which exposes every layer over SQL and WMS. */
 const GC2 = 'https://nt.vidi.gc2.io';
 
-/* NT's own feed needs credentials we don't have, so the routes that
-   actually load come from OpenStreetMap via Overpass. Aalborg's city and
-   regional buses are mapped there as route relations with a `ref` (the
-   line number), which is exactly what the transit question needs. */
+/* OpenStreetMap remains the fallback for route data and the primary source
+   for trains. The bus layer below prefers NT's own separated route families. */
 const OVERPASS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter'
 ];
 const OVERPASS_BBOX = [56.94, 9.70, 57.18, 10.25];   // S, W, N, E — greater Aalborg
 
+/* NT publishes the route families as separate vector layers. Loading only
+   OpenStreetMap omitted several Aalborg lines, especially the yellow local
+   and secondary city routes. The bus toggle now combines every NT bus family
+   and uses OSM only as a fallback/supplement when an NT table is unavailable. */
+const NT_BUS_TABLES = [
+  { key: 'city',    label: 'city',    table: 'rutekortweb.ntmap_bybus_murl' },
+  { key: 'regional',label: 'regional',table: 'rutekortweb.ntmap_regionalbus_murl' },
+  { key: 'xbus',    label: 'X bus',   table: 'rutekortweb.ntmap_xbus_murl' },
+  { key: 'local',   label: 'local',   table: 'rutekortweb.ntmap_lokalbus_murl' },
+  { key: 'telebus', label: 'telebus', table: 'rutekortweb.ntmap_telebus_murl' }
+];
+
+const ROUTE_PALETTE = [
+  '#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#8f5bd7', '#d97706',
+  '#00a6a6', '#c44569', '#6a994e', '#4361ee', '#b56576', '#118ab2',
+  '#ef476f', '#7b2cbf', '#3a86ff', '#bc6c25', '#219ebc', '#9b5de5'
+];
+const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
+
 const ROUTE_SOURCES = {
-  bus:   { name: 'Bus routes', meta: 'OpenStreetMap · tappable', kind: 'overpass',
-           filter: '["route"="bus"]' },
+  bus:   { name: 'All bus routes',
+           meta: 'NT official · city, regional, X, local and telebus',
+           kind: 'nt-all', tables: NT_BUS_TABLES, fallbackFilter: '["route"="bus"]' },
   train: { name: 'Train lines', meta: 'OpenStreetMap · tappable', kind: 'overpass',
-           filter: '["route"~"^(train|light_rail)$"]' },
-  ntgc2: { name: 'NT route data (if open)', meta: 'rutekortweb · often needs a login',
-           kind: 'gc2', table: 'rutekortweb.ntmap_bybus_murl' }
+           filter: '["route"~"^(train|light_rail)$"]' }
 };
 
 const WMS_PRESETS = [
   { name: 'NT route map', url: `${GC2}/wms/nt/rutekortweb`,
-    layers: 'ntmap_bybus_murl,ntmap_regionalbus_murl,ntmap_xbus_murl,ntmap_lokalbus_murl,ntmap_tog_murl' }
+    layers: 'ntmap_bybus_murl,ntmap_regionalbus_murl,ntmap_xbus_murl,ntmap_lokalbus_murl,ntmap_telebus_murl,ntmap_tog_murl' }
 ];
 
 /* ---------- state -------------------------------------------------- */
@@ -403,11 +419,13 @@ const map = L.map('map', {
 });
 L.control.zoom({ position: 'topright' }).addTo(map);
 
-map.createPane('wmsPane');    map.getPane('wmsPane').style.zIndex = 350;
-map.createPane('zonePane');   map.getPane('zonePane').style.zIndex = 410;
-map.createPane('fogPane');    map.getPane('fogPane').style.zIndex = 430;
-map.createPane('evidPane');   map.getPane('evidPane').style.zIndex = 450;
-map.createPane('drawPane');   map.getPane('drawPane').style.zIndex = 470;
+map.createPane('wmsPane');       map.getPane('wmsPane').style.zIndex = 350;
+map.createPane('zonePane');      map.getPane('zonePane').style.zIndex = 410;
+map.createPane('routePane');     map.getPane('routePane').style.zIndex = 420;
+map.createPane('fogPane');       map.getPane('fogPane').style.zIndex = 430;
+map.createPane('evidPane');      map.getPane('evidPane').style.zIndex = 450;
+map.createPane('routeLabelPane');map.getPane('routeLabelPane').style.zIndex = 465;
+map.createPane('drawPane');      map.getPane('drawPane').style.zIndex = 470;
 
 const BASES = {
   light: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png', {
@@ -1525,18 +1543,26 @@ function addLayer(name, geojson, opts = {}) {
   const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
                 baseGeojson, sourceKey: opts.sourceKey || null,
                 nameField: opts.nameField || '', style: opts.style || 'plain',
-                derived: opts.derived || null, visible: true, layer: null };
+                derived: opts.derived || null, visible: true, layer: null,
+                routeLayer: !!opts.routeLayer, routeCount: opts.routeCount || 0,
+                routeRefs: opts.routeRefs || [], labelLayer: null };
 
   const styleOf = (ft) => {
     const cat = categoryFor(rec.style, ft.properties);
     const c = cat ? cat.color : color;
+    if (kind === 'line' && rec.routeLayer) {
+      const props = ft.properties || {};
+      const st = routeStyle(props.__routeRef || featureName(ft, rec));
+      if (props.__routeColor) st.color = props.__routeColor;
+      return st;
+    }
     return kind === 'line'
       ? { color: c, weight: 3, opacity: .85 }
       : { color: c, weight: 1.3, opacity: .9, fillColor: c, fillOpacity: cat ? .35 : .05 };
   };
 
   rec.layer = L.geoJSON(fcol, {
-    pane: 'zonePane',
+    pane: kind === 'line' && rec.routeLayer ? 'routePane' : 'zonePane',
     style: styleOf,
     onEachFeature: (ft, lyr) => {
       // Zone 4's colours are hard to tell apart, so tapping an area names the
@@ -1559,8 +1585,21 @@ function addLayer(name, geojson, opts = {}) {
         }
         if (kind === 'line' && activeTool === 'transit') {
           L.DomEvent.stopPropagation(e);
-          draft.lineGeom = ft.geometry;
-          draft.lineName = featureName(ft, rec);
+          if (rec.routeLayer && (ft.properties || {}).__routeRef) {
+            const ref = String(ft.properties.__routeRef);
+            const parts = [];
+            for (const routeFt of rec.geojson.features || []) {
+              if (String((routeFt.properties || {}).__routeRef || '') !== ref) continue;
+              parts.push(...geometryParts(routeFt.geometry));
+            }
+            draft.lineGeom = parts.length === 1
+              ? { type: 'LineString', coordinates: parts[0] }
+              : { type: 'MultiLineString', coordinates: parts };
+            draft.lineName = ref;
+          } else {
+            draft.lineGeom = ft.geometry;
+            draft.lineName = featureName(ft, rec);
+          }
           renderToolForm(); openSheet();
         }
       });
@@ -1568,6 +1607,11 @@ function addLayer(name, geojson, opts = {}) {
   }).addTo(map);
 
   S.layers.push(rec);
+  if (rec.routeLayer && opts.routeLabelGeojson) {
+    rec.labelLayer = buildRouteLabelLayer(opts.routeLabelGeojson);
+    syncRouteLabels(rec);
+  }
+
   renderLayerList();
   renderSourceRows();
   renderLegend();
@@ -1580,12 +1624,14 @@ function removeLayerByKey(key) {
   const ex = layerByKey(key);
   if (!ex) return;
   map.removeLayer(ex.layer);
+  if (ex.labelLayer) map.removeLayer(ex.labelLayer);
   S.layers = S.layers.filter((l) => l !== ex);
 }
 
 function setLayerVisible(rec, on) {
   rec.visible = on;
   if (on) rec.layer.addTo(map); else map.removeLayer(rec.layer);
+  syncRouteLabels(rec);
   renderLayerList(); renderSourceRows(); renderLegend();
 }
 
@@ -1614,6 +1660,7 @@ function renderLayerList() {
     row.querySelector('[data-act=area]').addEventListener('click', () => usePlayAreaFromLayer(zl));
     row.querySelector('[data-act=del]').addEventListener('click', () => {
       map.removeLayer(zl.layer);
+      if (zl.labelLayer) map.removeLayer(zl.labelLayer);
       S.layers = S.layers.filter((x) => x.id !== zl.id);
       renderLayerList(); renderLegend();
     });
@@ -1747,6 +1794,278 @@ async function browseLayers(url) {
   return list;
 }
 
+
+/* ---------- route preparation, colours and repeated labels --------------- */
+
+function routeRefCompare(a, b) {
+  return String(a).localeCompare(String(b), 'da', { numeric: true, sensitivity: 'base' });
+}
+
+function routeTokens(value) {
+  if (value == null || (typeof value !== 'string' && typeof value !== 'number')) return [];
+  const text = String(value).toUpperCase().replace(/\b(?:LINJE|RUTE|ROUTE|LINE)\b/g, ' ');
+  const found = text.match(/(?:^|[^A-Z0-9])(\d{1,3}[A-Z]?)(?=$|[^A-Z0-9])/g) || [];
+  return found.map((x) => (x.match(/\d{1,3}[A-Z]?/) || [''])[0]).filter(Boolean);
+}
+
+const ROUTE_REF_KEYS = [
+  'rutenr', 'rutenummer', 'rute_nr', 'route_ref', 'route', 'ref',
+  'linjenr', 'linienr', 'linjenummer', 'linienummer', 'linje', 'linie'
+];
+
+function extractRouteRefs(props) {
+  const p = props || {};
+  if (Array.isArray(p.__routeRefs)) {
+    return Array.from(new Set(p.__routeRefs.map((x) => String(x).trim()).filter(Boolean))).sort(routeRefCompare);
+  }
+  const keys = Object.keys(p);
+  const values = [];
+  for (const wanted of ROUTE_REF_KEYS) {
+    const hit = keys.find((k) => k.toLowerCase() === wanted);
+    if (hit) values.push(p[hit]);
+  }
+  if (!values.length) {
+    for (const k of keys) if (/(?:rute|route|linje|linie|line|ref)/i.test(k)) values.push(p[k]);
+  }
+  // Last resort: route map layers often put the number at the start of navn.
+  for (const k of ['__displayName', 'navn', 'name', 'rutenavn', 'linjenavn']) {
+    const hit = keys.find((x) => x.toLowerCase() === k.toLowerCase());
+    if (hit) values.push(p[hit]);
+  }
+  const out = [];
+  values.forEach((v) => routeTokens(v).forEach((r) => out.push(r)));
+  return Array.from(new Set(out)).sort(routeRefCompare);
+}
+
+function routeHash(value) {
+  let h = 2166136261;
+  for (const ch of String(value || '?')) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+function routeColor(ref) {
+  return ROUTE_PALETTE[routeHash(ref) % ROUTE_PALETTE.length];
+}
+
+function routeStyle(ref) {
+  const h = routeHash(ref);
+  return {
+    color: routeColor(ref), weight: 3.6, opacity: .9,
+    dashArray: ROUTE_DASHES[h % ROUTE_DASHES.length],
+    dashOffset: String((h >>> 5) % 18), lineCap: 'round', lineJoin: 'round'
+  };
+}
+
+function annotateRouteFeature(ft, sourceKey) {
+  ft.properties = ft.properties || {};
+  const refs = extractRouteRefs(ft.properties);
+  ft.properties.__routeRefs = refs;
+  ft.properties.__routeClass = sourceKey || ft.properties.__routeClass || '';
+  const existing = labelValue(ft.properties.__displayName || ft.properties.rutenavn || ft.properties.linjenavn || ft.properties.navn);
+  ft.properties.__routeName = existing;
+  if (refs.length) ft.properties.__displayName = refs.join(', ');
+  return ft;
+}
+
+function annotateRouteGeoJson(gj, sourceKey) {
+  for (const ft of (gj && gj.features) || []) annotateRouteFeature(ft, sourceKey);
+  return gj;
+}
+
+function geometryParts(geometry) {
+  if (!geometry) return [];
+  if (geometry.type === 'LineString') return [geometry.coordinates];
+  if (geometry.type === 'MultiLineString') return geometry.coordinates || [];
+  return [];
+}
+
+/* Make one coloured path per route number. When a source already represents a
+   shared corridor with refs "11, 12, 14", the paths are duplicated with
+   different colours/dash phases, so no one line completely hides the others. */
+function prepareRouteDisplayGeoJson(gj) {
+  const out = [];
+  const allRefs = routeSummary(gj).refs;
+  const colors = new Map(allRefs.map((ref, i) => [ref, ROUTE_PALETTE[i % ROUTE_PALETTE.length]]));
+  for (const original of (gj && gj.features) || []) {
+    if (!original || !original.geometry || !/LineString/.test(original.geometry.type)) continue;
+    const refs = extractRouteRefs(original.properties);
+    const use = refs.length ? refs : ['?'];
+    for (const ref of use) {
+      const ft = turf.clone(original);
+      ft.properties = Object.assign({}, ft.properties, {
+        __routeRefs: refs,
+        __routeRef: ref,
+        __displayName: ref === '?' ? (ft.properties.__routeName || 'Bus route') : ref,
+        __routeColor: colors.get(ref) || routeColor(ref)
+      });
+      out.push(ft);
+    }
+  }
+  return { type: 'FeatureCollection', features: out };
+}
+
+function routeSummary(gj) {
+  const refs = new Set();
+  for (const ft of (gj && gj.features) || []) extractRouteRefs(ft.properties).forEach((r) => refs.add(r));
+  return { refs: Array.from(refs).sort(routeRefCompare), count: refs.size };
+}
+
+/* Build shared-corridor labels without needing the route geometries to have
+   byte-identical vertices. Lines are sampled every ~140 m, bucketed in an
+   80 m grid, and only combined when their local bearings also agree. */
+function routeLabelPoints(gj) {
+  const buckets = new Map();
+  const lat0 = CONFIG.center[0] * Math.PI / 180;
+  const toXY = ([lng, lat]) => [lng * 111320 * Math.cos(lat0), lat * 110540];
+  for (const ft of (gj && gj.features) || []) {
+    const refs = extractRouteRefs(ft.properties);
+    if (!refs.length) continue;
+    for (const coords of geometryParts(ft.geometry)) {
+      if (!coords || coords.length < 2) continue;
+      let line;
+      try { line = turf.lineString(coords); } catch (_) { continue; }
+      const lenKm = turf.length(line, { units: 'kilometers' });
+      if (!(lenKm > .08)) continue;
+      const stepKm = .14;
+      for (let d = Math.min(.08, lenKm / 3); d < lenKm; d += stepKm) {
+        const p = turf.along(line, d, { units: 'kilometers' });
+        const p2 = turf.along(line, Math.min(lenKm, d + .04), { units: 'kilometers' });
+        const c = p.geometry.coordinates;
+        const [x, y] = toXY(c);
+        let bearing = turf.bearing(p, p2);
+        bearing = ((bearing % 180) + 180) % 180;
+        const angleBin = Math.round(bearing / 20) % 9;
+        const gx = Math.round(x / 90), gy = Math.round(y / 90);
+        let key = '', b = null, bestD = Infinity;
+        // Route relations often start at different termini, so equal-distance
+        // samples are not phase aligned. Search neighbouring grid cells and
+        // merge only when the local direction agrees and the points are close.
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const k = `${gx + dx}:${gy + dy}:${angleBin}`;
+          const candidate = buckets.get(k);
+          if (!candidate) continue;
+          const bx = candidate.sumX / candidate.n, by = candidate.sumY / candidate.n;
+          const dist = Math.hypot(x - bx, y - by);
+          if (dist < 75 && dist < bestD) { bestD = dist; key = k; b = candidate; }
+        }
+        if (!b) {
+          key = `${gx}:${gy}:${angleBin}`;
+          b = { sumLng: 0, sumLat: 0, sumX: 0, sumY: 0, n: 0, refs: new Set() };
+          buckets.set(key, b);
+        }
+        b.sumLng += c[0]; b.sumLat += c[1]; b.sumX += x; b.sumY += y; b.n++;
+        refs.forEach((r) => b.refs.add(r));
+      }
+    }
+  }
+
+  const candidates = Array.from(buckets.values()).map((b) => ({
+    coordinates: [b.sumLng / b.n, b.sumLat / b.n],
+    refs: Array.from(b.refs).sort(routeRefCompare)
+  })).filter((x) => x.refs.length);
+  // Shared labels win when crowded; otherwise keep the labels about 900 m apart.
+  candidates.sort((a, b) => b.refs.length - a.refs.length || routeRefCompare(a.refs.join(','), b.refs.join(',')));
+  const accepted = [];
+  for (const c of candidates) {
+    const text = c.refs.join(', ');
+    const same = accepted.filter((a) => a.text === text);
+    if (same.some((a) => turf.distance(turf.point(a.coordinates), turf.point(c.coordinates), { units: 'kilometers' }) < .9)) continue;
+    if (accepted.some((a) => a.refs.length >= c.refs.length &&
+        turf.distance(turf.point(a.coordinates), turf.point(c.coordinates), { units: 'kilometers' }) < .14)) continue;
+    accepted.push({ coordinates: c.coordinates, refs: c.refs, text });
+  }
+  return accepted;
+}
+
+function buildRouteLabelLayer(gj) {
+  const group = L.layerGroup();
+  for (const p of routeLabelPoints(gj)) {
+    const html = `<span class="route-label-chip">${escapeHtml(p.text)}</span>`;
+    L.marker([p.coordinates[1], p.coordinates[0]], {
+      pane: 'routeLabelPane', interactive: false,
+      icon: L.divIcon({ className: 'route-label-icon', html, iconSize: [1, 1], iconAnchor: [0, 0] })
+    }).addTo(group);
+  }
+  return group;
+}
+
+function syncRouteLabels(rec) {
+  if (!rec || !rec.labelLayer) return;
+  const show = rec.visible && map.getZoom() >= 11;
+  if (show && !map.hasLayer(rec.labelLayer)) rec.labelLayer.addTo(map);
+  if (!show && map.hasLayer(rec.labelLayer)) map.removeLayer(rec.labelLayer);
+}
+
+map.on('zoomend', () => S.layers.forEach(syncRouteLabels));
+
+function routeFeatureSignature(ft) {
+  const refs = extractRouteRefs(ft.properties).join(',');
+  let bb = '', ends = '', count = 0;
+  try {
+    bb = turf.bbox(ft).map((x) => Number(x).toFixed(5)).join(',');
+    const parts = geometryParts(ft.geometry);
+    count = parts.reduce((n, p) => n + p.length, 0);
+    ends = parts.map((p) => {
+      const a = p[0] || [], z = p[p.length - 1] || [];
+      return [a[0], a[1], z[0], z[1]].map((x) => Number(x).toFixed(5)).join(',');
+    }).sort().join(';');
+  } catch (_) { /* leave the geometric signature empty */ }
+  return `${refs}|${bb}|${count}|${ends}|${ft.geometry && ft.geometry.type}`;
+}
+
+function dedupeRouteFeatures(features) {
+  const seen = new Set();
+  return features.filter((ft) => {
+    const sig = routeFeatureSignature(ft);
+    if (seen.has(sig)) return false;
+    seen.add(sig); return true;
+  });
+}
+
+async function fetchNtBusRoutes() {
+  const results = await Promise.all(NT_BUS_TABLES.map(async (def) => {
+    try {
+      const gj = await fetchFirst(gc2Urls(def.table));
+      normaliseCoords(gj);
+      annotateRouteGeoJson(gj, def.key);
+      return { def, gj, error: null };
+    } catch (error) { return { def, gj: null, error }; }
+  }));
+
+  let features = [];
+  const loaded = [], failed = [];
+  for (const r of results) {
+    if (r.gj && r.gj.features && r.gj.features.length) {
+      loaded.push(r.def.label);
+      features.push(...r.gj.features);
+    } else failed.push(r.def.label);
+  }
+
+  // OSM remains useful when one NT table is unavailable and is the complete
+  // fallback when the GC2 service cannot be reached at all.
+  if (!features.length || failed.length) {
+    try {
+      const osm = await fetchOverpass('["route"="bus"]');
+      annotateRouteGeoJson(osm, 'osm');
+      const officialRefs = new Set();
+      features.forEach((ft) => extractRouteRefs(ft.properties).forEach((r) => officialRefs.add(r)));
+      for (const ft of osm.features || []) {
+        const refs = extractRouteRefs(ft.properties);
+        if (!features.length || refs.some((r) => !officialRefs.has(r))) features.push(ft);
+      }
+      if (!loaded.length) loaded.push('OpenStreetMap fallback');
+    } catch (_) { /* report the NT errors below if nothing loaded */ }
+  }
+
+  features = dedupeRouteFeatures(features);
+  if (!features.length) {
+    const reasons = results.map((r) => `${r.def.label}: ${r.error ? r.error.message : 'no features'}`).join(' / ');
+    throw new Error(reasons || 'no bus routes were returned');
+  }
+  const gj = { type: 'FeatureCollection', features };
+  return { gj, loaded, failed, summary: routeSummary(gj) };
+}
+
 /* ---------- OpenStreetMap routes via Overpass -------------------------- */
 
 function overpassQuery(filter) {
@@ -1773,7 +2092,8 @@ function parseOverpassRoutes(json) {
     const label = t.ref ? (t.name ? `${t.ref} · ${t.name}` : String(t.ref)) : (t.name || `Route ${el.id}`);
     feats.push({
       type: 'Feature',
-      properties: { navn: label, ref: t.ref || '', operator: t.operator || t.network || '' },
+      properties: { navn: label, ref: t.ref || '', operator: t.operator || t.network || '',
+                    __routeRefs: t.ref ? [String(t.ref)] : [], __displayName: t.ref ? String(t.ref) : label },
       geometry: lines.length === 1
         ? { type: 'LineString', coordinates: lines[0] }
         : { type: 'MultiLineString', coordinates: lines }
@@ -1907,14 +2227,34 @@ async function toggleRoute(key, btn) {
   if (btn) btn.classList.add('is-busy');
   setStatus(`Loading ${r.name}…`);
   try {
-    const gj = r.kind === 'overpass'
-      ? await fetchOverpass(r.filter)
-      : await fetchFirst(gc2Urls(r.table));
-    const { note } = normaliseCoords(gj);
-    const rec = addLayer(r.name, gj, { key: 'route:' + key, kind: 'line' });
+    let gj, note = '', routeInfo = null;
+    if (r.kind === 'nt-all') {
+      routeInfo = await fetchNtBusRoutes();
+      gj = routeInfo.gj;
+      const missing = routeInfo.failed.length ? `; ${routeInfo.failed.join(', ')} supplemented where possible` : '';
+      note = `${routeInfo.loaded.join(', ')}${missing}`;
+    } else if (r.kind === 'overpass') {
+      gj = await fetchOverpass(r.filter);
+      ({ note } = normaliseCoords(gj));
+      annotateRouteGeoJson(gj, key);
+    } else {
+      gj = await fetchFirst(gc2Urls(r.table));
+      ({ note } = normaliseCoords(gj));
+      annotateRouteGeoJson(gj, key);
+    }
+
+    const summary = routeInfo ? routeInfo.summary : routeSummary(gj);
+    const display = key === 'bus' ? prepareRouteDisplayGeoJson(gj) : gj;
+    const rec = addLayer(r.name, display, {
+      key: 'route:' + key, kind: 'line', routeLayer: key === 'bus',
+      routeLabelGeojson: key === 'bus' ? gj : null,
+      routeCount: summary.count, routeRefs: summary.refs,
+      baseGeojson: gj
+    });
     if (rec) {
-      setStatus(`${r.name}: ${rec.geojson.features.length} route lines on${note ? ' (' + note + ')' : ''}. ` +
-                `Tap one on the map while the Bus route question is open.`);
+      const countText = summary.count ? `${summary.count} numbered routes` : `${gj.features.length} route lines`;
+      setStatus(`${r.name}: ${countText} on${note ? ' (' + note + ')' : ''}. ` +
+                `Labels repeat along the network; shared corridors list every bus using them.`);
     }
   } catch (err) {
     setStatus(`${r.name} failed — ${err.message}. Turn on the NT route map picture overlay instead ` +
@@ -2651,7 +2991,8 @@ function renderSourceRows() {
   Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
     const rec = layerByKey('route:' + key);
     const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
-    const meta = rec ? `${rec.geojson.features.length} routes${state === 'on' ? '' : ' · hidden'}`
+    const amount = rec && rec.routeCount ? `${rec.routeCount} routes` : (rec ? `${rec.geojson.features.length} route lines` : '');
+    const meta = rec ? `${amount}${state === 'on' ? '' : ' · hidden'}`
                      : (r.meta || r.table);
     rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
   });
@@ -3109,7 +3450,10 @@ window.HS = {
   coastVertices, parseOverpassPoints, makeIndex, overpassCoastQuery,
   __mercY: mercY, __invMercY: invMercY,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
-  parseOverpassRoutes, overpassQuery, fetchOverpass, areaCategory, AREA_STYLE,
+  parseOverpassRoutes, overpassQuery, fetchOverpass, fetchNtBusRoutes,
+  extractRouteRefs, routeTokens, routeColor, routeStyle, annotateRouteGeoJson,
+  prepareRouteDisplayGeoJson, routeLabelPoints, routeSummary, NT_BUS_TABLES, ROUTE_SOURCES,
+  areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, RAMME_OTHER, RAMME_LEGEND, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
   serialize, deserialize, b64encode, b64decode,

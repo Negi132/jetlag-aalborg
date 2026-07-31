@@ -163,17 +163,21 @@ underneath the explicit polygons and remains tappable for zone questions.
 
 ### Bus and train routes
 
-**NT's own feed needs credentials we don't have**, which is why it kept failing. The routes now come
-from **OpenStreetMap via Overpass**, where Aalborg's buses are mapped as route relations carrying the
-line number — real geometry, live, no key. Bus routes and train lines are separate toggles, and both
-are tappable for the Bus route question.
+The **All bus routes** toggle combines NT's separate vector layers for city buses, regional buses,
+X buses, local buses and telebuses. This is important in Aalborg because routes such as 11 and 14
+are present in NT's own yellow-route layers but are not consistently mapped as complete route
+relations in OpenStreetMap. OSM is now a fallback and supplements any NT family that temporarily
+fails to load.
 
-Two details handled: stops and platforms are stripped out so you get the road the bus drives, not a
-scatter of shelters; and the two direction relations per line are folded into one feature, so tapping
-"2" gives you the whole line rather than half of it. Two Overpass mirrors are tried in turn.
+Each numbered route receives a deterministic colour and a slightly different dash phase. Shared
+street corridors therefore show several colours instead of one route painting over every route
+underneath it. Number labels repeat along the network. When several routes use the same corridor,
+the label is combined — for example **11, 12, 14** — while branches return to their individual
+route numbers.
 
-The NT feed is still there as a third row in case you get access, and the NT route map picture
-overlay remains as a visual fallback.
+The routes remain tappable for the Bus route question. Train lines continue to come from
+OpenStreetMap via Overpass, and the NT route-map picture overlay remains available as a visual
+fallback.
 
 ### Also available
 
