@@ -12,7 +12,7 @@
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="styles.css?v=20260731-inline-questions-thermo-line">
+<link rel="stylesheet" href="styles.css?v=20260731-live-draft-mobile-nav">
 </head>
 <body>
 
@@ -20,7 +20,7 @@
 
   <div id="map"></div>
 
-  <div id="hud" class="hud">
+  <div id="hud" class="hud" hidden aria-hidden="true">
     <div class="hud-main">
       <span class="hud-value" id="hudArea">—</span>
       <span class="hud-unit" id="hudUnit">mi²</span>
@@ -38,10 +38,23 @@
     <button id="drawFinish" class="solid-btn">Finish shape</button>
   </div>
 
-  <button id="sheetToggle" class="sheet-toggle" aria-expanded="false">
-    <span class="grip"></span>
-    <span class="sheet-toggle-label">Questions</span>
-  </button>
+  <nav id="mobileNav" class="mobile-nav" aria-label="Main navigation">
+    <button type="button" class="mobile-nav-btn is-active" data-mobile-view="map" aria-label="Show map">
+      <span class="mobile-nav-icon" aria-hidden="true">⌖</span><span>Map</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-tab="ask" aria-label="Open questions">
+      <span class="mobile-nav-icon" aria-hidden="true">?</span><span>Ask</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-tab="log" aria-label="Open answer log">
+      <span class="mobile-nav-icon" aria-hidden="true">≡</span><span>Log</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-tab="layers" aria-label="Open layers">
+      <span class="mobile-nav-icon" aria-hidden="true">▱</span><span>Layers</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-mobile-tab="game" aria-label="Open game settings">
+      <span class="mobile-nav-icon" aria-hidden="true">⚙</span><span>Game</span>
+    </button>
+  </nav>
 
   <aside id="panel" class="panel">
     <header class="panel-head">
@@ -251,7 +264,7 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
-<script src="data.js?v=20260731-inline-questions-thermo-line"></script>
-<script src="app.js?v=20260731-inline-questions-thermo-line"></script>
+<script src="data.js?v=20260731-live-draft-mobile-nav"></script>
+<script src="app.js?v=20260731-live-draft-mobile-nav"></script>
 </body>
 </html>

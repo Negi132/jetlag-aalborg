@@ -931,3 +931,62 @@ body.cal-mode #map{ touch-action:none; }
   .question-inline-slot:not(:empty){ margin:10px -4px 13px; padding:10px; }
   .question-inline-slot .form-actions{ margin-left:-10px; margin-right:-10px; }
 }
+
+
+/* ── Live-draft and compact mobile navigation overrides ───────── */
+.hud{ display:none !important; }
+.draw-hint[hidden]{ display:none !important; }
+.mobile-nav{ display:none; }
+.map-point-status{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  margin:0 0 8px; padding:10px 11px;
+  border:1px solid var(--line); border-radius:var(--r-sm); background:rgba(13,20,29,.45);
+}
+.map-point-status strong{ display:block; font-size:12px; color:var(--text); }
+.map-point-status small{ display:block; margin-top:2px; color:var(--text-dim); font-family:"IBM Plex Mono",monospace; font-size:10.5px; }
+.map-point-status .ghost-btn{ flex:0 0 auto; min-height:34px; padding:6px 9px; }
+.live-draft-actions{ display:flex; gap:7px; flex-wrap:wrap; margin-top:8px; }
+.live-draft-actions .ghost-btn{ flex:1 1 120px; }
+.question-preview-controls .preview-toggle{ display:none; }
+.question-preview-controls{ border-color:#27758a; background:rgba(103,232,249,.06); }
+
+@media (max-width:820px){
+  :root{ --mobile-nav-h:64px; }
+  .sheet-toggle{ display:none !important; }
+  .mobile-nav{
+    position:fixed; left:0; right:0; bottom:0; z-index:1100;
+    display:grid; grid-template-columns:repeat(5,1fr);
+    min-height:var(--mobile-nav-h); padding:4px 4px calc(4px + var(--safe-b));
+    background:rgba(13,20,29,.98); border-top:1px solid var(--line);
+    box-shadow:0 -7px 24px rgba(0,0,0,.42);
+  }
+  .mobile-nav-btn{
+    min-width:0; min-height:54px; padding:5px 2px 3px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+    border:0; border-radius:8px; background:transparent; color:var(--text-dim); cursor:pointer;
+    font-family:"Barlow Condensed",sans-serif; font-size:11px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.06em;
+  }
+  .mobile-nav-btn.is-active{ color:var(--signal); background:rgba(46,230,168,.08); }
+  .mobile-nav-icon{ font-family:system-ui,sans-serif; font-size:19px; line-height:1; font-weight:600; }
+  .panel{
+    bottom:var(--mobile-nav-h); height:calc(88dvh - var(--mobile-nav-h));
+    max-height:calc(100dvh - var(--mobile-nav-h) - 8px); padding-bottom:0;
+  }
+  .tabs{ display:none; }
+  .map-btn{ bottom:calc(var(--mobile-nav-h) + 12px + var(--safe-b)); }
+  .draw-hint{
+    left:8px; right:auto; max-width:calc(100vw - 74px);
+    bottom:calc(var(--mobile-nav-h) + 10px + var(--safe-b));
+    gap:5px; padding:6px 7px; border-radius:8px;
+  }
+  .draw-hint span{ min-width:80px; font-size:10.5px; line-height:1.25; }
+  .draw-hint .ghost-btn,.draw-hint .solid-btn{ min-height:32px; padding:5px 7px; font-size:10px; }
+  .tabpane{ padding-bottom:20px; }
+  .form-actions{ margin-bottom:-20px; padding-bottom:10px; }
+  .map-point-status{ padding:9px; }
+}
+@media (max-width:820px){
+  .panel{ visibility:hidden; pointer-events:none; }
+  .panel.is-open{ visibility:visible; pointer-events:auto; }
+}

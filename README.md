@@ -279,9 +279,9 @@ is still used when KortInfo is unavailable.
 
 Worth running if you change how a question type works. Both caught real bugs while this was built.
 
-### Question preview mode
+### Live question drafting
 
-Every map-cutting question form now has **Preview on map**. Preview geometry is kept in a separate
+Map-based question cards now enter a **live draft** immediately. There is no separate picker or Preview button: tap the map directly, adjust the draft, choose the hider's answer, and press **Log answer** to commit it. Draft geometry is kept in a separate
 Leaflet pane and never enters the game log or URL state. It compares the potential answer with the
 area currently left after previously logged answers and reports the remaining area.
 
@@ -298,3 +298,8 @@ bisector for different possible travel directions.
 The Layers tab has a separate **Bus & train stops** toggle. It loads OpenStreetMap bus stops, railway
 stations, halts and tram stops. Bus and rail points use different symbols, appear from zoom level 12,
 and can be tapped directly while preparing Matching or Measuring questions.
+
+
+### Mobile navigation
+
+On phones, the old permanent Questions drawer handle has been replaced by a five-button bottom bar: **Map, Ask, Log, Layers, Game**. The area HUD is hidden, and the drawing controls appear only while manually tracing a line or custom shape.

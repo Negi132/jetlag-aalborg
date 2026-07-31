@@ -716,8 +716,25 @@ map.on('click', (e) => {
         }
       } else if (radiusM > 0) {
         draft.b = constrainToRadius(draft.a, coord, radiusM);
+      } else {
+        draft.b = coord;
       }
       renderToolForm();
+      return;
+    }
+    if (activeTool === 'measuring') {
+      if (!draft.seeker) draft.seeker = coord;
+      else draft.target = coord;
+      renderToolForm();
+      return;
+    }
+    if (activeTool === 'nearest') {
+      draft.points = draft.points || [];
+      const duplicate = draft.points.some((p) =>
+        turf.distance(turf.point(p), turf.point(coord), { units: 'meters' }) < 3);
+      if (!duplicate) draft.points.push(coord);
+      renderToolForm();
+      return;
     }
   }
 });
@@ -1006,7 +1023,14 @@ function chooseQuestion(type, card) {
   }
   if (activeTool === 'photo') draft.photoSubject = card.phrase;
   endPick(); stopDrawing();
+  if (previewCapableTool(activeTool)) {
+    questionPreview.active = true;
+    questionPreview.type = activeTool;
+  }
   renderToolForm();
+  const directMapEntry = ['radar', 'thermometer', 'measuring'].includes(activeTool) &&
+    !(activeTool === 'radar' && draft.customRadius && !draft.radiusM);
+  if (directMapEntry && window.innerWidth <= 820) closeSheet();
   const pane = document.querySelector('[data-pane="ask"]');
   const panel = document.querySelector(`[data-question-panel="${type.key}"]`);
   if (pane && panel) pane.scrollTop = Math.max(0, panel.offsetTop - 8);
@@ -1029,6 +1053,10 @@ function selectTool(key) {
   selectedQuestion = null;
   for (const k of Object.keys(draft)) delete draft[k];
   endPick(); stopDrawing();
+  if (previewCapableTool(key)) {
+    questionPreview.active = true;
+    questionPreview.type = key;
+  }
   renderToolForm();
 }
 
@@ -1090,6 +1118,21 @@ function slot(box, key, label, opts = {}) {
   });
   box.appendChild(el);
   return el;
+}
+
+function mapPointStatus(box, label, coord, opts = {}) {
+  const row = document.createElement('div');
+  row.className = 'map-point-status';
+  const text = document.createElement('div');
+  text.innerHTML = `<strong>${escapeHtml(label)}</strong><small>${coord ? fmtLL(coord) : escapeHtml(opts.empty || 'Tap the map')}</small>`;
+  row.appendChild(text);
+  if (opts.gps) {
+    const gps = document.createElement('button');
+    gps.type = 'button'; gps.className = 'ghost-btn'; gps.textContent = 'Use GPS';
+    gps.addEventListener('click', () => locate((c) => { opts.set(c); renderToolForm(); }));
+    row.appendChild(gps);
+  }
+  box.appendChild(row);
 }
 
 function answerSeg(box, options, key = 'answer') {
@@ -1212,12 +1255,13 @@ function previewInstruction() {
   if (!questionPreview.active) return '';
   if (activeTool === 'radar') {
     if (!draft.center) return 'Tap the map to place the radar. Tap again to move it.';
-    if (!draft.answer) return 'The radius is shown. Choose Yes or No to preview the actual cut.';
+    if (!draft.answer) return 'The radius is live. Choose Yes or No to preview the resulting cut.';
   }
   if (activeTool === 'thermometer') {
     if (!draft.a) return 'Tap the map to set the starting point.';
     if (!draft.b) return 'Drag the circular handle to choose a possible end point.';
-    return 'The cyan line is the map split. Hotter and colder simply keep opposite sides of it.';
+    if (!draft.answer) return 'The cyan line is the split. Choose Hotter or Colder to preview which side remains.';
+    return '';
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
@@ -1273,8 +1317,10 @@ function renderPreviewShapes() {
         }).addTo(previewShapeLayer);
       }
     }
-    updatePreviewImpactText();
-    return;
+    if (!draft.answer) {
+      updatePreviewImpactText();
+      return;
+    }
   }
 
   const c = previewConstraintFromDraft();
@@ -1332,31 +1378,42 @@ function syncQuestionPreview() {
   renderPreviewHandles();
 }
 
+function clearLiveDraftGeometry() {
+  if (activeTool === 'radar') delete draft.center;
+  else if (activeTool === 'thermometer') {
+    delete draft.a; delete draft.b; delete draft.distanceConfirmed;
+  } else if (activeTool === 'measuring') {
+    delete draft.seeker; delete draft.target;
+  } else if (activeTool === 'nearest') {
+    draft.points = []; draft.index = null;
+  } else if (activeTool === 'transit') {
+    delete draft.lineGeom; delete draft.lineName;
+  } else if (activeTool === 'zone') {
+    delete draft.zoneGeometry; delete draft.zoneName; delete draft.zoneIdx;
+  } else if (activeTool === 'area') {
+    delete draft.geometry;
+  }
+}
+
 function addPreviewControls(box) {
   const section = document.createElement('section');
-  section.className = 'question-preview-controls' + (questionPreview.active ? ' is-active' : '');
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.className = questionPreview.active ? 'solid-btn wide' : 'ghost-btn wide';
-  button.textContent = questionPreview.active ? 'Exit preview mode' : 'Preview on map';
-  button.addEventListener('click', () => {
-    const turningOn = !questionPreview.active || questionPreview.type !== activeTool;
-    if (turningOn) {
-      questionPreview.active = true;
-      questionPreview.type = activeTool;
-    } else {
-      deactivateQuestionPreview();
-    }
-    renderToolForm();
-    if (turningOn && window.innerWidth <= 820) closeSheet();
-  });
+  section.className = 'question-preview-controls is-active';
   const text = document.createElement('p');
   text.id = 'previewImpactText';
   text.className = 'question-preview-impact';
-  text.textContent = questionPreview.active
-    ? 'Preview is active. Nothing has been logged.'
-    : 'Shows the possible cut without adding anything to the Log.';
-  section.append(button, text);
+  text.textContent = 'Live map draft — nothing is logged until you press Log answer.';
+  section.appendChild(text);
+
+  const controls = document.createElement('div');
+  controls.className = 'live-draft-actions';
+  const mapButton = document.createElement('button');
+  mapButton.type = 'button'; mapButton.className = 'ghost-btn'; mapButton.textContent = 'Open map';
+  mapButton.addEventListener('click', closeSheet);
+  const clear = document.createElement('button');
+  clear.type = 'button'; clear.className = 'ghost-btn'; clear.textContent = 'Clear map draft';
+  clear.addEventListener('click', () => { clearLiveDraftGeometry(); renderToolForm(); });
+  controls.append(mapButton, clear);
+  section.appendChild(controls);
   box.appendChild(section);
 }
 
@@ -1375,7 +1432,10 @@ function commit(c) {
 
 /* --- radar --- */
 function radarForm(box) {
-  slot(box, 'center', 'Where you asked from');
+  mapPointStatus(box, 'Where you asked from', draft.center, {
+    empty: 'Tap anywhere on the map to place or move the radar',
+    gps: true, set: (c) => { draft.center = c; }
+  });
 
   if (selectedQuestion && selectedQuestion.typeKey === 'radar' && !draft.customRadius) {
     const fixed = document.createElement('div');
@@ -1405,7 +1465,7 @@ function radarForm(box) {
       draft.radiusM = value * factors[unit.value];
       draft.label = `${value} ${labels[unit.value]}`;
     };
-    inp.addEventListener('change', () => { update(); renderToolForm(); });
+    inp.addEventListener('input', () => { update(); renderToolForm(); });
     unit.addEventListener('change', () => { update(); renderToolForm(); });
     row.append(inp, unit);
     custom.appendChild(row);
@@ -1493,8 +1553,18 @@ function radarForm(box) {
 
 /* --- thermometer --- */
 function thermoForm(box) {
-  slot(box, 'a', 'Start point');
-  slot(box, 'b', 'End point');
+  mapPointStatus(box, 'Start point', draft.a, {
+    empty: 'Tap the map to set the start', gps: true,
+    set: (c) => {
+      draft.a = c;
+      const r = thermometerPreviewRadius();
+      if (r > 0) draft.b = turf.destination(turf.point(c), r / 1000, 90,
+        { units: 'kilometers' }).geometry.coordinates;
+    }
+  });
+  mapPointStatus(box, 'Preview end point', draft.b, {
+    empty: 'Tap the map again or drag the circular handle'
+  });
 
   const required = draft.requiredDistanceM || 0;
   let straightM = 0;
@@ -1541,8 +1611,13 @@ function thermoForm(box) {
 
 /* --- measuring --- */
 function measuringForm(box) {
-  slot(box, 'seeker', 'Where you asked from');
-  slot(box, 'target', 'The thing being measured', { gps: false });
+  mapPointStatus(box, 'Where you asked from', draft.seeker, {
+    empty: 'First map tap sets your position', gps: true,
+    set: (c) => { draft.seeker = c; }
+  });
+  mapPointStatus(box, 'The thing being measured', draft.target, {
+    empty: draft.seeker ? 'Next map tap sets or moves the target' : 'Set your position first'
+  });
 
   const f = document.createElement('div');
   f.className = 'field';
@@ -1604,16 +1679,14 @@ function nearestForm(box) {
   });
   const addBtn = document.createElement('button');
   addBtn.className = 'ghost-btn wide';
-  addBtn.textContent = 'Add a location';
-  addBtn.addEventListener('click', () => {
-    beginPick(addBtn, (coord) => { draft.points.push(coord); renderToolForm(); });
-  });
+  addBtn.textContent = 'Open map to add locations';
+  addBtn.addEventListener('click', closeSheet);
   f.appendChild(addBtn);
   box.appendChild(f);
 
   const hint = document.createElement('p');
   hint.className = 'hint';
-  hint.textContent = 'Add every one of these inside the play area, then tap the one nearest to you.';
+  hint.textContent = 'Tap the map or a visible stop marker to add every candidate, then tap the one nearest to you in this list.';
   box.appendChild(hint);
 
   const tentaclesAllowed = !selectedQuestion || selectedQuestion.typeKey !== 'matching';
@@ -4156,17 +4229,45 @@ $('#locateBtn').addEventListener('click', () =>
 
 /* ---------- tabs & sheet ------------------------------------------------ */
 
+function syncMobileNav(view) {
+  const nav = $('#mobileNav');
+  if (!nav) return;
+  $$('.mobile-nav-btn', nav).forEach((b) => {
+    const active = view === 'map' ? b.dataset.mobileView === 'map' : b.dataset.mobileTab === view;
+    b.classList.toggle('is-active', active);
+    b.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+}
+
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.tabpane').forEach((p) => p.classList.toggle('is-active', p.dataset.pane === name));
+  if ($('#panel').classList.contains('is-open')) syncMobileNav(name);
 }
 $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
 const panel = $('#panel');
-const sheetBtn = $('#sheetToggle');
-function openSheet() { panel.classList.add('is-open'); sheetBtn.setAttribute('aria-expanded', 'true'); }
-function closeSheet() { panel.classList.remove('is-open'); sheetBtn.setAttribute('aria-expanded', 'false'); }
-sheetBtn.addEventListener('click', () => panel.classList.contains('is-open') ? closeSheet() : openSheet());
+function currentTabName() {
+  const active = document.querySelector('.tabpane.is-active');
+  return active ? active.dataset.pane : 'ask';
+}
+function openSheet(tabName) {
+  if (tabName) switchTab(tabName);
+  panel.classList.add('is-open');
+  syncMobileNav(tabName || currentTabName());
+}
+function closeSheet() {
+  panel.classList.remove('is-open');
+  syncMobileNav('map');
+}
+const mobileNav = $('#mobileNav');
+if (mobileNav) mobileNav.addEventListener('click', (e) => {
+  const button = e.target.closest('button');
+  if (!button) return;
+  if (button.dataset.mobileView === 'map') closeSheet();
+  else if (button.dataset.mobileTab) openSheet(button.dataset.mobileTab);
+});
+syncMobileNav('map');
 
 /* ---------- game settings ----------------------------------------------- */
 

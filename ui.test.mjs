@@ -67,6 +67,8 @@ check('play area is the four zones and non-trivial', HULL > 20 && HULL < 400, `$
 check('HUD unit is mi²', $('#hudUnit').textContent === 'mi²');
 check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSeg [data-area="zones"]').className));
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
+check('area HUD is hidden from the interface', $('#hud').hidden === true);
+check('mobile navigation has Map plus the four app tabs', doc.querySelectorAll('#mobileNav .mobile-nav-btn').length === 5);
 
 
 console.log('\n== small-game question deck ==');
@@ -149,15 +151,13 @@ check('radar form renders', !$('#toolForm').hidden && /Radar/.test($('#toolForm'
 check('radar offers the deck\u2019s imperial radii', doc.querySelectorAll('#toolForm .chip').length === 13, doc.querySelector('#toolForm .chip').textContent + ' \u2026 ' + [...doc.querySelectorAll('#toolForm .chip')].pop().textContent);
 check('Log answer starts disabled', doc.querySelector('#toolForm .solid-btn').disabled === true);
 
-// pick the centre slot, then simulate a map tap
-click(doc.querySelector('#toolForm .slot'));
-check('slot enters picking state', doc.querySelector('#toolForm .slot').classList.contains('is-picking'));
-window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
-check('slot captured the coordinate', /57\.04/.test(doc.querySelector('#toolForm .slot-coord').textContent),
-      `"${doc.querySelector('#toolForm .slot-coord').textContent}"`);
-
-// 2 km preset (index 4 = 100,250,500,1000,2000)
+// choose a radius, then tap the map directly — no separate picker activation
 click(doc.querySelectorAll('#toolForm .chip')[5]); // ½ mi
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
+check('direct map tap sets the radar centre', /57\.04/.test(doc.querySelector('.map-point-status small').textContent),
+      `"${doc.querySelector('.map-point-status small').textContent}"`);
+check('Radar is in live draft mode by default', window.eval("HS.questionPreview.active && HS.questionPreview.type === 'radar'"));
+
 click(doc.querySelectorAll('#toolForm .seg button')[0]); // Yes
 check('Log answer now enabled', doc.querySelector('#toolForm .solid-btn').disabled === false);
 click(doc.querySelector('#toolForm .solid-btn'));
@@ -192,10 +192,10 @@ check('empty-state message returns', !$('#logEmpty').hidden);
 console.log('\n== thermometer flow ==');
 click(doc.querySelector('[data-tab="ask"]'));
 window.eval("selectTool('thermometer')");
-click(doc.querySelectorAll('#toolForm .slot')[0]);
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
-click(doc.querySelectorAll('#toolForm .slot')[1]);
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9550) })");
+check('Thermometer accepts start and end by direct map taps', doc.querySelectorAll('.map-point-status small').length === 2 &&
+      [...doc.querySelectorAll('.map-point-status small')].every((e) => /57\.04/.test(e.textContent)));
 check('travel distance computed', /travelled 1\.2\d mi/.test($('#toolForm').textContent),
       `"${($('#toolForm').textContent.match(/You travelled [^.]*/)||[''])[0]}"`);
 click(doc.querySelectorAll('#toolForm .seg button')[0]); // Hotter
@@ -1071,6 +1071,10 @@ check('Radar preview is non-committing and computes an impact', window.eval(`(()
   return HS.S.constraints.length === before && HS.questionPreview.metrics &&
          HS.questionPreview.metrics.afterM2 < HS.questionPreview.metrics.beforeM2;
 })()`));
+check('preview controls are now a standard live draft rather than an opt-in toggle', (() => {
+  window.eval("HS.selectTool('radar')");
+  return HS.questionPreview.active && !/Preview on map|Exit preview mode/.test($('#toolForm').textContent) && /Live map draft/.test($('#toolForm').textContent);
+})());
 check('Thermometer handle stays on the selected travel ring', window.eval(`(() => {
   const a = [9.9217,57.0488];
   const raw = [9.95,57.06];
