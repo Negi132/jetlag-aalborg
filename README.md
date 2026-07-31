@@ -16,6 +16,11 @@ Everything runs in the browser. No build step, no server, no API keys.
 
 Add it to your phone's home screen before game day — it's built for one-handed use on a bus.
 
+On first load, the map requests device-location permission and displays a blue position marker with
+an accuracy circle. The marker follows the device while the page is open. It is display-only: the
+coordinate is not saved, shared, or used automatically by any question. The location button simply
+recentres the map on the latest reading.
+
 ---
 
 ## About Google Maps

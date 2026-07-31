@@ -26,6 +26,15 @@ Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', { get: () =>
 window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
 window.alert = () => {}; window.confirm = () => true; window.prompt = () => 'Test zone';
 window.navigator.clipboard = { writeText: async () => {} };
+let geoWatchCalls = 0;
+window.navigator.geolocation = {
+  watchPosition(success) {
+    geoWatchCalls++;
+    success({ coords: { longitude: 9.9217, latitude: 57.0488, accuracy: 18 }, timestamp: Date.now() });
+    return 73;
+  },
+  clearWatch() {}
+};
 window.innerWidth = 1200;
 
 const run = (code, label) => {
@@ -69,6 +78,10 @@ check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSe
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
 check('area HUD is hidden from the interface', $('#hud').hidden === true);
 check('mobile navigation has Map plus the four app tabs', doc.querySelectorAll('#mobileNav .mobile-nav-btn').length === 5);
+check('device location tracking starts automatically', geoWatchCalls === 1, `calls=${geoWatchCalls}`);
+check('location button shows that a position is available', $('#locateBtn').classList.contains('is-on'));
+check('device position is display-only and absent from game state', window.eval("!Object.prototype.hasOwnProperty.call(HS.S, 'me')"));
+check('location pane sits above question and drawing overlays', Number(window.eval("HS.map.getPane('locationPane').style.zIndex")) === 490);
 
 
 console.log('\n== small-game question deck ==');

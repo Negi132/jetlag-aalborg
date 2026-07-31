@@ -106,7 +106,8 @@ html,body{
   transition:background .15s, color .15s;
 }
 .map-btn:hover{ background:var(--surface-2); color:var(--signal); }
-.map-btn.is-on{ color:var(--signal); border-color:var(--signal-dk); }
+.map-btn.is-on{ color:#32b8ef; border-color:#168fd0; }
+.leaflet-location-pane{ pointer-events:none; }
 .map-btn svg{ width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
 .map-btn svg .fill{ fill:currentColor; stroke:none; }
 

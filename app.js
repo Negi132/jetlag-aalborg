@@ -487,6 +487,7 @@ map.createPane('evidPane');      map.getPane('evidPane').style.zIndex = 450;
 map.createPane('previewHandlePane'); map.getPane('previewHandlePane').style.zIndex = 458;
 map.createPane('routeLabelPane');map.getPane('routeLabelPane').style.zIndex = 465;
 map.createPane('drawPane');      map.getPane('drawPane').style.zIndex = 470;
+map.createPane('locationPane');  map.getPane('locationPane').style.zIndex = 490;
 
 const BASES = {
   light: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png', {
@@ -503,7 +504,11 @@ const previewShapeLayer = L.layerGroup([], { pane: 'previewPane' }).addTo(map);
 const previewHandleLayer = L.layerGroup([], { pane: 'previewHandlePane' }).addTo(map);
 const evidLayer = L.layerGroup([], { pane: 'evidPane' }).addTo(map);
 const drawLayer = L.layerGroup([], { pane: 'drawPane' }).addTo(map);
-let meMarker = null;
+const locationLayer = L.layerGroup([], { pane: 'locationPane' }).addTo(map);
+let deviceLocation = null;
+let locationWatchId = null;
+let centerOnNextLocation = false;
+let locationErrorShown = false;
 
 /* ---------- play area ---------------------------------------------- */
 
@@ -4200,32 +4205,100 @@ $('#drawZoneBtn').addEventListener('click', () => {
 
 /* ---------- geolocation ------------------------------------------------ */
 
-function locate(cb) {
-  if (!navigator.geolocation) { toast('This browser has no location access.', true); return; }
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const coord = [pos.coords.longitude, pos.coords.latitude];
-      S.me = coord;
-      showMe(coord, pos.coords.accuracy);
-      if (cb) cb(coord);
-    },
-    () => toast('Could not get your location. Check location permission for this page.', true),
-    { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
-  );
+/* Device location is display-only. It is deliberately kept outside S, is not
+   serialised into game links and is never used to fill or log a question. */
+function locationErrorMessage(err) {
+  if (err && err.code === 1) return 'Location permission was denied. Tap the location button to try again.';
+  if (err && err.code === 2) return 'Your location is temporarily unavailable.';
+  if (err && err.code === 3) return 'Getting your location timed out.';
+  return 'Could not get your location. Check location permission for this page.';
 }
 
 function showMe(coord, acc) {
-  if (meMarker) map.removeLayer(meMarker);
-  meMarker = L.layerGroup([
-    L.circle([coord[1], coord[0]], { radius: Math.min(acc || 40, 200),
-      color: '#2ee6a8', weight: 1, fillColor: '#2ee6a8', fillOpacity: .12 }),
-    L.circleMarker([coord[1], coord[0]], { radius: 6, color: '#0d141d',
-      weight: 2.5, fillColor: '#2ee6a8', fillOpacity: 1 })
-  ]).addTo(map);
+  locationLayer.clearLayers();
+  const accuracy = Math.max(5, Number(acc) || 40);
+  const label = `Your location · accuracy ±${Math.round(accuracy)} m`;
+
+  L.circle([coord[1], coord[0]], {
+    pane: 'locationPane', radius: accuracy,
+    color: '#138fbe', weight: 1.5, opacity: .85,
+    fillColor: '#32b8ef', fillOpacity: .12,
+    interactive: false
+  }).addTo(locationLayer);
+
+  L.circleMarker([coord[1], coord[0]], {
+    pane: 'locationPane', radius: 9,
+    color: '#ffffff', weight: 3,
+    fillColor: '#168fd0', fillOpacity: 1,
+    interactive: false
+  }).bindTooltip(label, { permanent: false, direction: 'top', offset: [0, -9] })
+    .addTo(locationLayer);
+
+  L.circleMarker([coord[1], coord[0]], {
+    pane: 'locationPane', radius: 3,
+    stroke: false, fillColor: '#ffffff', fillOpacity: 1,
+    interactive: false
+  }).addTo(locationLayer);
 }
 
-$('#locateBtn').addEventListener('click', () =>
-  locate((c) => map.setView([c[1], c[0]], Math.max(map.getZoom(), 15))));
+function acceptDeviceLocation(pos, centerMap = false) {
+  const coord = [pos.coords.longitude, pos.coords.latitude];
+  deviceLocation = { coord, accuracy: pos.coords.accuracy, timestamp: pos.timestamp || Date.now() };
+  showMe(coord, pos.coords.accuracy);
+  const btn = $('#locateBtn');
+  btn.classList.add('is-on');
+  btn.title = 'Center map on my location';
+  btn.setAttribute('aria-label', 'Center map on my location');
+  locationErrorShown = false;
+  if (centerMap) map.setView([coord[1], coord[0]], Math.max(map.getZoom(), 15));
+}
+
+function handleLocationError(err, userInitiated = false) {
+  $('#locateBtn').classList.remove('is-on');
+  if (userInitiated || !locationErrorShown) {
+    toast(locationErrorMessage(err), true);
+    locationErrorShown = true;
+  }
+  if (err && err.code === 1 && locationWatchId != null) {
+    try { navigator.geolocation.clearWatch(locationWatchId); } catch (_) {}
+    locationWatchId = null;
+  }
+}
+
+function startLocationTracking({ center = false, userInitiated = false } = {}) {
+  if (!navigator.geolocation) {
+    if (userInitiated) toast('This browser has no location access.', true);
+    return;
+  }
+
+  if (center) centerOnNextLocation = true;
+  if (deviceLocation) {
+    showMe(deviceLocation.coord, deviceLocation.accuracy);
+    if (centerOnNextLocation) {
+      map.setView([deviceLocation.coord[1], deviceLocation.coord[0]], Math.max(map.getZoom(), 15));
+      centerOnNextLocation = false;
+    }
+  }
+
+  if (locationWatchId != null) return;
+  locationWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const shouldCenter = centerOnNextLocation;
+      centerOnNextLocation = false;
+      acceptDeviceLocation(pos, shouldCenter);
+    },
+    (err) => handleLocationError(err, userInitiated),
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+  );
+}
+
+$('#locateBtn').addEventListener('click', () => {
+  if (deviceLocation) {
+    map.setView([deviceLocation.coord[1], deviceLocation.coord[0]], Math.max(map.getZoom(), 15));
+  } else {
+    startLocationTracking({ center: true, userInitiated: true });
+  }
+});
 
 /* ---------- tabs & sheet ------------------------------------------------ */
 
@@ -4513,6 +4586,9 @@ renderCal();
 const restoredFromUrl = loadFromUrl();
 if (!restoredFromUrl) applyUnits();
 renderToolForm();
+// GitHub Pages is served over HTTPS, so this requests permission and keeps a
+// display-only marker current without changing any question workflow.
+startLocationTracking();
 // Do not block first paint: the traced union is already usable. In a real
 // browser this replaces it with the exact official Zone 2 union as soon as
 // KortInfo answers. Test environments without window.fetch keep the fallback.
@@ -4550,6 +4626,7 @@ window.HS = {
   constraintPolygon, halfPlane, voronoiCell, normaliseCoords, featureName,
   inferNameField, rankedNameFields, prepareSourceLabels,
   renderToolForm, selectTool, switchTab, questionPreview,
+  startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, solveCurrentArea,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };
