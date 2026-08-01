@@ -68,6 +68,18 @@ directly: tap where you asked from, choose Match / No match, and the map preview
 cut. The Landmass Matching card behaves the same way using the Limfjord as Aalborg's practical split
 between Nørresundby and the play area south of the fjord.
 
+**Zone-aware question loading.** Choosing an administrative-zone Matching card now turns the relevant
+official zone layer on immediately. Zone downloads show an indeterminate loading bar on the map as
+well as a busy state in Layers, which is especially useful for the larger Zone 1 and Zone 4 datasets.
+Landmass Matching draws the Nørresundby/north and Aalborg/south sides directly on the map even though
+it is not an administrative layer.
+
+The Measuring cards for **1st zone border** and **2nd zone border** also load and display the relevant
+zone layer immediately. Tap where the question was asked: the app measures that point's distance to
+the nearest border and draws a cyan band of that width around *every* border at that level. Before an
+answer is selected it shows how much of the currently possible area Closer versus Further would keep;
+selecting the answer then uses the normal grey-out preview, and Log answer commits that exact band cut.
+
 ## How each question narrows the map
 
 Every answer becomes a polygon of *places the hider could still be*. They all get intersected

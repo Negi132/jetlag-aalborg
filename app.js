@@ -251,11 +251,34 @@ const S = {
   seq: 1
 };
 
+/* Network-backed administrative layers can take several seconds on mobile.
+   Keep loading state separate from the saved game: it is UI-only and lets
+   both the Layers tab and map show that something is actually happening. */
+const zoneLoads = new Set();
+
 /* ---------- helpers ------------------------------------------------ */
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const uid = () => 'c' + (S.seq++) + Math.random().toString(36).slice(2, 6);
+
+function zoneLevelName(key) {
+  const m = String(key || '').match(/^zone([1-4])$/);
+  return m ? `Zone ${m[1]}` : 'zone';
+}
+function updateZoneLoadProgress() {
+  const box = $('#zoneLoadProgress');
+  const text = $('#zoneLoadProgressText');
+  if (!box || !text) return;
+  const keys = Array.from(zoneLoads);
+  box.hidden = !keys.length;
+  if (keys.length) text.textContent = `Loading ${keys.map(zoneLevelName).join(', ')} boundaries…`;
+}
+function setZoneLoading(key, on) {
+  if (on) zoneLoads.add(key); else zoneLoads.delete(key);
+  updateZoneLoadProgress();
+  if ($('#zoneSources')) renderSourceRows();
+}
 
 function toast(msg, bad) {
   const t = $('#toast');
@@ -401,6 +424,11 @@ function constraintPolygon(c) {
       const circle = turf.circle(c.target, r, { steps: 180, units: 'kilometers' });
       return c.answer === 'closer' ? circle : invert(circle);
     }
+    case 'borderDistance': {
+      const band = c.geometry ? turf.feature(c.geometry) : null;
+      if (!band) return null;
+      return c.answer === 'closer' ? band : invert(band);
+    }
     case 'nearest': {
       if (c.answer === 'unreachable') {
         const circle = turf.circle(c.seeker, c.radiusM / 1000, { steps: 180, units: 'kilometers' });
@@ -447,6 +475,10 @@ function constraintLabel(c) {
                ans: c.answer === 'hotter' ? 'Hotter' : 'Colder' };
     case 'measuring':
       return { kind: 'Measuring', text: `Compared to seeker, vs ${c.targetName || 'target'}`,
+               ans: c.answer === 'closer' ? 'Closer' : 'Further' };
+    case 'borderDistance':
+      return { kind: 'Measuring',
+               text: `${c.borderName || `Zone ${c.zoneLevel || ''} border`} · seeker is ${fmtDist(c.distanceM)} away`,
                ans: c.answer === 'closer' ? 'Closer' : 'Further' };
     case 'nearest':
       if (c.answer === 'unreachable')
@@ -731,8 +763,18 @@ map.on('click', (e) => {
       return;
     }
     if (activeTool === 'measuring') {
-      if (!draft.seeker) draft.seeker = coord;
-      else draft.target = coord;
+      const borderMode = measuringBorderMode();
+      if (borderMode) {
+        if (!updateMeasuringBorderFromCoord(coord)) {
+          toast(draft.borderLoading
+            ? `${borderMode.label} is still loading. Try the map again in a moment.`
+            : `Could not measure distance to the ${borderMode.label}.`, !draft.borderLoading);
+          return;
+        }
+      } else {
+        if (!draft.seeker) draft.seeker = coord;
+        else draft.target = coord;
+      }
       renderToolForm();
       return;
     }
@@ -968,6 +1010,102 @@ function matchingAreaMode() {
   return null;
 }
 
+/* Measuring-to-border cards are area questions, not point-target questions.
+   If the seeker's nearest Zone-N border is d metres away, "closer" keeps the
+   d-metre band around every Zone-N border and "further" keeps its complement. */
+function measuringBorderMode() {
+  if (!selectedQuestion || selectedQuestion.typeKey !== 'measuring') return null;
+  const m = String(selectedQuestion.label || '').match(/^([1-4])(?:st|nd|rd|th) zone border$/i);
+  if (!m) return null;
+  const level = Number(m[1]);
+  return { level, sourceKey: `zone${level}`, label: `${level}${level === 1 ? 'st' : level === 2 ? 'nd' : level === 3 ? 'rd' : 'th'} zone border` };
+}
+
+function geometryLineParts(geometry) {
+  if (!geometry) return [];
+  if (geometry.type === 'LineString') return [geometry.coordinates];
+  if (geometry.type === 'MultiLineString') return geometry.coordinates || [];
+  return [];
+}
+
+function zoneBorderLines(rec) {
+  if (!rec) return [];
+  if (rec.__zoneBorderLines) return rec.__zoneBorderLines;
+  const source = rec.baseGeojson || rec.geojson;
+  const lines = [];
+  for (const ft of (source && source.features) || []) {
+    if (!ft || !ft.geometry || !/Polygon/.test(ft.geometry.type)) continue;
+    try {
+      const boundary = turf.polygonToLine(ft);
+      const feats = boundary.type === 'FeatureCollection' ? boundary.features : [boundary];
+      for (const lineFt of feats) {
+        for (const coords of geometryLineParts(lineFt.geometry)) {
+          if (coords && coords.length >= 2) lines.push(turf.lineString(coords));
+        }
+      }
+    } catch (_) { /* skip malformed pieces */ }
+  }
+  rec.__zoneBorderLines = lines;
+  return lines;
+}
+
+function nearestZoneBorderDistanceM(coord, rec) {
+  if (!coord || !rec) return null;
+  const point = turf.point(coord);
+  let best = Infinity;
+  for (const line of zoneBorderLines(rec)) {
+    try {
+      const d = turf.pointToLineDistance(point, line, { units: 'meters' });
+      if (Number.isFinite(d) && d < best) best = d;
+    } catch (_) { /* keep looking */ }
+  }
+  return Number.isFinite(best) ? best : null;
+}
+
+function zoneBorderBand(rec, distanceM) {
+  if (!rec || !S.playArea || !(distanceM >= 0)) return null;
+  const lines = zoneBorderLines(rec);
+  if (!lines.length) return null;
+  const radiusM = Math.max(.5, distanceM);
+  const buffered = [];
+  for (const line of lines) {
+    try {
+      const b = turf.buffer(line, radiusM / 1000, { units: 'kilometers', steps: 12 });
+      if (b) buffered.push(b);
+    } catch (_) { /* ignore one bad border */ }
+  }
+  const merged = unionAll(buffered);
+  return merged ? gIntersect(S.playArea, merged) : null;
+}
+
+function updateMeasuringBorderFromCoord(coord) {
+  const mode = measuringBorderMode();
+  if (!mode) return false;
+  const rec = layerByKey('src:' + mode.sourceKey);
+  if (!rec) return false;
+  const distanceM = nearestZoneBorderDistanceM(coord, rec);
+  if (distanceM == null) return false;
+  const band = zoneBorderBand(rec, distanceM);
+  if (!band) return false;
+  draft.seeker = coord;
+  draft.borderDistanceM = distanceM;
+  draft.borderBandGeometry = band.geometry;
+  return true;
+}
+
+function landmassRegions() {
+  if (!S.playArea) return null;
+  const feats = matchingSourceFeatures({ sourceKey: 'zone2' });
+  const northParts = feats.filter((ft) => {
+    const def = playZoneDef(ft);
+    return (def && def.area === 2) || normaliseZoneText(featureName(ft, null)).includes('norresundby');
+  });
+  const north = unionAll(northParts);
+  if (!north) return null;
+  const south = gDifference(S.playArea, north);
+  return south ? { north, south } : null;
+}
+
 function pointInsideFeature(coord, ft) {
   if (!coord || !ft || !ft.geometry || !/Polygon/.test(ft.geometry.type)) return false;
   try { return turf.booleanPointInPolygon(turf.point(coord), ft); } catch (_) { return false; }
@@ -986,18 +1124,12 @@ function matchingSourceFeatures(mode) {
 
 function landmassGeometryAt(coord) {
   if (!S.playArea || !pointInsideFeature(coord, S.playArea)) return null;
-  const feats = matchingSourceFeatures({ sourceKey: 'zone2' });
-  const northParts = feats.filter((ft) => {
-    const def = playZoneDef(ft);
-    return (def && def.area === 2) || normaliseZoneText(featureName(ft, null)).includes('norresundby');
-  });
-  const north = unionAll(northParts);
-  if (!north) return null;
-  if (pointInsideFeature(coord, north)) {
-    return { geometry: north.geometry, name: 'Nørresundby / north of the Limfjord' };
+  const regions = landmassRegions();
+  if (!regions) return null;
+  if (pointInsideFeature(coord, regions.north)) {
+    return { geometry: regions.north.geometry, name: 'Nørresundby / north of the Limfjord' };
   }
-  const south = gDifference(S.playArea, north);
-  return south ? { geometry: south.geometry, name: 'Aalborg / south of the Limfjord' } : null;
+  return { geometry: regions.south.geometry, name: 'Aalborg / south of the Limfjord' };
 }
 
 function matchingAreaAt(coord) {
@@ -1030,16 +1162,31 @@ function setMatchingAreaFromCoord(coord) {
   return true;
 }
 
+async function ensureZoneSourceVisible(sourceKey) {
+  let rec = layerByKey('src:' + sourceKey);
+  if (rec) {
+    if (!rec.visible) setLayerVisible(rec, true);
+    return rec;
+  }
+
+  // Zone 2 may already be fetching in the background for the play-area union,
+  // or the player may have started the same layer from Layers. Wait for that
+  // request instead of accidentally treating "already loading" as failure.
+  for (let i = 0; i < 300 && zoneLoads.has(sourceKey) && !rec; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    rec = layerByKey('src:' + sourceKey);
+  }
+  if (!rec) {
+    await toggleSource(sourceKey, null);
+    rec = layerByKey('src:' + sourceKey);
+  }
+  if (rec && !rec.visible) setLayerVisible(rec, true);
+  return rec || null;
+}
+
 async function ensureMatchingAreaSource(mode = matchingAreaMode()) {
   if (!mode || mode.kind !== 'zone') return null;
-  let rec = layerByKey('src:' + mode.sourceKey);
-  if (rec) return rec; // preserve whatever visibility the player chose
-  await toggleSource(mode.sourceKey, null);
-  rec = layerByKey('src:' + mode.sourceKey);
-  // Loading a source for question logic should not silently turn on another
-  // visual layer. Keep freshly fetched geometry available but hidden.
-  if (rec && rec.visible) setLayerVisible(rec, false);
-  return rec || null;
+  return ensureZoneSourceVisible(mode.sourceKey);
 }
 
 function parsePositiveDecimal(value) {
@@ -1149,6 +1296,23 @@ function chooseQuestion(type, card) {
     }).catch(() => {
       if (matchingAreaMode() && matchingAreaMode().sourceKey === areaMode.sourceKey) {
         draft.matchLoading = false;
+        renderToolForm();
+      }
+    });
+  }
+  const borderMode = measuringBorderMode();
+  if (borderMode) {
+    draft.borderLoading = true;
+    ensureZoneSourceVisible(borderMode.sourceKey).then(() => {
+      const current = measuringBorderMode();
+      if (current && current.sourceKey === borderMode.sourceKey) {
+        draft.borderLoading = false;
+        renderToolForm();
+      }
+    }).catch(() => {
+      const current = measuringBorderMode();
+      if (current && current.sourceKey === borderMode.sourceKey) {
+        draft.borderLoading = false;
         renderToolForm();
       }
     });
@@ -1335,10 +1499,18 @@ function previewConstraintFromDraft() {
       return draft.a && draft.b && draft.answer
         ? { type: 'thermometer', a: draft.a, b: draft.b, answer: draft.answer }
         : null;
-    case 'measuring':
+    case 'measuring': {
+      const borderMode = measuringBorderMode();
+      if (borderMode) {
+        return draft.borderBandGeometry && draft.answer
+          ? { type: 'borderDistance', geometry: draft.borderBandGeometry, answer: draft.answer,
+              distanceM: draft.borderDistanceM, zoneLevel: borderMode.level, borderName: borderMode.label }
+          : null;
+      }
       return draft.seeker && draft.target && draft.answer
         ? { type: 'measuring', seeker: draft.seeker, target: draft.target, answer: draft.answer }
         : null;
+    }
     case 'nearest': {
       const areaMode = matchingAreaMode();
       if (areaMode) {
@@ -1400,10 +1572,18 @@ function previewInstruction() {
     return '';
   }
   if (activeTool === 'nearest' && matchingAreaMode()) {
-    if (!draft.matchGeometry) return draft.matchLoading
-      ? `Loading ${matchingAreaMode().label} boundaries…`
-      : 'Tap your position on the map to identify your area.';
+    const mode = matchingAreaMode();
+    if (!draft.matchGeometry) {
+      if (mode.kind === 'landmass') return 'The map shows the Aalborg landmass split. Tap your position to choose your side.';
+      return draft.matchLoading ? `Loading ${mode.label} boundaries…` : 'Tap your position on the map to identify your area.';
+    }
     if (!draft.answer) return `You selected ${draft.matchName}. Choose Match or No match to preview the cut.`;
+  }
+  if (activeTool === 'measuring' && measuringBorderMode()) {
+    const mode = measuringBorderMode();
+    if (draft.borderLoading) return `Loading ${mode.label} boundaries…`;
+    if (!draft.seeker || !draft.borderBandGeometry) return `Tap your position. The map will show the distance band around every ${mode.label}.`;
+    if (!draft.answer) return `Cyan shows everywhere closer to a ${mode.label} than you are (${fmtDist(draft.borderDistanceM)}). Choose Closer or Further to preview the cut.`;
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
@@ -1416,6 +1596,13 @@ function updatePreviewImpactText() {
   if (instruction) { el.textContent = instruction; return; }
   const m = questionPreview.metrics;
   if (!m) { el.textContent = 'Preview is active. Nothing has been logged.'; return; }
+  if (m.borderDual) {
+    const closerPct = m.beforeM2 ? (m.closerM2 / m.beforeM2) * 100 : 0;
+    const furtherPct = Math.max(0, 100 - closerPct);
+    el.textContent = `If the answer is Closer, about ${trimNum(closerPct.toFixed(closerPct < 10 ? 1 : 0))}% would remain; ` +
+      `Further would leave about ${trimNum(furtherPct.toFixed(furtherPct < 10 ? 1 : 0))}%. Nothing is logged yet.`;
+    return;
+  }
   const [amount, unit] = fmtArea(m.afterM2);
   const pct = m.beforeM2 ? (m.afterM2 / m.beforeM2) * 100 : 0;
   el.textContent = `${amount} ${unit} would remain — ${trimNum(pct.toFixed(pct < 10 ? 1 : 0))}% of the area currently in play.`;
@@ -1438,6 +1625,40 @@ function renderPreviewShapes() {
       color: P, weight: 2.2, opacity: .95, dashArray: '7 5', fillColor: P,
       fillOpacity: .055, interactive: false }).addTo(previewShapeLayer);
     L.circleMarker([draft.center[1], draft.center[0]], markerStyle).addTo(previewShapeLayer);
+  }
+
+  if (activeTool === 'nearest') {
+    const mode = matchingAreaMode();
+    if (mode && mode.kind === 'landmass') {
+      const regions = landmassRegions();
+      if (regions) {
+        L.geoJSON(regions.north, { pane: 'previewPane', interactive: false,
+          style: { color: '#67e8f9', weight: 2.4, opacity: .95, dashArray: '7 5',
+                   fillColor: '#67e8f9', fillOpacity: .075 } }).addTo(previewShapeLayer);
+        L.geoJSON(regions.south, { pane: 'previewPane', interactive: false,
+          style: { color: '#fbbf24', weight: 2.0, opacity: .85, dashArray: '7 5',
+                   fillColor: '#fbbf24', fillOpacity: .045 } }).addTo(previewShapeLayer);
+      }
+    }
+  }
+
+  if (activeTool === 'measuring' && measuringBorderMode() && draft.seeker) {
+    L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
+    if (draft.borderBandGeometry && !draft.answer) {
+      const bandFt = turf.feature(draft.borderBandGeometry);
+      L.geoJSON(bandFt, { pane: 'previewPane', interactive: false,
+        style: { color: P, weight: 2.2, opacity: .95, dashArray: '6 4',
+                 fillColor: P, fillOpacity: .105 } }).addTo(previewShapeLayer);
+      const before = solveCurrentArea().possible;
+      const closer = before ? gIntersect(before, bandFt) : null;
+      if (before) questionPreview.metrics = {
+        borderDual: true, beforeM2: turf.area(before), closerM2: closer ? turf.area(closer) : 0
+      };
+    }
+    if (!draft.answer) {
+      updatePreviewImpactText();
+      return;
+    }
   }
 
   if (activeTool === 'thermometer' && draft.a) {
@@ -1526,6 +1747,7 @@ function clearLiveDraftGeometry() {
     delete draft.a; delete draft.b; delete draft.distanceConfirmed;
   } else if (activeTool === 'measuring') {
     delete draft.seeker; delete draft.target;
+    delete draft.borderDistanceM; delete draft.borderBandGeometry;
   } else if (activeTool === 'nearest') {
     if (matchingAreaMode()) {
       delete draft.matchPoint; delete draft.matchGeometry; delete draft.matchName;
@@ -1765,6 +1987,39 @@ function thermoForm(box) {
 
 /* --- measuring --- */
 function measuringForm(box) {
+  const borderMode = measuringBorderMode();
+  if (borderMode) {
+    mapPointStatus(box, 'Where you asked from', draft.seeker, {
+      empty: draft.borderLoading ? `Loading ${borderMode.label}…` : 'Tap the map to set or move your position',
+      gps: true,
+      set: (c) => {
+        if (!updateMeasuringBorderFromCoord(c)) toast(`Could not measure the ${borderMode.label} yet.`, true);
+      }
+    });
+
+    if (draft.borderDistanceM != null) {
+      const readout = document.createElement('div');
+      readout.className = 'zone-distance-readout';
+      readout.innerHTML = `Your nearest <strong>${escapeHtml(borderMode.label)}</strong> is <strong>${escapeHtml(fmtDist(draft.borderDistanceM))}</strong> away.<br>` +
+        `The cyan band shows every point that is closer to any ${escapeHtml(borderMode.label)} than you are.`;
+      box.appendChild(readout);
+    } else {
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = draft.borderLoading
+        ? `The ${borderMode.label} layer is loading and will appear on the map automatically.`
+        : `Tap the map. A live band will appear around every ${borderMode.label}, using your distance to the nearest border as its width.`;
+      box.appendChild(hint);
+    }
+
+    answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
+    actions(box, draft.seeker && draft.borderBandGeometry && draft.answer, () =>
+      commit({ type: 'borderDistance', geometry: draft.borderBandGeometry,
+               distanceM: draft.borderDistanceM, zoneLevel: borderMode.level,
+               borderName: borderMode.label, answer: draft.answer }));
+    return;
+  }
+
   mapPointStatus(box, 'Where you asked from', draft.seeker, {
     empty: 'First map tap sets your position', gps: true,
     set: (c) => { draft.seeker = c; }
@@ -1785,7 +2040,7 @@ function measuringForm(box) {
 
   const note = document.createElement('p');
   note.className = 'hint';
-  note.textContent = 'Drop the pin on the map icon you both measured to. For coastlines, the Limfjord and borders, draw a free shape instead — a single pin cannot represent a line.';
+  note.textContent = 'Drop the pin on the map icon you both measured to. For coastlines and the Limfjord, draw a free shape instead — a single pin cannot represent a line.';
   box.appendChild(note);
 
   answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
@@ -1813,6 +2068,14 @@ function nearestForm(box) {
       ? 'For Aalborg, the Limfjord is the useful landmass split: Nørresundby versus the play area south of the fjord. Tap where you asked from.'
       : `The official ${areaMode.label} layer is used directly. Tap where you asked from and the containing area will be selected.`;
     box.appendChild(hint);
+
+    if (areaMode.kind === 'landmass') {
+      const key = document.createElement('div');
+      key.className = 'landmass-key';
+      key.innerHTML = '<span><i style="background:#67e8f9"></i>Nørresundby / north</span>' +
+        '<span><i style="background:#fbbf24"></i>Aalborg / south</span>';
+      box.appendChild(key);
+    }
 
     const mapBtn = document.createElement('button');
     mapBtn.type = 'button'; mapBtn.className = 'ghost-btn wide';
@@ -3417,6 +3680,7 @@ async function toggleSource(key, btn) {
   const src = S.sources[key];
   const ex = layerByKey('src:' + key);
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
+  if (zoneLoads.has(key)) return;
 
   // Built-in zones need no network at all.
   if (src.kind === 'areas' || src.kind === 'districts') {
@@ -3435,6 +3699,7 @@ async function toggleSource(key, btn) {
     return;
   }
   if (btn) btn.classList.add('is-busy');
+  setZoneLoading(key, true);
   setStatus(`Loading ${src.name}…`);
   try {
     let gj = (key === 'zone2' && S.zone2Official) ? S.zone2Official
@@ -3462,6 +3727,7 @@ async function toggleSource(key, btn) {
   } catch (err) {
     setStatus(`${src.name} failed — ${err.message}. Tap ⚙ and Browse to pick the right layer.`, true);
   } finally {
+    setZoneLoading(key, false);
     if (btn) btn.classList.remove('is-busy');
   }
 }
@@ -3473,6 +3739,7 @@ async function loadOfficialZone2PlayArea() {
   if (!src || src.kind !== 'wfs' || !src.url || !src.typeName || typeof window.fetch !== 'function') {
     return false;
   }
+  setZoneLoading('zone2', true);
   try {
     let gj = await fetchFirst([wfsUrl(src)]);
     normaliseCoords(gj);
@@ -3493,6 +3760,8 @@ async function loadOfficialZone2PlayArea() {
     const status = $('#officialZoneStatus');
     if (status) status.textContent = 'KortInfo Zone 2 could not be loaded; the traced geometry is temporarily active. Use Reload official Zone 2 to retry.';
     return false;
+  } finally {
+    setZoneLoading('zone2', false);
   }
 }
 
@@ -4238,14 +4507,14 @@ $('#calReset').addEventListener('click', () => {
 function sourceRow(label, meta, state, onTap, onGear) {
   const row = document.createElement('div');
   row.className = 'src-row';
-  const dot = state === 'on' ? '◉' : state === 'off' ? '○' : '·';
+  const dot = state === 'loading' ? '↻' : state === 'on' ? '◉' : state === 'off' ? '○' : '·';
   row.innerHTML = `
-    <button class="row-btn src-main${state === 'on' ? ' is-on' : ''}">
+    <button class="row-btn src-main${state === 'on' ? ' is-on' : ''}${state === 'loading' ? ' is-loading' : ''}">
       <span class="row-title"><span class="src-dot">${dot}</span>${escapeHtml(label)}</span>
       <span class="row-meta">${escapeHtml(meta)}</span>
     </button>${onGear ? '<button class="icon-btn src-gear" title="Edit source">⚙</button>' : ''}`;
   const main = row.querySelector('.src-main');
-  main.addEventListener('click', () => onTap(main));
+  main.addEventListener('click', () => { if (state !== 'loading') onTap(main); });
   if (onGear) row.querySelector('.src-gear').addEventListener('click', onGear);
   return row;
 }
@@ -4255,9 +4524,10 @@ function renderSourceRows() {
   zbox.innerHTML = '';
   Object.entries(S.sources).forEach(([key, src]) => {
     const rec = layerByKey('src:' + key);
-    const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
-    const meta = rec ? `${rec.geojson.features.length} zones${state === 'on' ? '' : ' · hidden'}`
-                     : (src.url ? (src.typeName || src.url) : 'not configured — tap ⚙');
+    const state = zoneLoads.has(key) ? 'loading' : !rec ? 'idle' : rec.visible ? 'on' : 'off';
+    const meta = state === 'loading' ? 'Loading boundaries…'
+      : rec ? `${rec.geojson.features.length} zones${state === 'on' ? '' : ' · hidden'}`
+      : (src.url ? (src.typeName || src.url) : 'not configured — tap ⚙');
     const row = sourceRow(src.name, meta, state,
       (btn) => toggleSource(key, btn), () => openSourceEditor(key));
     zbox.appendChild(row);
@@ -4829,5 +5099,7 @@ window.HS = {
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, solveCurrentArea,
   matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, parsePositiveDecimal,
+  measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
+  ensureZoneSourceVisible, zoneLoads,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };

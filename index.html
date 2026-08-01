@@ -12,7 +12,7 @@
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="styles.css?v=20260802-postgame-questions">
+<link rel="stylesheet" href="styles.css?v=20260802-zone-question-loading">
 </head>
 <body>
 
@@ -36,6 +36,14 @@
     <span id="drawHintText">Tap the map</span>
     <button id="drawUndo" class="ghost-btn">Undo point</button>
     <button id="drawFinish" class="solid-btn">Finish shape</button>
+  </div>
+
+  <div id="zoneLoadProgress" class="zone-load-progress" hidden role="status" aria-live="polite">
+    <div class="zone-load-progress-head">
+      <span class="zone-load-spinner" aria-hidden="true"></span>
+      <span id="zoneLoadProgressText">Loading zone boundaries…</span>
+    </div>
+    <div class="zone-load-track" aria-hidden="true"><span></span></div>
   </div>
 
   <nav id="mobileNav" class="mobile-nav" aria-label="Main navigation">
@@ -264,7 +272,7 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
-<script src="data.js?v=20260802-postgame-questions"></script>
-<script src="app.js?v=20260802-postgame-questions"></script>
+<script src="data.js?v=20260802-zone-question-loading"></script>
+<script src="app.js?v=20260802-zone-question-loading"></script>
 </body>
 </html>
