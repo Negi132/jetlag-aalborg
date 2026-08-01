@@ -87,6 +87,8 @@ check('location pane sits above question and drawing overlays', Number(window.ev
 console.log('\n== small-game question deck ==');
 check('six question-type panels render', doc.querySelectorAll('.question-type').length === 6,
       `${doc.querySelectorAll('.question-type').length}`);
+check('all question families start collapsed',
+      [...doc.querySelectorAll('.question-type')].every((e) => !e.open));
 check('Matching shows draw/pick cost and five-minute limit', /draw 3, pick 1/i.test($('#questionDeck').textContent) && /5 min/i.test($('#questionDeck').textContent));
 check('Matching card list includes route and landmass cards', /Transit line/.test($('#questionDeck').textContent) && /Landmass/.test($('#questionDeck').textContent));
 check('Measuring card list includes coastline and foreign consulate', /Coastline/.test($('#questionDeck').textContent) && /Foreign consulate/.test($('#questionDeck').textContent));
@@ -108,6 +110,17 @@ check('Photos contains all six prompts and the 10-minute small-game limit', (() 
     !!doc.querySelector('[data-question-type="photos"][data-card="A tree"]') &&
     !!doc.querySelector('[data-question-type="photos"][data-card="Any building visible from the station"]');
 })());
+const customRadarCard = doc.querySelector('[data-question-type="radar"][data-card="Custom"]');
+click(customRadarCard);
+const customRadarInput = $('#toolForm input[inputmode="decimal"]');
+check('Custom Radar uses a mobile-friendly decimal text field',
+      customRadarInput && customRadarInput.type === 'text');
+customRadarInput.value = '0,5';
+customRadarInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+check('Custom Radar accepts comma decimals',
+      Math.abs(window.eval('HS.draft.radiusM') - 0.5 * 1609.344) < 0.01,
+      `radius=${window.eval('HS.draft.radiusM')}`);
+click($('#toolForm .question-back'));
 const parkCard = doc.querySelector('[data-question-type="matching"][data-card="Park"]');
 click(parkCard);
 check('a Matching card opens the answer workspace inline', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent) && !!$('#toolForm').closest('[data-question-slot="matching"]'));
@@ -157,6 +170,8 @@ click(doc.querySelector('[data-tab="layers"]'));
 check('layers pane opens', doc.querySelector('[data-pane="layers"]').classList.contains('is-active'));
 click(doc.querySelector('[data-tab="ask"]'));
 check('ask pane returns', doc.querySelector('[data-pane="ask"]').classList.contains('is-active'));
+check('returning to Ask with no draft keeps every family collapsed',
+      [...doc.querySelectorAll('.question-type')].every((e) => !e.open));
 
 console.log('\n== radar flow ==');
 window.eval("selectTool('radar')");

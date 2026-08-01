@@ -457,6 +457,9 @@ function constraintLabel(c) {
       return { kind: 'Transit line', text: `${c.lineName || 'Route'} · ${fmtDist(c.bufferM)} either side`,
                ans: c.answer === 'yes' ? 'Same route' : 'Different route' };
     case 'zone':
+      if (c.matching) return { kind: 'Matching',
+        text: `${c.categoryName || 'Area'} · ${c.zoneName || 'Selected area'}`,
+        ans: c.answer === 'yes' ? 'Match' : 'No match' };
       return { kind: 'Zone', text: c.zoneName || 'Zone',
                ans: c.answer === 'yes' ? 'Same zone' : 'Different zone' };
     case 'area':
@@ -734,6 +737,10 @@ map.on('click', (e) => {
       return;
     }
     if (activeTool === 'nearest') {
+      if (matchingAreaMode()) {
+        if (setMatchingAreaFromCoord(coord)) renderToolForm();
+        return;
+      }
       draft.points = draft.points || [];
       const duplicate = draft.points.some((p) =>
         turf.distance(turf.point(p), turf.point(coord), { units: 'meters' }) < 3);
@@ -945,6 +952,103 @@ function cardQuestionSentence(type, phrase) {
   return '';
 }
 
+/* Some Matching cards describe areas rather than a set of nearest points.
+   Treat those as spatial questions directly so a prospective Match/No match
+   can shade the map just like Radar. */
+function matchingAreaMode() {
+  if (!selectedQuestion || selectedQuestion.typeKey !== 'matching') return null;
+  const m = String(selectedQuestion.label || '').match(/^([1-4])(?:st|nd|rd|th) zone$/i);
+  if (m) {
+    const level = Number(m[1]);
+    return { kind: 'zone', level, sourceKey: `zone${level}`, label: `${level}${level === 1 ? 'st' : level === 2 ? 'nd' : level === 3 ? 'rd' : 'th'} zone` };
+  }
+  if (normaliseZoneText(selectedQuestion.label) === 'landmass') {
+    return { kind: 'landmass', sourceKey: 'zone2', label: 'Landmass' };
+  }
+  return null;
+}
+
+function pointInsideFeature(coord, ft) {
+  if (!coord || !ft || !ft.geometry || !/Polygon/.test(ft.geometry.type)) return false;
+  try { return turf.booleanPointInPolygon(turf.point(coord), ft); } catch (_) { return false; }
+}
+
+function matchingSourceFeatures(mode) {
+  if (!mode) return [];
+  const rec = layerByKey('src:' + mode.sourceKey);
+  if (rec && rec.geojson) return rec.geojson.features || [];
+  if (mode.sourceKey === 'zone2') {
+    const gj = S.zone2Official || buildAreaZones();
+    return gj && gj.features ? gj.features : [];
+  }
+  return [];
+}
+
+function landmassGeometryAt(coord) {
+  if (!S.playArea || !pointInsideFeature(coord, S.playArea)) return null;
+  const feats = matchingSourceFeatures({ sourceKey: 'zone2' });
+  const northParts = feats.filter((ft) => {
+    const def = playZoneDef(ft);
+    return (def && def.area === 2) || normaliseZoneText(featureName(ft, null)).includes('norresundby');
+  });
+  const north = unionAll(northParts);
+  if (!north) return null;
+  if (pointInsideFeature(coord, north)) {
+    return { geometry: north.geometry, name: 'Nørresundby / north of the Limfjord' };
+  }
+  const south = gDifference(S.playArea, north);
+  return south ? { geometry: south.geometry, name: 'Aalborg / south of the Limfjord' } : null;
+}
+
+function matchingAreaAt(coord) {
+  const mode = matchingAreaMode();
+  if (!mode || !S.playArea || !pointInsideFeature(coord, S.playArea)) return null;
+  if (mode.kind === 'landmass') return landmassGeometryAt(coord);
+  const rec = layerByKey('src:' + mode.sourceKey);
+  if (!rec) return null;
+  const ft = (rec.geojson.features || []).find((f) => pointInsideFeature(coord, f));
+  return ft ? { geometry: ft.geometry, name: featureName(ft, rec) } : null;
+}
+
+function setMatchingAreaFromCoord(coord) {
+  const mode = matchingAreaMode();
+  if (!mode) return false;
+  const hit = matchingAreaAt(coord);
+  if (!hit) {
+    if (mode.kind === 'zone' && !layerByKey('src:' + mode.sourceKey)) {
+      toast(draft.matchLoading
+        ? `${mode.label} is still loading. Try the map again in a moment.`
+        : `${mode.label} boundaries could not be loaded. Retry that layer from Layers.`, !draft.matchLoading);
+    } else {
+      toast('That point is outside the usable area for this question.', true);
+    }
+    return false;
+  }
+  draft.matchPoint = coord;
+  draft.matchGeometry = hit.geometry;
+  draft.matchName = hit.name;
+  return true;
+}
+
+async function ensureMatchingAreaSource(mode = matchingAreaMode()) {
+  if (!mode || mode.kind !== 'zone') return null;
+  let rec = layerByKey('src:' + mode.sourceKey);
+  if (rec) return rec; // preserve whatever visibility the player chose
+  await toggleSource(mode.sourceKey, null);
+  rec = layerByKey('src:' + mode.sourceKey);
+  // Loading a source for question logic should not silently turn on another
+  // visual layer. Keep freshly fetched geometry available but hidden.
+  if (rec && rec.visible) setLayerVisible(rec, false);
+  return rec || null;
+}
+
+function parsePositiveDecimal(value) {
+  const raw = String(value == null ? '' : value).trim().replace(/\s+/g, '').replace(',', '.');
+  if (!/^\d*(?:\.\d*)?$/.test(raw) || raw === '' || raw === '.') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function renderQuestionDeck() {
   const deck = $('#questionDeck');
   if (!deck) return;
@@ -958,7 +1062,9 @@ function renderQuestionDeck() {
       (isActiveType ? ' has-active-question' : '');
     details.dataset.questionPanel = type.key;
     if (type.disabled) details.setAttribute('aria-disabled', 'true');
-    details.open = isActiveType || (!activeTool && typeIndex === 0);
+    // No question family is privileged on entry: start collapsed unless a card
+    // from that family is actively being answered.
+    details.open = isActiveType;
     const summary = document.createElement('summary');
     summary.className = 'question-type-summary';
     summary.innerHTML = `<span class="question-number">${type.number}</span>
@@ -1032,9 +1138,25 @@ function chooseQuestion(type, card) {
     questionPreview.active = true;
     questionPreview.type = activeTool;
   }
+  const areaMode = matchingAreaMode();
+  if (areaMode && areaMode.kind === 'zone') {
+    draft.matchLoading = true;
+    ensureMatchingAreaSource(areaMode).then(() => {
+      if (matchingAreaMode() && matchingAreaMode().sourceKey === areaMode.sourceKey) {
+        draft.matchLoading = false;
+        renderToolForm();
+      }
+    }).catch(() => {
+      if (matchingAreaMode() && matchingAreaMode().sourceKey === areaMode.sourceKey) {
+        draft.matchLoading = false;
+        renderToolForm();
+      }
+    });
+  }
   renderToolForm();
-  const directMapEntry = ['radar', 'thermometer', 'measuring'].includes(activeTool) &&
-    !(activeTool === 'radar' && draft.customRadius && !draft.radiusM);
+  const directMapEntry = (['radar', 'thermometer', 'measuring'].includes(activeTool) &&
+    !(activeTool === 'radar' && draft.customRadius && !draft.radiusM)) ||
+    (activeTool === 'nearest' && !!areaMode);
   if (directMapEntry && window.innerWidth <= 820) closeSheet();
   const pane = document.querySelector('[data-pane="ask"]');
   const panel = document.querySelector(`[data-question-panel="${type.key}"]`);
@@ -1217,12 +1339,21 @@ function previewConstraintFromDraft() {
       return draft.seeker && draft.target && draft.answer
         ? { type: 'measuring', seeker: draft.seeker, target: draft.target, answer: draft.answer }
         : null;
-    case 'nearest':
+    case 'nearest': {
+      const areaMode = matchingAreaMode();
+      if (areaMode) {
+        return draft.matchGeometry && draft.answer
+          ? { type: 'zone', geometry: draft.matchGeometry, answer: draft.answer,
+              matching: true, categoryName: selectedQuestion ? selectedQuestion.label : areaMode.label,
+              zoneName: draft.matchName || areaMode.label }
+          : null;
+      }
       return draft.points && draft.points.length && draft.index != null && draft.answer &&
              (!draft.radiusM || draft.seeker)
         ? { type: 'nearest', points: draft.points.slice(), index: draft.index,
             radiusM: draft.radiusM || null, seeker: draft.seeker || null, answer: draft.answer }
         : null;
+    }
     case 'transit':
       return draft.lineGeom && draft.bufferM && draft.answer
         ? { type: 'transit', geometry: draft.lineGeom, bufferM: draft.bufferM, answer: draft.answer }
@@ -1267,6 +1398,12 @@ function previewInstruction() {
     if (!draft.b) return 'Drag the circular handle to choose a possible end point.';
     if (!draft.answer) return 'The cyan line is the split. Choose Hotter or Colder to preview which side remains.';
     return '';
+  }
+  if (activeTool === 'nearest' && matchingAreaMode()) {
+    if (!draft.matchGeometry) return draft.matchLoading
+      ? `Loading ${matchingAreaMode().label} boundaries…`
+      : 'Tap your position on the map to identify your area.';
+    if (!draft.answer) return `You selected ${draft.matchName}. Choose Match or No match to preview the cut.`;
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
@@ -1390,7 +1527,11 @@ function clearLiveDraftGeometry() {
   } else if (activeTool === 'measuring') {
     delete draft.seeker; delete draft.target;
   } else if (activeTool === 'nearest') {
-    draft.points = []; draft.index = null;
+    if (matchingAreaMode()) {
+      delete draft.matchPoint; delete draft.matchGeometry; delete draft.matchName;
+    } else {
+      draft.points = []; draft.index = null;
+    }
   } else if (activeTool === 'transit') {
     delete draft.lineGeom; delete draft.lineName;
   } else if (activeTool === 'zone') {
@@ -1454,23 +1595,31 @@ function radarForm(box) {
     const row = document.createElement('div');
     row.className = 'inline custom-distance-row';
     const inp = document.createElement('input');
-    inp.type = 'number'; inp.min = '0.01'; inp.step = 'any'; inp.inputMode = 'decimal';
+    // type=number rejects useful intermediate states such as "0." on several
+    // mobile keyboards (and Danish keyboards commonly emit a comma). Keep the
+    // user's text intact and parse both decimal separators ourselves.
+    inp.type = 'text'; inp.inputMode = 'decimal'; inp.autocomplete = 'off';
+    inp.pattern = '[0-9]*[.,]?[0-9]*';
     inp.placeholder = 'Distance';
     inp.value = draft.customValue || '';
     const unit = document.createElement('select');
     unit.innerHTML = '<option value="mi">miles</option><option value="ft">feet</option><option value="km">kilometres</option><option value="m">metres</option>';
     unit.value = draft.customUnit || 'mi';
     const update = () => {
-      const value = Number(inp.value);
+      const value = parsePositiveDecimal(inp.value);
       draft.customValue = inp.value;
       draft.customUnit = unit.value;
-      if (!(value > 0)) { draft.radiusM = null; draft.label = null; return; }
+      if (!(value > 0)) { draft.radiusM = null; draft.label = null; syncQuestionPreview(); return; }
       const factors = { mi: MI, ft: FT, km: 1000, m: 1 };
       const labels = { mi: value === 1 ? 'mile' : 'miles', ft: 'ft', km: 'km', m: 'm' };
       draft.radiusM = value * factors[unit.value];
       draft.label = `${value} ${labels[unit.value]}`;
+      syncQuestionPreview();
     };
-    inp.addEventListener('input', () => { update(); renderToolForm(); });
+    inp.addEventListener('input', update);
+    // Rebuild only after editing is complete so the live Log button state is
+    // refreshed without destroying the mobile keyboard mid-decimal.
+    inp.addEventListener('change', () => { update(); renderToolForm(); });
     unit.addEventListener('change', () => { update(); renderToolForm(); });
     row.append(inp, unit);
     custom.appendChild(row);
@@ -1530,7 +1679,7 @@ function radarForm(box) {
         selectedQuestion.data = data || {};
         draft.customRadius = isCustom;
         if (isCustom) {
-          const value = Number(draft.customValue);
+          const value = parsePositiveDecimal(draft.customValue);
           const factors = { mi: MI, ft: FT, km: 1000, m: 1 };
           if (value > 0) {
             draft.radiusM = value * factors[draft.customUnit || 'mi'];
@@ -1647,6 +1796,39 @@ function measuringForm(box) {
 
 /* --- matching / tentacles --- */
 function nearestForm(box) {
+  const areaMode = matchingAreaMode();
+  if (areaMode) {
+    const info = document.createElement('div');
+    info.className = 'map-point-status matching-area-status';
+    const stateText = draft.matchName
+      ? draft.matchName
+      : (draft.matchLoading ? `Loading ${areaMode.label} boundaries…` : 'Tap your position on the map');
+    info.innerHTML = `<div><strong>${areaMode.kind === 'landmass' ? 'Your landmass' : `Your ${escapeHtml(areaMode.label)}`}</strong>
+      <small>${escapeHtml(stateText)}</small></div>`;
+    box.appendChild(info);
+
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = areaMode.kind === 'landmass'
+      ? 'For Aalborg, the Limfjord is the useful landmass split: Nørresundby versus the play area south of the fjord. Tap where you asked from.'
+      : `The official ${areaMode.label} layer is used directly. Tap where you asked from and the containing area will be selected.`;
+    box.appendChild(hint);
+
+    const mapBtn = document.createElement('button');
+    mapBtn.type = 'button'; mapBtn.className = 'ghost-btn wide';
+    mapBtn.textContent = draft.matchGeometry ? 'Change position on map' : 'Open map to choose position';
+    mapBtn.addEventListener('click', closeSheet);
+    box.appendChild(mapBtn);
+
+    answerSeg(box, [['yes', 'Match'], ['no', 'No match']]);
+    actions(box, !!(draft.matchGeometry && draft.answer), () => commit({
+      type: 'zone', geometry: draft.matchGeometry, zoneName: draft.matchName || areaMode.label,
+      categoryName: selectedQuestion ? selectedQuestion.label : areaMode.label,
+      matching: true, answer: draft.answer
+    }));
+    return;
+  }
+
   draft.points = draft.points || [];
 
   const f0 = document.createElement('div');
@@ -2383,6 +2565,19 @@ function addLayer(name, geojson, opts = {}) {
             draft.zoneGeometry = ft.geometry;
             draft.zoneName = featureName(ft, rec);
             renderToolForm(); openSheet();
+          }
+        }
+        if (kind === 'poly' && activeTool === 'nearest' && matchingAreaMode()) {
+          const mode = matchingAreaMode();
+          if ((mode.kind === 'zone' && rec.sourceKey === mode.sourceKey) ||
+              (mode.kind === 'landmass' && rec.sourceKey === 'zone2')) {
+            L.DomEvent.stopPropagation(e);
+            const ll = e.latlng;
+            if (ll && setMatchingAreaFromCoord([ll.lng, ll.lat])) {
+              renderToolForm();
+              if (window.innerWidth <= 820) openSheet('ask');
+            }
+            return;
           }
         }
         if (kind === 'line' && activeTool === 'transit') {
@@ -4315,6 +4510,11 @@ function syncMobileNav(view) {
 function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.tabpane').forEach((p) => p.classList.toggle('is-active', p.dataset.pane === name));
+  // Returning to Ask with no draft should present a clean deck, not whatever
+  // accordion happened to be open last time.
+  if (name === 'ask' && !activeTool) {
+    $$('.question-type').forEach((d) => { d.open = false; });
+  }
   if ($('#panel').classList.contains('is-open')) syncMobileNav(name);
 }
 $$('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -4628,5 +4828,6 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, solveCurrentArea,
+  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, parsePositiveDecimal,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };

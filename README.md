@@ -58,6 +58,15 @@ and the available cards:
   records the question without changing the possible map area.
 
 On phones, the deck uses one-column touch targets, a tall bottom sheet, and sticky answer controls.
+All six question families start collapsed; returning to Ask with no active draft returns to that clean
+collapsed view.
+
+**Post-game usability fixes.** Custom Radar distances use a mobile-friendly decimal text field rather
+than a native number field. Both `0.5` and `0,5` are accepted, and the live Radar circle updates while
+you type. Matching cards for the four administrative zone levels now use the official zone polygons
+directly: tap where you asked from, choose Match / No match, and the map previews the corresponding
+cut. The Landmass Matching card behaves the same way using the Limfjord as Aalborg's practical split
+between Nørresundby and the play area south of the fjord.
 
 ## How each question narrows the map
 
@@ -71,7 +80,7 @@ together, and whatever survives is the bright area.
 | **Zone** — "same district as me?" | The district polygon, from any of the four zone levels. |
 | **Thermometer** — "after travelling ___, am I hotter or colder?" | The perpendicular bisector between your start and end point. *Hotter* keeps the half nearer the end point. |
 | **Measuring** — "compared to me, are you closer to or further from ___?" | A circle centred on the thing, with a radius equal to *your* distance from it. |
-| **Matching** — "is your nearest ___ the same as mine?" | Drop a pin on every candidate in the play area and tap the one nearest you. The map splits into nearest-point territories; you keep yours, or everything but yours. |
+| **Matching** — "is your nearest ___ the same as mine?" | Point-based cards use nearest-point territories. Administrative-zone cards instead select your containing official zone directly, and Landmass uses the Limfjord split; Match / No match previews the corresponding area immediately. |
 | **Tentacles** | Shown for reference, but disabled in this small-game Aalborg build. |
 | **Zone** | Same district / parish / postal code as you — one tap on a loaded zone layer. |
 | **Photos** | Records the requested photo and its framing rule without narrowing the map directly. |
