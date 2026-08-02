@@ -190,6 +190,25 @@ const NT_BUS_LAYER_EXCLUDE = /(?:stoppested|station|zone|takst|tog|train|bane)/i
    The route is inserted only when no loaded source already contains its ref. */
 const REQUIRED_BUS_ROUTE_SUPPLEMENTS = [
   {
+    // NT's current timetable still lists line 11, but it is not consistently
+    // present in the public route-map layers. Reconstruct it from its named
+    // stops only when every loaded route source is missing ref 11.
+    ref: '11',
+    name: 'Skelagervej – Troensevej via Hasseris and Aalborg St.',
+    anchors: [
+      ['Skelagergårdene', 'Skelagervej'],
+      ['Hasseris Gymnasium'],
+      ['Jens Kalstrups Vej'],
+      ['Hasseris Bymidte'],
+      ['Otiumgården'],
+      ['Aalborg St', 'Aalborg Station', 'Aalborg Busterminal'],
+      ['Østerbro', 'Osterbro'],
+      ['Nørre Tranders Vej', 'Nr. Tranders Vej'],
+      ['Humlebakken'],
+      ['Troensevej']
+    ]
+  },
+  {
     ref: '38',
     name: 'Aalborg St. – Klitgård via Hasseris',
     anchors: [
@@ -218,8 +237,7 @@ const ROUTE_SOURCES = {
   bus:   { name: 'All bus routes',
            meta: 'NT official · main and branch routes, plus missing-route fallback',
            kind: 'nt-all', tables: NT_BUS_TABLES, fallbackFilter: '["route"="bus"]' },
-  train: { name: 'Train lines', meta: 'OpenStreetMap · tappable', kind: 'overpass',
-           filter: '["route"~"^(train|light_rail)$"]' }
+  train: { name: 'Train lines', meta: 'OpenStreetMap railway tracks · tappable', kind: 'railways' }
 };
 
 const TRANSIT_STOP_SOURCE = {
@@ -271,7 +289,7 @@ const AALBORG_PARK_ADJACENT_FALLBACK = [
    similar to Golfparken and Vandbakken without returning to the old "anything green"
    rule that admitted tiny residential lawns/back yards. Official/curated names are
    never subject to this size threshold. */
-const PARK_AUTO_MIN_AREA_M2 = 10000; // 1 hectare
+const PARK_AUTO_MIN_AREA_M2 = 2500; // 0.25 hectare; still requires a real named leisure=park
 
 /* Aalborg Bibliotekerne's current organisation is ten physical libraries plus
    Haraldslund as a service point. Keep the whole official set here, even though
@@ -307,6 +325,17 @@ const AALBORG_LIBRARY_FALLBACK = AALBORG_LIBRARY_LOCATIONS.map((x) => ({
   ...x, authoritative: true
 }));
 
+/* Region Nordjylland's current Aalborg University Hospital sites. Addresses are
+   authoritative; Dataforsyningen resolves their coordinates in parallel and the
+   normal game-area filter decides which ones participate in Matching. */
+const AALBORG_HOSPITAL_FALLBACK = [
+  { name: 'Aalborg Universitetshospital, Hospitalsbyen', address: 'Hospitalsbyen 1, 9260 Gistrup', authoritative: true },
+  { name: 'Aalborg Universitetshospital, Syd', address: 'Hobrovej 18-22, 9000 Aalborg', authoritative: true },
+  { name: 'Aalborg Universitetshospital, Nord', address: 'Reberbansgade 15, 9000 Aalborg', authoritative: true },
+  { name: 'Aalborg Universitetshospital, Mølleparkvej', address: 'Mølleparkvej 10, 9000 Aalborg', authoritative: true },
+  { name: 'Aalborg Universitetshospital, Brandevej', address: 'Brandevej 5, 9220 Aalborg Ø', authoritative: true }
+];
+
 const MATCHING_POI_DEFS = {
   'commercial airport': {
     key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
@@ -317,7 +346,7 @@ const MATCHING_POI_DEFS = {
   },
   'park': {
     key: 'park', singular: 'park', plural: 'parks',
-    filters: ['["leisure"="park"]', '["leisure"="nature_reserve"]', '["boundary"="protected_area"]["name"]'],
+    filters: ['["leisure"="park"]', '["leisure"="garden"]', '["landuse"="recreation_ground"]', '["leisure"="nature_reserve"]', '["boundary"="protected_area"]["name"]', '["natural"="wood"]["name"]', '["landuse"="forest"]["name"]'],
     officialNames: OFFICIAL_AALBORG_PARKS,
     officialExactNames: AALBORG_PARK_ADJACENT_EXACT,
     fallback: AALBORG_PARK_ADJACENT_FALLBACK
@@ -327,7 +356,8 @@ const MATCHING_POI_DEFS = {
     filters: ['["tourism"="theme_park"]']
   },
   'zoo': {
-    key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]']
+    key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]'],
+    fallback: [{ name: 'Aalborg Zoo', coordinates: [9.89970, 57.03804], authoritative: true }]
   },
   'aquarium': {
     key: 'aquarium', singular: 'aquarium', plural: 'aquariums', filters: ['["tourism"="aquarium"]']
@@ -347,7 +377,8 @@ const MATCHING_POI_DEFS = {
   },
   'hospital': {
     key: 'hospital', singular: 'hospital', plural: 'hospitals',
-    filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]']
+    filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]'],
+    fallback: AALBORG_HOSPITAL_FALLBACK
   },
   'library': {
     key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]'],
@@ -4171,12 +4202,12 @@ function normaliseStopName(value) {
 
 function overpassBusStopQuery() {
   const [s2, w, n, e] = OVERPASS_BBOX;
-  const named = `[~"^(name|name:da|official_name)$"~"."]`;
+  // Supplement reconstruction needs names, not platform geometry. Nodes-only
+  // keeps the emergency route-11/38 lookup much lighter than the old query.
   return `[out:json][timeout:30];(` +
-    `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
-    `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
-    `way(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
-    `);out center tags;`;
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"]["name"];` +
+    `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]["name"];` +
+    `);out tags;`;
 }
 
 function parseOverpassStops(json) {
@@ -4192,46 +4223,56 @@ function parseOverpassStops(json) {
   return out;
 }
 
-function overpassTransitStopsQuery(bbox = activeGameBbox(.6)) {
+function overpassTransitStopsQuery(bbox = activeGameBbox(.35)) {
   const [s2, w, n, e] = bbox;
-  // Only named stops can be displayed or used for Matching, so ask Overpass
-  // for named features up front instead of downloading thousands of anonymous
-  // platforms/stop positions and throwing them away afterwards. Accept Danish
-  // and official-name-only records too; those are named even without `name=*`.
-  const named = `[~"^(name|name:da|official_name)$"~"."]`;
-  return `[out:json][timeout:30];(` +
-    `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="platform"]${named};` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="stop_position"]${named};` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="station"]${named};` +
-    `nwr(${s2},${w},${n},${e})["railway"~"^(station|halt|tram_stop)$"]${named};` +
-    `);out center tags;`;
+  // Keep each request deliberately small and node-focused. In Aalborg the useful
+  // named bus/rail stops are represented by nodes; fetching every platform way,
+  // stop_position relation and anonymous object made this layer needlessly heavy.
+  return `[out:json][timeout:25];(` +
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"]["name"];` +
+    `node(${s2},${w},${n},${e})["public_transport"="platform"]["name"];` +
+    `node(${s2},${w},${n},${e})["public_transport"="stop_position"]["name"];` +
+    `node(${s2},${w},${n},${e})["public_transport"="station"]["name"];` +
+    `node(${s2},${w},${n},${e})["railway"~"^(station|halt|tram_stop)$"]["name"];` +
+    `);out tags;`;
 }
 
-async function fetchTransitStopsJson() {
-  const bbox = activeGameBbox(.6);
-  try {
-    return await overpassJson(overpassTransitStopsQuery(bbox), { timeoutMs: 25000 });
-  } catch (wholeErr) {
-    const [south, west, north, east] = bbox;
-    const midLat = (south + north) / 2;
-    const midLng = (west + east) / 2;
-    const boxes = [
-      [south, west, midLat, midLng], [south, midLng, midLat, east],
-      [midLat, west, north, midLng], [midLat, midLng, north, east]
-    ];
-    const settled = await Promise.allSettled(boxes.map((box, i) =>
-      overpassJson(overpassTransitStopsQuery(box), {
-        timeoutMs: 18000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
-      })
-    ));
-    const elements = [];
-    settled.forEach((r) => {
-      if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.elements)) elements.push(...r.value.elements);
-    });
-    if (!elements.length) throw wholeErr;
-    return { elements };
+function splitBboxGrid(bbox, rows = 2, cols = 3) {
+  const [south, west, north, east] = bbox;
+  const out = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const s = south + (north - south) * r / rows;
+    const n = south + (north - south) * (r + 1) / rows;
+    const w = west + (east - west) * c / cols;
+    const e = west + (east - west) * (c + 1) / cols;
+    out.push([s, w, n, e]);
   }
+  return out;
+}
+
+async function fetchTransitStopsSections(onSection) {
+  const boxes = splitBboxGrid(activeGameBbox(.35), 2, 3);
+  const results = new Array(boxes.length).fill(null);
+  let cursor = 0, finished = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= boxes.length) return;
+      try {
+        results[i] = await overpassJson(overpassTransitStopsQuery(boxes[i]), { timeoutMs: 26000 });
+      } catch (_) {
+        // A failed section must not discard stops already obtained elsewhere.
+        results[i] = null;
+      }
+      finished++;
+      if (onSection) onSection(results[i], finished, boxes.length, i);
+    }
+  };
+  // Two requests at once is fast enough without hammering public Overpass mirrors.
+  await Promise.all([worker(), worker()]);
+  const elements = [];
+  results.forEach((r) => { if (r && Array.isArray(r.elements)) elements.push(...r.elements); });
+  return { elements, completed: results.filter(Boolean).length, total: boxes.length };
 }
 
 function parseTransitStops(json) {
@@ -4263,6 +4304,28 @@ function parseTransitStops(json) {
     }));
   }
   return { type: 'FeatureCollection', features };
+}
+
+function mergeTransitStopCollections(a, b) {
+  const features = [], seen = new Set();
+  for (const ft of [...((a && a.features) || []), ...((b && b.features) || [])]) {
+    if (!ft || !ft.geometry || ft.geometry.type !== 'Point') continue;
+    const c = ft.geometry.coordinates, p = ft.properties || {};
+    const key = `${p.__stopKind || ''}:${Math.round(c[0] * 1e6)}:${Math.round(c[1] * 1e6)}:${normaliseStopName(p.name)}`;
+    if (seen.has(key)) continue;
+    seen.add(key); features.push(ft);
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function replaceTransitStopLayer(gj) {
+  const rec = S.transitStops;
+  if (rec.layer && map.hasLayer(rec.layer)) map.removeLayer(rec.layer);
+  rec.geojson = gj;
+  rec.busCount = (gj.features || []).filter((f) => f.properties.__stopKind === 'bus').length;
+  rec.trainCount = (gj.features || []).filter((f) => f.properties.__stopKind === 'train').length;
+  rec.layer = buildTransitStopLayer(gj);
+  syncTransitStops();
 }
 
 function buildTransitStopLayer(gj) {
@@ -4318,31 +4381,32 @@ async function toggleTransitStops(btn) {
   }
   if (rec.loading) return;
   rec.loading = true;
-  setMapLoadingTask('transit-stops', 'bus & train stops', true);
+  rec.visible = true;
+  rec.geojson = { type: 'FeatureCollection', features: [] };
+  setMapLoadingTask('transit-stops', 'bus & train stops (0/6 areas)', true);
   if (btn) btn.classList.add('is-busy');
   renderSourceRows();
-  setStatus('Loading bus and train stops…');
+  setStatus('Loading bus and train stops in six smaller map sections…');
   try {
-    let gj = parseTransitStops(await fetchTransitStopsJson());
-    // The small game only needs stops inside the current game area. Querying a
-    // small padded box keeps edge stops discoverable; discard the padding before
-    // drawing so off-map stops never clutter Matching or the layer.
-    gj = filterMatchingPoisToPlayArea(gj);
-    if (!gj.features.length) throw new Error('the map service returned no named stops inside the game area');
-    rec.geojson = gj;
-    rec.busCount = gj.features.filter((f) => f.properties.__stopKind === 'bus').length;
-    rec.trainCount = gj.features.filter((f) => f.properties.__stopKind === 'train').length;
-    rec.layer = buildTransitStopLayer(gj);
+    const result = await fetchTransitStopsSections((json, done, total) => {
+      if (json) {
+        let chunk = filterMatchingPoisToPlayArea(parseTransitStops(json));
+        rec.geojson = mergeTransitStopCollections(rec.geojson, chunk);
+        replaceTransitStopLayer(rec.geojson);
+      }
+      setMapLoadingTask('transit-stops', `bus & train stops (${done}/${total} areas)`, true);
+      renderSourceRows();
+    });
+    if (!rec.geojson.features.length) throw new Error('no named stops could be loaded from any map section');
     rec.loaded = true;
-    rec.visible = true;
-    syncTransitStops();
-    setStatus(`Transit stops: ${rec.busCount} bus stops and ${rec.trainCount} train/rail stops loaded. ` +
-      'They appear from zoom level 12 and can be tapped when building Matching or Measuring questions.');
+    replaceTransitStopLayer(rec.geojson);
+    const partial = result.completed < result.total ? ` (${result.completed}/${result.total} sections answered)` : '';
+    setStatus(`Transit stops: ${rec.busCount} bus · ${rec.trainCount} rail${partial}.`);
   } catch (err) {
-    setStatus(`Bus and train stops failed — ${err.message}.`, true);
+    setStatus(`Bus & train stops failed — ${err.message}.`, true);
   } finally {
     rec.loading = false;
-    setMapLoadingTask('transit-stops', null, false);
+    setMapLoadingTask('transit-stops', '', false);
     if (btn) btn.classList.remove('is-busy');
     renderSourceRows();
   }
@@ -4487,6 +4551,48 @@ async function fetchNtBusRoutes() {
   const supplements = await addMissingBusRouteSupplements(gj);
   const summary = routeSummary(gj);
   return { gj, loaded, failed, supplements, summary, discovered };
+}
+
+/* ---------- physical railway geometry via OpenStreetMap ------------------
+   Train route relations are comparatively large and inconsistent. For the game
+   layer we need the railway corridors themselves, so fetch railway ways instead.
+   This is a much smaller query and does not depend on service-route relations. */
+function overpassRailwayQuery(bbox = activeGameBbox(.8)) {
+  const [s2, w, n, e] = bbox;
+  return `[out:json][timeout:30];way(${s2},${w},${n},${e})["railway"~"^(rail|light_rail)$"];out geom tags;`;
+}
+
+function parseOverpassRailways(json) {
+  const features = [];
+  for (const el of (json && json.elements) || []) {
+    if (el.type !== 'way' || !Array.isArray(el.geometry)) continue;
+    const coords = el.geometry.filter((p) => Number.isFinite(p && p.lon) && Number.isFinite(p && p.lat))
+      .map((p) => [p.lon, p.lat]);
+    if (coords.length < 2) continue;
+    const t = el.tags || {};
+    if (/^(yard|siding|spur)$/.test(String(t.service || '').toLowerCase())) continue;
+    const name = t.name || t.ref || (t.railway === 'light_rail' ? 'Light rail' : 'Railway');
+    features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords },
+      properties: { name, navn: name, __displayName: name, railway: t.railway || 'rail' } });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+async function fetchRailwayLines() {
+  const bbox = activeGameBbox(.8);
+  try {
+    const gj = parseOverpassRailways(await overpassJson(overpassRailwayQuery(bbox), { timeoutMs: 30000 }));
+    if (gj.features.length) return gj;
+  } catch (_) { /* split below */ }
+  const boxes = splitBboxGrid(bbox, 2, 2);
+  const settled = await Promise.allSettled(boxes.map((box) =>
+    overpassJson(overpassRailwayQuery(box), { timeoutMs: 24000 })
+  ));
+  const features = [];
+  for (const r of settled) if (r.status === 'fulfilled') features.push(...parseOverpassRailways(r.value).features);
+  const gj = { type: 'FeatureCollection', features: dedupeRouteFeatures(features) };
+  if (!gj.features.length) throw new Error('no railway geometry returned');
+  return gj;
 }
 
 /* ---------- OpenStreetMap routes via Overpass -------------------------- */
@@ -4651,6 +4757,9 @@ async function toggleRoute(key, btn) {
       gj = routeInfo.gj;
       const missing = routeInfo.failed.length ? `; ${routeInfo.failed.join(', ')} supplemented where possible` : '';
       note = `${routeInfo.loaded.join(', ')}${missing}`;
+    } else if (r.kind === 'railways') {
+      gj = await fetchRailwayLines();
+      note = 'physical railway geometry from OpenStreetMap';
     } else if (r.kind === 'overpass') {
       gj = await fetchOverpass(r.filter);
       ({ note } = normaliseCoords(gj));
@@ -5492,7 +5601,7 @@ function renderSourceRows() {
     sbox.innerHTML = '';
     const stops = S.transitStops;
     const state = stops.loading ? 'loading' : !stops.loaded ? 'idle' : stops.visible ? 'on' : 'off';
-    const counts = stops.loading ? 'Loading named stops inside the game area…' : stops.loaded
+    const counts = stops.loading ? `${stops.busCount || 0} bus · ${stops.trainCount || 0} rail loaded so far…` : stops.loaded
       ? `${stops.busCount} bus · ${stops.trainCount} rail${state === 'on' ? '' : ' · hidden'}`
       : TRANSIT_STOP_SOURCE.meta;
     sbox.appendChild(sourceRow(TRANSIT_STOP_SOURCE.name, counts, state,
@@ -6054,6 +6163,6 @@ window.HS = {
   matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
-  questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsJson,
+  questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsSections, splitBboxGrid, fetchRailwayLines,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };

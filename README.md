@@ -363,3 +363,10 @@ On phones, the old permanent Questions drawer handle has been replaced by a five
 - The redundant **Open map** / **Clear map draft** controls were removed. The compact draft/impact text remains; use the mobile **Map** tab to view the map, and Close/Cancel to clear a draft.
 - Danish `aa` and `å` spellings are now canonicalised **for every automatic POI category**, not just libraries. This fixes cases such as **Vejgaard/Vejgård** while also making duplicate/fallback matching consistent for museums, parks, golf courses, hospitals, etc.
 - Library Matching now uses Aalborg Bibliotekernes complete current physical network as its authoritative list: **10 libraries plus Haraldslund service point**. All eleven locations have authoritative fallback metadata. The six central locations retain fixed current coordinates; if one of the other official branches is missing from OSM, its official street address is resolved through Dataforsyningen. The usual play-area filter still runs afterward, so Nibe/Hals/etc. cannot affect an Aalborg-small-game nearest-library question merely because they are on the municipal list.
+
+
+### Loading reliability (August 2026)
+
+Transit data deliberately uses different strategies by data type. Bus routes combine NT's public vector layers, OSM supplementation and named-stop reconstruction for known current lines that are missing from the map feed (currently 11 and 38). Train lines use physical OSM railway ways rather than heavy route relations. Bus/train stops load progressively in six small sections, so successful sections appear even if another Overpass request times out.
+
+Automatic Matching POIs use authoritative local fallbacks where available (libraries, Aalborg Airport, Aalborg Zoo, golf and Aalborg University Hospital sites) and use OSM as enrichment rather than as the sole source.

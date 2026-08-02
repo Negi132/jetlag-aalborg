@@ -494,6 +494,7 @@ const discoveredBusTables = window.eval("HS.ntBusLayerDefs(window.__ntCapsLayers
 check('WFS discovery includes regional branch runs', discoveredBusTables.includes('rutekortweb.ntmap_regionalbus_biforloeb_murl'));
 check('WFS discovery includes local branch runs', discoveredBusTables.includes('rutekortweb.ntmap_lokalbus_biforloeb_murl'));
 check('WFS discovery excludes trains', !discoveredBusTables.includes('rutekortweb.ntmap_tog_murl'));
+check('route 11 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11')"));
 check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
 window.__stopsFixture = [
   {type:'node',lat:57.043,lon:9.918,tags:{name:'Aalborg St. (Perron C9)'}},
@@ -507,7 +508,7 @@ window.__stopsFixture = [
   {type:'node',lat:57.015,lon:9.720,tags:{name:'Klitgård'}}
 ];
 window.__parsedStops = window.eval("HS.parseOverpassStops({elements:window.__stopsFixture})");
-const matched38Stops = window.eval("HS.matchSupplementStops(window.__parsedStops, HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS[0])");
+const matched38Stops = window.eval("HS.matchSupplementStops(window.__parsedStops, HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.find(x=>x.ref==='38'))");
 check('route 38 stop names match despite parenthetical text', matched38Stops.length >= 8, `got ${matched38Stops.length}`);
 const extractedRefs = window.eval("HS.extractRouteRefs({rutenr:'Linje 11, 12 og 14'}).join(', ')");
 check('combined line-number fields are parsed', extractedRefs === '11, 12, 14', extractedRefs);
@@ -1226,9 +1227,9 @@ check('generic map loading manager can represent non-zone loads', window.eval(`(
 console.log('\n== bus and train stops ==');
 check('stop query requests only named bus/rail features in the compact game-area bbox', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();
-  const bb = HS.activeGameBbox(.6);
+  const bb = HS.activeGameBbox(.35);
   return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$') &&
-    q.includes('name:da|official_name') && q.includes(String(bb[0])) && !q.includes('56.94,9.7,57.18,10.25');
+    q.includes('["name"]') && q.includes(String(bb[0])) && !q.includes('56.94,9.7,57.18,10.25');
 })()`));
 check('stop parser classifies named bus/train points and drops unnamed transit stops', window.eval(`(() => {
   const gj = HS.parseTransitStops({elements:[
@@ -1240,6 +1241,11 @@ check('stop parser classifies named bus/train points and drops unnamed transit s
   return gj.features.length === 2 && gj.features[0].properties.__stopKind === 'bus' &&
          gj.features[1].properties.__stopKind === 'train' &&
          gj.features.every((f) => !!f.properties.name && !/^Unnamed/.test(f.properties.name));
+})()`));
+
+check('train layer uses lightweight physical railway geometry instead of route relations', window.eval(`(() => {
+  const q = HS.fetchRailwayLines ? true : false;
+  return q && HS.ROUTE_SOURCES.train.kind === 'railways';
 })()`));
 
 console.log('\n== runtime errors ==');
