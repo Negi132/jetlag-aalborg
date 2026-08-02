@@ -124,7 +124,7 @@ Two things worth knowing:
 
 ### Matching POIs: game-area filtering and park-like nature areas
 
-Nearest-place Matching now considers **only candidates whose representative point lies inside the current play area**. The OpenStreetMap query still uses a larger Aalborg bounding box for reliability, but outside candidates are removed before markers, nearest-place selection, and territory construction.
+Nearest-place Matching considers **only candidates whose representative point lies inside the current play area**. Network requests are now limited to the play area's own bounding box plus a small edge buffer, and the edge-buffer candidates are removed before markers, nearest-place selection, and territory construction. This makes the queries substantially smaller without changing the game rule.
 
 The Park card uses Aalborg Kommune's official park list as its strict base. It also deliberately treats **Østerådalen Nord/Syd, Golfparken and Vandbakken** as park-equivalent for this game. The municipality describes Østerådalen and Vandbakken as recreational/significant green areas, while Golfparken is a public green recreation area and is mapped as a park.
 
@@ -342,6 +342,14 @@ stations, halts and tram stops. Bus and rail points use different symbols, appea
 and can be tapped directly while preparing Matching or Measuring questions. **Unnamed stops are filtered
 out completely**, so anonymous platforms/stop positions no longer clutter the map or Matching candidates.
 
+
+### Faster loading and shared progress indicator
+
+All network-backed map data now uses the same loading bar at the top of the map: zone boundaries, bus/train routes, bus/train stops, and automatic Matching POIs. Source rows also show a loading state where relevant.
+
+Automatic POIs with authoritative/local fallbacks no longer wait for OpenStreetMap before becoming useful. Known coordinates (for example central libraries, Aalborg Airport, golf courses and curated parks) appear immediately; address-only authoritative locations are resolved in parallel with short deadlines while OpenStreetMap enriches the candidate list in parallel. Overpass requests use a much smaller game-area bounding box, race independent mirrors rather than waiting for them serially, and use parallel split-box retries with a bounded time budget.
+
+The **Bus & train stops** request is likewise limited to the current game area plus a small buffer and asks Overpass only for **named** features up front. The old query searched all of greater Aalborg for broad platform/stop-position categories and then discarded anonymous results locally, which was both slow and wasteful. If the compact request fails, four small game-area quadrants are tried concurrently.
 
 ### Mobile navigation
 

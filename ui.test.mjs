@@ -1134,9 +1134,11 @@ check('Thermometer preview exposes a bisector without requiring an answer', wind
 })()`));
 
 console.log('\n== automatic matching places ==');
-check('POI matching query uses the supplied OSM tag filter', window.eval(`(() => {
+check('POI matching query uses the supplied OSM tag filter and compact game-area bbox', window.eval(`(() => {
   const q = HS.matchingPoiOverpassQuery({ filters:['["tourism"="museum"]'] });
-  return q.includes('nwr(56.94,9.7,57.18,10.25)') && q.includes('tourism"="museum') && q.includes('out center tags');
+  const bb = HS.activeGameBbox(1.5);
+  return q.includes('tourism"="museum') && q.includes('out center tags') && q.includes('[timeout:12]') &&
+    q.includes(String(bb[0])) && q.includes(String(bb[1])) && !q.includes('nwr(56.94,9.7,57.18,10.25)');
 })()`));
 check('POI parser accepts nodes and area centres and removes duplicate representations', window.eval(`(() => {
   const mode = { key:'museum', singular:'museum' };
@@ -1214,10 +1216,19 @@ check('automatic Matching removes candidates outside the current game area', win
   return gj.features.length === 1 && gj.features[0].properties.name === 'Inside';
 })()`));
 
+check('generic map loading manager can represent non-zone loads', window.eval(`(() => {
+  HS.setMapLoadingTask('test-load', 'test data', true);
+  const visible = !document.querySelector('#zoneLoadProgress').hidden && document.querySelector('#zoneLoadProgressText').textContent.includes('test data');
+  HS.setMapLoadingTask('test-load', null, false);
+  return visible && document.querySelector('#zoneLoadProgress').hidden;
+})()`));
+
 console.log('\n== bus and train stops ==');
-check('stop query requests both bus and railway features', window.eval(`(() => {
+check('stop query requests only named bus/rail features in the compact game-area bbox', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();
-  return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$');
+  const bb = HS.activeGameBbox(.6);
+  return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$') &&
+    q.includes('name:da|official_name') && q.includes(String(bb[0])) && !q.includes('56.94,9.7,57.18,10.25');
 })()`));
 check('stop parser classifies named bus/train points and drops unnamed transit stops', window.eval(`(() => {
   const gj = HS.parseTransitStops({elements:[

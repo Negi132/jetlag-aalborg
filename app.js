@@ -389,7 +389,7 @@ const S = {
    Keep loading state separate from the saved game: it is UI-only and lets
    both the Layers tab and map show that something is actually happening. */
 const zoneLoads = new Set();
-let questionMapLoadLabel = null;
+const mapLoadTasks = new Map();
 
 /* ---------- helpers ------------------------------------------------ */
 
@@ -405,20 +405,21 @@ function updateZoneLoadProgress() {
   const box = $('#zoneLoadProgress');
   const text = $('#zoneLoadProgressText');
   if (!box || !text) return;
-  const keys = Array.from(zoneLoads);
-  const parts = [];
-  if (keys.length) parts.push(`${keys.map(zoneLevelName).join(', ')} boundaries`);
-  if (questionMapLoadLabel) parts.push(questionMapLoadLabel);
+  const parts = Array.from(mapLoadTasks.values()).filter(Boolean);
   box.hidden = !parts.length;
   if (parts.length) text.textContent = `Loading ${parts.join(' + ')}…`;
 }
-function setQuestionMapLoading(label) {
-  questionMapLoadLabel = label || null;
+function setMapLoadingTask(key, label, on = true) {
+  if (on && label) mapLoadTasks.set(String(key), String(label));
+  else mapLoadTasks.delete(String(key));
   updateZoneLoadProgress();
+}
+function setQuestionMapLoading(label) {
+  setMapLoadingTask('question', label, !!label);
 }
 function setZoneLoading(key, on) {
   if (on) zoneLoads.add(key); else zoneLoads.delete(key);
-  updateZoneLoadProgress();
+  setMapLoadingTask(`zone:${key}`, `${zoneLevelName(key)} boundaries`, on);
   if ($('#zoneSources')) renderSourceRows();
 }
 
@@ -1189,6 +1190,11 @@ function matchingPoiMode() {
 const matchingPoiCache = new Map();
 const questionPoi = { session: 0, modeKey: null, loading: false, geojson: null, layer: null };
 
+function matchingPoiCacheKey(mode) {
+  const bb = activeGameBbox(0);
+  return `${mode.key}:${bb.map((v) => Number(v).toFixed(3)).join(',')}`;
+}
+
 function releaseQuestionPoiLayer() {
   questionPoi.session += 1;
   if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
@@ -1199,11 +1205,20 @@ function releaseQuestionPoiLayer() {
   setQuestionMapLoading(null);
 }
 
-function matchingPoiOverpassQuery(mode) {
-  const [south, west, north, east] = OVERPASS_BBOX;
+function activeGameBbox(padKm = 1) {
+  if (!S.playArea) return OVERPASS_BBOX.slice();
+  try {
+    const padded = padKm > 0 ? turf.buffer(S.playArea, padKm, { units: 'kilometers' }) : S.playArea;
+    const bb = turf.bbox(padded || S.playArea); // west,south,east,north
+    return [bb[1], bb[0], bb[3], bb[2]];
+  } catch (_) { return OVERPASS_BBOX.slice(); }
+}
+
+function matchingPoiOverpassQuery(mode, bbox = activeGameBbox(1.5), timeoutSec = 12) {
+  const [south, west, north, east] = bbox;
   const body = (mode.filters || []).map((filter) =>
     `nwr(${south},${west},${north},${east})${filter};`).join('');
-  return `[out:json][timeout:75];(${body});${mode && mode.key === 'park' ? 'out geom;' : 'out center tags;'}`;
+  return `[out:json][timeout:${timeoutSec}];(${body});${mode && mode.key === 'park' ? 'out geom;' : 'out center tags;'}`;
 }
 
 function matchingPoiNameAllowed(name, mode) {
@@ -1300,7 +1315,7 @@ async function geocodePoiFallback(fallback) {
 
   try {
     const url = `${CONFIG.dawa}/adresser?q=${encodeURIComponent(fallback.address)}&struktur=mini&per_side=1`;
-    const res = await fetch(url);
+    const res = await fetchWithDeadline(url, {}, 3500);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
     const hit = Array.isArray(rows) && rows[0];
@@ -1378,29 +1393,28 @@ function mergeMatchingPoiCollections(collections, mode) {
 }
 
 async function fetchMatchingPoiJson(mode) {
-  // Try the normal whole-area request first. A gateway timeout is not the
-  // same thing as "zero places", so on failure split greater Aalborg into
-  // four smaller requests. This materially reduces Overpass work for the
-  // categories that were intermittently returning HTTP 504 on phones.
+  const bbox = activeGameBbox(1.5);
+  // The relevant candidates are inside the game area, so query its much smaller
+  // bounding box instead of all of greater Aalborg. Give the whole request a
+  // short deadline; if it fails, split that small box into four requests and run
+  // them concurrently. Worst-case waiting is bounded instead of multiplying four
+  // server timeouts sequentially.
   try {
-    return [await overpassJson(matchingPoiOverpassQuery(mode))];
+    return [await overpassJson(matchingPoiOverpassQuery(mode, bbox, 8), { timeoutMs: 4500, noFallback: true })];
   } catch (wholeErr) {
-    const [south, west, north, east] = OVERPASS_BBOX;
+    const [south, west, north, east] = bbox;
     const midLat = (south + north) / 2;
     const midLng = (west + east) / 2;
     const boxes = [
       [south, west, midLat, midLng], [south, midLng, midLat, east],
       [midLat, west, north, midLng], [midLat, midLng, north, east]
     ];
-    const results = [];
-    const failures = [];
-    for (const box of boxes) {
-      const body = (mode.filters || []).map((filter) =>
-        `nwr(${box[0]},${box[1]},${box[2]},${box[3]})${filter};`).join('');
-      const q = `[out:json][timeout:35];(${body});${mode && mode.key === 'park' ? 'out geom;' : 'out center tags;'}`;
-      try { results.push(await overpassJson(q)); }
-      catch (e) { failures.push(e && e.message ? e.message : String(e)); }
-    }
+    const settled = await Promise.allSettled(boxes.map((box, i) =>
+      overpassJson(matchingPoiOverpassQuery(mode, box, 8), {
+        timeoutMs: 4000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
+      })
+    ));
+    const results = settled.filter((x) => x.status === 'fulfilled').map((x) => x.value);
     if (!results.length) throw wholeErr;
     return results;
   }
@@ -1473,37 +1487,78 @@ function buildMatchingPoiLayer(gj, mode) {
   return group;
 }
 
+function applyQuestionPoiGeoJson(gj, mode, session) {
+  const inPlay = filterMatchingPoisToPlayArea(gj || { type: 'FeatureCollection', features: [] });
+  if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return inPlay;
+  if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
+  questionPoi.geojson = inPlay;
+  questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
+  questionPoi.layer.addTo(map);
+  return inPlay;
+}
+
 async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
   if (!mode) return null;
   questionPoi.modeKey = mode.key;
   questionPoi.loading = true;
-  setQuestionMapLoading(mode.plural);
-  try {
-    let gj = matchingPoiCache.get(mode.key) || null;
-    if (!gj) {
-      try {
-        gj = mergeMatchingPoiCollections(await fetchMatchingPoiJson(mode), mode);
-      } catch (err) {
-        // Categories with authoritative/local fallbacks remain usable even if
-        // every Overpass mirror is having a bad day. Other categories still
-        // report the network failure rather than pretending there are none.
-        if (!(mode.fallback && mode.fallback.length)) throw err;
-        gj = { type: 'FeatureCollection', features: [] };
-      }
-      const resolvedFallback = await resolveMatchingPoiFallbacks(mode, gj);
-      gj = appendFallbackPois(gj, mode, resolvedFallback);
-      matchingPoiCache.set(mode.key, gj);
+  setQuestionMapLoading(`${mode.plural}`);
+
+  const cacheKey = matchingPoiCacheKey(mode);
+  const cached = matchingPoiCache.get(cacheKey) || null;
+  if (cached) {
+    const shown = applyQuestionPoiGeoJson(cached, mode, session);
+    if (session === questionPoi.session) {
+      questionPoi.loading = false;
+      setQuestionMapLoading(null);
     }
-    // The card rules use places *inside the game area*. The Overpass search box
-    // is intentionally larger so edge features can be found reliably, but none
-    // of those outside points may participate in nearest-place Matching.
-    const inPlay = filterMatchingPoisToPlayArea(gj);
-    if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return inPlay;
-    if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
-    questionPoi.geojson = inPlay;
-    questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
-    questionPoi.layer.addTo(map);
-    return inPlay;
+    return shown;
+  }
+
+  const directFallbacks = ((mode && mode.fallback) || []).filter((f) =>
+    Array.isArray(f.coordinates) && f.coordinates.length >= 2);
+  if (directFallbacks.length) {
+    const instant = appendFallbackPois({ type: 'FeatureCollection', features: [] }, mode, directFallbacks);
+    applyQuestionPoiGeoJson(instant, mode, session);
+    if (session === questionPoi.session) renderToolForm();
+  }
+
+  // Resolve authoritative address-based locations and query OSM concurrently.
+  // The fallback path updates the visible map as soon as it finishes (normally a
+  // few seconds at most); it never waits behind a slow Overpass request.
+  const fallbackPromise = resolveMatchingPoiFallbacks(mode, { type: 'FeatureCollection', features: [] })
+    .then((resolved) => {
+      if (resolved && resolved.length) {
+        const authoritative = appendFallbackPois({ type: 'FeatureCollection', features: [] }, mode, resolved);
+        applyQuestionPoiGeoJson(authoritative, mode, session);
+        if (session === questionPoi.session) {
+          if (draft.matchPoint) setMatchingPoiFromCoord(draft.matchPoint.slice());
+          renderQuestionPreview();
+          renderToolForm();
+        }
+      }
+      return resolved || [];
+    });
+
+  const osmPromise = (async () => {
+    try { return mergeMatchingPoiCollections(await fetchMatchingPoiJson(mode), mode); }
+    catch (err) {
+      if (!(mode.fallback && mode.fallback.length)) throw err;
+      return { type: 'FeatureCollection', features: [] };
+    }
+  })();
+
+  try {
+    const [gj, resolvedFallback] = await Promise.all([osmPromise, fallbackPromise]);
+    const finalGj = appendFallbackPois(gj, mode, resolvedFallback);
+    matchingPoiCache.set(cacheKey, finalGj);
+    const shown = applyQuestionPoiGeoJson(finalGj, mode, session);
+
+    if (session === questionPoi.session && draft.matchPoint) {
+      setMatchingPoiFromCoord(draft.matchPoint.slice());
+      renderQuestionPreview();
+      renderToolForm();
+    }
+    return shown;
   } finally {
     if (session === questionPoi.session) {
       questionPoi.loading = false;
@@ -3773,8 +3828,8 @@ function gc2Urls(table) {
 }
 const gc2Url = (table) => gc2Urls(table)[0];
 
-async function fetchGeoJson(url) {
-  const res = await fetch(url);
+async function fetchGeoJson(url, timeoutMs = 12000) {
+  const res = await fetchWithDeadline(url, {}, timeoutMs);
   const text = await res.text();
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let gj;
@@ -3798,10 +3853,12 @@ async function fetchGeoJson(url) {
 
 /* Try each URL in turn, keep the first that yields features. */
 async function fetchFirst(urls) {
+  const list = (urls || []).filter(Boolean);
+  if (!list.length) throw new Error('no source URL');
   const problems = [];
-  for (const u of urls) {
-    try { return await fetchGeoJson(u); }
-    catch (err) { problems.push(err.message); }
+  for (const u of list) {
+    try { return await fetchGeoJson(u, list.length > 1 ? 7000 : 12000); }
+    catch (err) { problems.push(err.message || String(err)); }
   }
   throw new Error(problems.join(' / '));
 }
@@ -3826,7 +3883,7 @@ function parseWfsCapabilities(xml) {
 }
 
 async function browseLayers(url) {
-  const res = await fetch(capsUrl(url));
+  const res = await fetchWithDeadline(capsUrl(url), {}, 9000);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const list = parseWfsCapabilities(await res.text());
   if (!list.length) throw new Error('No layers listed — is that a WFS endpoint?');
@@ -4088,7 +4145,7 @@ function ntBusLayerDefs(layers) {
 }
 
 async function discoverNtBusTables() {
-  const res = await fetch(capsUrl(NT_ROUTE_WFS));
+  const res = await fetchWithDeadline(capsUrl(NT_ROUTE_WFS), {}, 7000);
   if (!res.ok) throw new Error(`capabilities HTTP ${res.status}`);
   const layers = parseWfsCapabilities(await res.text());
   const defs = ntBusLayerDefs(layers);
@@ -4109,10 +4166,11 @@ function normaliseStopName(value) {
 
 function overpassBusStopQuery() {
   const [s2, w, n, e] = OVERPASS_BBOX;
-  return `[out:json][timeout:75];(` +
-    `node(${s2},${w},${n},${e})["highway"="bus_stop"];` +
-    `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"];` +
-    `way(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"];` +
+  const named = `[~"^(name|name:da|official_name)$"~"."]`;
+  return `[out:json][timeout:12];(` +
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
+    `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
+    `way(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
     `);out center tags;`;
 }
 
@@ -4129,15 +4187,46 @@ function parseOverpassStops(json) {
   return out;
 }
 
-function overpassTransitStopsQuery() {
-  const [s2, w, n, e] = OVERPASS_BBOX;
-  return `[out:json][timeout:90];(` +
-    `node(${s2},${w},${n},${e})["highway"="bus_stop"];` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="platform"];` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="stop_position"];` +
-    `nwr(${s2},${w},${n},${e})["public_transport"="station"];` +
-    `nwr(${s2},${w},${n},${e})["railway"~"^(station|halt|tram_stop)$"];` +
+function overpassTransitStopsQuery(bbox = activeGameBbox(.6)) {
+  const [s2, w, n, e] = bbox;
+  // Only named stops can be displayed or used for Matching, so ask Overpass
+  // for named features up front instead of downloading thousands of anonymous
+  // platforms/stop positions and throwing them away afterwards. Accept Danish
+  // and official-name-only records too; those are named even without `name=*`.
+  const named = `[~"^(name|name:da|official_name)$"~"."]`;
+  return `[out:json][timeout:12];(` +
+    `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="platform"]${named};` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="stop_position"]${named};` +
+    `nwr(${s2},${w},${n},${e})["public_transport"="station"]${named};` +
+    `nwr(${s2},${w},${n},${e})["railway"~"^(station|halt|tram_stop)$"]${named};` +
     `);out center tags;`;
+}
+
+async function fetchTransitStopsJson() {
+  const bbox = activeGameBbox(.6);
+  try {
+    return await overpassJson(overpassTransitStopsQuery(bbox), { timeoutMs: 4500, noFallback: true });
+  } catch (wholeErr) {
+    const [south, west, north, east] = bbox;
+    const midLat = (south + north) / 2;
+    const midLng = (west + east) / 2;
+    const boxes = [
+      [south, west, midLat, midLng], [south, midLng, midLat, east],
+      [midLat, west, north, midLng], [midLat, midLng, north, east]
+    ];
+    const settled = await Promise.allSettled(boxes.map((box, i) =>
+      overpassJson(overpassTransitStopsQuery(box), {
+        timeoutMs: 4000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
+      })
+    ));
+    const elements = [];
+    settled.forEach((r) => {
+      if (r.status === 'fulfilled' && r.value && Array.isArray(r.value.elements)) elements.push(...r.value.elements);
+    });
+    if (!elements.length) throw wholeErr;
+    return { elements };
+  }
 }
 
 function parseTransitStops(json) {
@@ -4224,11 +4313,17 @@ async function toggleTransitStops(btn) {
   }
   if (rec.loading) return;
   rec.loading = true;
+  setMapLoadingTask('transit-stops', 'bus & train stops', true);
   if (btn) btn.classList.add('is-busy');
+  renderSourceRows();
   setStatus('Loading bus and train stops…');
   try {
-    const gj = parseTransitStops(await overpassJson(overpassTransitStopsQuery()));
-    if (!gj.features.length) throw new Error('the map service returned no stops');
+    let gj = parseTransitStops(await fetchTransitStopsJson());
+    // The small game only needs stops inside the current game area. Querying a
+    // small padded box keeps edge stops discoverable; discard the padding before
+    // drawing so off-map stops never clutter Matching or the layer.
+    gj = filterMatchingPoisToPlayArea(gj);
+    if (!gj.features.length) throw new Error('the map service returned no named stops inside the game area');
     rec.geojson = gj;
     rec.busCount = gj.features.filter((f) => f.properties.__stopKind === 'bus').length;
     rec.trainCount = gj.features.filter((f) => f.properties.__stopKind === 'train').length;
@@ -4242,6 +4337,7 @@ async function toggleTransitStops(btn) {
     setStatus(`Bus and train stops failed — ${err.message}.`, true);
   } finally {
     rec.loading = false;
+    setMapLoadingTask('transit-stops', null, false);
     if (btn) btn.classList.remove('is-busy');
     renderSourceRows();
   }
@@ -4276,27 +4372,17 @@ function matchSupplementStops(stops, definition) {
 }
 
 async function fetchOverpassStops() {
-  const errors = [];
-  for (const base of OVERPASS) {
-    try {
-      const res = await fetch(base, {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: new URLSearchParams({ data: overpassBusStopQuery() }).toString()
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const stops = parseOverpassStops(await res.json());
-      if (stops.length) return stops;
-      throw new Error('no named stops');
-    } catch (err) { errors.push(err.message); }
-  }
-  throw new Error(errors.join(' / ') || 'could not load bus stops');
+  const json = await overpassJson(overpassBusStopQuery(), { timeoutMs: 6000 });
+  const stops = parseOverpassStops(json);
+  if (stops.length) return stops;
+  throw new Error('no named stops');
 }
 
 async function routeThroughStops(coords) {
   if (!coords || coords.length < 2) return null;
   const points = coords.map((c) => `${c[0].toFixed(6)},${c[1].toFixed(6)}`).join(';');
   const url = `https://router.project-osrm.org/route/v1/driving/${points}?overview=full&geometries=geojson&steps=false`;
-  const res = await fetch(url);
+  const res = await fetchWithDeadline(url, {}, 6500);
   if (!res.ok) throw new Error(`routing HTTP ${res.status}`);
   const json = await res.json();
   const geometry = json && json.routes && json.routes[0] && json.routes[0].geometry;
@@ -4436,23 +4522,10 @@ function parseOverpassRoutes(json) {
 }
 
 async function fetchOverpass(filter) {
-  const body = 'data=' + encodeURIComponent(overpassQuery(filter));
-  const problems = [];
-  for (const url of OVERPASS) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = JSON.parse(await res.text());
-      const gj = parseOverpassRoutes(json);
-      if (!gj.features.length) throw new Error('no routes in the reply');
-      return gj;
-    } catch (err) { problems.push(err.message); }
-  }
-  throw new Error(problems.join(' / '));
+  const json = await overpassJson(overpassQuery(filter), { timeoutMs: 7000 });
+  const gj = parseOverpassRoutes(json);
+  if (!gj.features.length) throw new Error('no routes in the reply');
+  return gj;
 }
 
 /* ---------- toggling sources ----------------------------------------- */
@@ -4552,6 +4625,8 @@ async function toggleRoute(key, btn) {
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
 
   if (btn) btn.classList.add('is-busy');
+  setMapLoadingTask(`route:${key}`, r.name, true);
+  renderSourceRows();
   setStatus(`Loading ${r.name}…`);
   try {
     let gj, note = '', routeInfo = null;
@@ -4587,7 +4662,9 @@ async function toggleRoute(key, btn) {
     setStatus(`${r.name} failed — ${err.message}. You can still trace the needed route ` +
               `with the Bus route question's trace button.`, true);
   } finally {
+    setMapLoadingTask(`route:${key}`, null, false);
     if (btn) btn.classList.remove('is-busy');
+    renderSourceRows();
   }
 }
 
@@ -4806,18 +4883,63 @@ function snapRingsToRoads(index, toleranceM) {
   return { mapRing, stats: () => ({ moved, total }) };
 }
 
-async function overpassJson(query) {
+function fetchWithDeadline(url, options = {}, timeoutMs = 7000) {
+  if (typeof AbortController === 'undefined') return fetch(url, options);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  return fetch(url, Object.assign({}, options, { signal: ctrl.signal }))
+    .finally(() => clearTimeout(timer));
+}
+
+async function overpassJson(query, opts = {}) {
   const body = 'data=' + encodeURIComponent(query);
+  const timeoutMs = Math.max(2500, Number(opts.timeoutMs) || 7000);
+  const primary = (opts.urls || OVERPASS.slice(0, 2)).filter(Boolean);
   const problems = [];
-  for (const url of OVERPASS) {
+
+  // Race independent mirrors instead of waiting for one overloaded server to
+  // time out before even trying the next. Abort the remaining request once one
+  // mirror returns a valid JSON result.
+  const controllers = [];
+  const raceMirror = (url) => new Promise((resolve, reject) => {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (ctrl) controllers.push(ctrl);
+    const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, timeoutMs);
+    fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body,
+      ...(ctrl ? { signal: ctrl.signal } : {})
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const text = await res.text();
+      resolve(JSON.parse(text));
+    }).catch((e) => reject(e)).finally(() => clearTimeout(timer));
+  });
+
+  if (primary.length) {
     try {
-      const res = await fetch(url, { method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+      const result = await new Promise((resolve, reject) => {
+        let pending = primary.length;
+        primary.forEach((url) => raceMirror(url).then(resolve).catch((e) => {
+          problems.push(e && e.name === 'AbortError' ? 'timeout' : (e.message || String(e)));
+          if (--pending === 0) reject(new Error(problems.join(' / ')));
+        }));
+      });
+      controllers.forEach((c) => { try { c.abort(); } catch (_) {} });
+      return result;
+    } catch (_) { /* one short fallback attempt below */ }
+  }
+
+  const fallbackUrl = opts.noFallback ? null : OVERPASS.find((u) => !primary.includes(u));
+  if (fallbackUrl) {
+    try {
+      const res = await fetchWithDeadline(fallbackUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      }, Math.min(timeoutMs, 5500));
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return JSON.parse(await res.text());
-    } catch (e) { problems.push(e.message); }
+    } catch (e) { problems.push(e && e.name === 'AbortError' ? 'timeout' : (e.message || String(e))); }
   }
-  throw new Error(problems.join(' / '));
+  throw new Error(problems.join(' / ') || 'Overpass request failed');
 }
 
 /* Named-road anchors, densified in pixel space so the comparison against
@@ -5319,9 +5441,10 @@ function renderSourceRows() {
   rbox.innerHTML = '';
   Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
     const rec = layerByKey('route:' + key);
-    const state = !rec ? 'idle' : rec.visible ? 'on' : 'off';
+    const loading = mapLoadTasks.has(`route:${key}`);
+    const state = loading ? 'loading' : !rec ? 'idle' : rec.visible ? 'on' : 'off';
     const amount = rec && rec.routeCount ? `${rec.routeCount} routes` : (rec ? `${rec.geojson.features.length} route lines` : '');
-    const meta = rec ? `${amount}${state === 'on' ? '' : ' · hidden'}`
+    const meta = loading ? 'Loading route geometry…' : rec ? `${amount}${state === 'on' ? '' : ' · hidden'}`
                      : (r.meta || r.table);
     rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
   });
@@ -5330,8 +5453,8 @@ function renderSourceRows() {
   if (sbox) {
     sbox.innerHTML = '';
     const stops = S.transitStops;
-    const state = !stops.loaded ? 'idle' : stops.visible ? 'on' : 'off';
-    const counts = stops.loaded
+    const state = stops.loading ? 'loading' : !stops.loaded ? 'idle' : stops.visible ? 'on' : 'off';
+    const counts = stops.loading ? 'Loading named stops inside the game area…' : stops.loaded
       ? `${stops.busCount} bus · ${stops.trainCount} rail${state === 'on' ? '' : ' · hidden'}`
       : TRANSIT_STOP_SOURCE.meta;
     sbox.appendChild(sourceRow(TRANSIT_STOP_SOURCE.name, counts, state,
@@ -5398,6 +5521,7 @@ $('#srcBrowse').addEventListener('click', async () => {
   btn.disabled = true;
   const original = btn.textContent;
   btn.textContent = 'Asking the server…';
+  setMapLoadingTask('layer-catalogue', 'layer catalogue', true);
   try {
     browsed = await browseLayers(url);
     $('#srcBrowseBox').hidden = false;
@@ -5407,6 +5531,7 @@ $('#srcBrowse').addEventListener('click', async () => {
     btn.textContent = original;
     toast('Could not list layers: ' + err.message, true);
   } finally {
+    setMapLoadingTask('layer-catalogue', null, false);
     btn.disabled = false;
   }
 });
@@ -5886,11 +6011,11 @@ window.HS = {
   matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, MATCHING_POI_DEFS,
   OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
-  matchingPoiOverpassQuery, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
+  matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
-  questionAutoZoneSources, zoneLoads,
+  questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsJson,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };
