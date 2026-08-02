@@ -402,3 +402,16 @@ seven days so subsequent loads on the same device are immediate.
 The transit-stop layer deliberately hides Limfjordsbanen's heritage-only railway halts at
 Østerådalen, Gug, Hadsundvej and Limfjorden. This affects only rail markers: identically named bus
 stops remain visible.
+
+
+### Reliability notes — bus routes and local POIs
+
+- Bus routes are fetched from OpenStreetMap in four overlapping Aalborg sections and merged.
+  This avoids the all-or-nothing failure of one very large route-relation request. A whole-area
+  request is used only as an extra recovery pass when the sectional result looks suspiciously small.
+- Aalborg Bibliotekerne's physical libraries/service point are stored as authoritative local
+  candidates, so the Library Matching card opens immediately and does not wait for Overpass.
+- Aalborg's three current cinemas, Aalborg Airport, Aalborg Zoo and the two golf-course fallbacks
+  are likewise local authoritative candidates.
+- Hospital markers closer than 350 m are treated as the same hospital campus for Matching; an
+  authoritative site marker wins over duplicate OSM building/campus labels.

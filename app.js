@@ -329,11 +329,14 @@ const AALBORG_LIBRARY_LOCATIONS = [
   { name: 'Nørresundby Bibliotek', address: 'Torvet 5, 9400 Nørresundby', coordinates: [9.9231595, 57.05896286] },
   { name: 'Trekanten - Bibliotek og Kulturhus', address: 'Sebbersundvej 2A, 9220 Aalborg Øst', coordinates: [10.0008729, 57.0276469] },
   { name: 'Vejgaard Bibliotek', address: 'Hadsundvej 35, 9000 Aalborg', coordinates: [9.95176, 57.04130] },
-  { name: 'Svenstrup Bibliotek', address: 'Godthåbsvej 14B, 9230 Svenstrup J' },
-  { name: 'Vodskov Bibliotek', address: 'Brorsonsvej 3B, 9310 Vodskov' },
-  { name: 'Storvorde Bibliotek', address: 'Stationsvej 5, 9280 Storvorde' },
-  { name: 'Nibe Bibliotek', address: 'St Algade 4, 9240 Nibe' },
-  { name: 'Hals Bibliotek', address: 'Østergade 2A, 9370 Hals' }
+  // The remaining branches are outside the normal small-game area, but keep
+  // coordinates locally so the authoritative library list never needs a slow
+  // address-geocoding round trip before it can be filtered against the play area.
+  { name: 'Svenstrup Bibliotek', address: 'Godthåbsvej 14B, 9230 Svenstrup J', coordinates: [9.8518, 56.9749] },
+  { name: 'Vodskov Bibliotek', address: 'Brorsonsvej 3B, 9310 Vodskov', coordinates: [10.0245, 57.1088] },
+  { name: 'Storvorde Bibliotek', address: 'Stationsvej 5, 9280 Storvorde', coordinates: [10.1017, 57.0058] },
+  { name: 'Nibe Bibliotek', address: 'St Algade 4, 9240 Nibe', coordinates: [9.6398, 56.9820] },
+  { name: 'Hals Bibliotek', address: 'Østergade 2A, 9370 Hals', coordinates: [10.3070, 56.9965] }
 ];
 
 const OFFICIAL_AALBORG_LIBRARIES = [
@@ -343,10 +346,9 @@ const OFFICIAL_AALBORG_LIBRARIES = [
   'Aalborg Hovedbibliotek', 'Haraldslund Bibliotek', 'Trekanten', 'Vejgård Bibliotek'
 ];
 
-/* Authoritative fallbacks are used only when needed. Entries without hard-coded
-   coordinates are geocoded from the official address through Dataforsyningen at
-   question-load time. This keeps the official list complete without trusting
-   stale OSM coordinates after a library move. */
+/* Aalborg Bibliotekerne's physical branch/service-point list is authoritative.
+   Every entry has a local coordinate so Library Matching can render immediately
+   without waiting for OSM or an address geocoder. */
 const AALBORG_LIBRARY_FALLBACK = AALBORG_LIBRARY_LOCATIONS.map((x) => ({
   ...x, authoritative: true
 }));
@@ -366,9 +368,10 @@ const MATCHING_POI_DEFS = {
   'commercial airport': {
     key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
     filters: ['["aeroway"="aerodrome"]["iata"]'],
-    // Aalborg Airport (AAL). Kept as a fallback because Overpass occasionally
-    // times out even for this tiny category.
-    fallback: [{ name: 'Aalborg Airport (AAL)', coordinates: [9.849243, 57.092759] }]
+    // There is one relevant commercial airport for the Aalborg small-game area.
+    // Treat the verified local point as authoritative so this card is instant.
+    fallback: [{ name: 'Aalborg Airport (AAL)', coordinates: [9.849243, 57.092759], authoritative: true }],
+    authoritativeOnly: true
   },
   'park': {
     key: 'park', singular: 'park', plural: 'parks',
@@ -383,7 +386,8 @@ const MATCHING_POI_DEFS = {
   },
   'zoo': {
     key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]'],
-    fallback: [{ name: 'Aalborg Zoo', coordinates: [9.89970, 57.03804], authoritative: true }]
+    fallback: [{ name: 'Aalborg Zoo', coordinates: [9.89970, 57.03804], authoritative: true }],
+    authoritativeOnly: true
   },
   'aquarium': {
     key: 'aquarium', singular: 'aquarium', plural: 'aquariums', filters: ['["tourism"="aquarium"]']
@@ -391,15 +395,25 @@ const MATCHING_POI_DEFS = {
   'golf course': {
     key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]'],
     fallback: [
-      { name: 'Aalborg Golf Klub', coordinates: [9.782950, 57.026760] },
-      { name: 'Ørnehøj Golfklub', coordinates: [9.968050, 56.987570] }
-    ]
+      { name: 'Aalborg Golf Klub', coordinates: [9.782950, 57.026760], authoritative: true },
+      { name: 'Ørnehøj Golfklub', coordinates: [9.968050, 56.987570], authoritative: true }
+    ],
+    authoritativeOnly: true
   },
   'museum': {
     key: 'museum', singular: 'museum', plural: 'museums', filters: ['["tourism"="museum"]']
   },
   'movie theater': {
-    key: 'cinema', singular: 'movie theater', plural: 'movie theaters', filters: ['["amenity"="cinema"]']
+    key: 'cinema', singular: 'movie theater', plural: 'movie theaters', filters: ['["amenity"="cinema"]'],
+    // The three current Aalborg cinemas are stable, local game data. Keeping
+    // them locally makes this tiny category instantaneous instead of waiting
+    // tens of seconds for a city-wide Overpass request.
+    fallback: [
+      { name: 'Nordisk Film Biografer Aalborg Kennedy', coordinates: [9.9189535, 57.0419503], authoritative: true },
+      { name: 'Biffen', coordinates: [9.9329399, 57.0463840], authoritative: true },
+      { name: 'Nordisk Film Biografer Aalborg City Syd', coordinates: [9.8714578, 57.0027432], authoritative: true }
+    ],
+    authoritativeOnly: true
   },
   'hospital': {
     key: 'hospital', singular: 'hospital', plural: 'hospitals',
@@ -409,7 +423,10 @@ const MATCHING_POI_DEFS = {
   'library': {
     key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]'],
     officialNames: OFFICIAL_AALBORG_LIBRARIES,
-    fallback: AALBORG_LIBRARY_FALLBACK
+    fallback: AALBORG_LIBRARY_FALLBACK,
+    // Aalborg Bibliotekerne publishes the complete physical branch list. Do
+    // not wait for OSM to rediscover an authoritative list we already have.
+    authoritativeOnly: true
   },
   'foreign consulate': {
     key: 'consulate', singular: 'foreign consulate', plural: 'foreign consulates',
@@ -1528,6 +1545,34 @@ function parseMatchingPois(json, mode) {
   return { type: 'FeatureCollection', features };
 }
 
+function collapseNearbyPoiSites(gj, mode) {
+  if (!gj || !Array.isArray(gj.features) || !mode) return gj;
+  if (mode.key !== 'hospital') return gj;
+  const kept = [];
+  // Hospital campuses are often mapped once as a campus/building and again as
+  // a named institution. For Matching that creates meaningless tiny Voronoi
+  // cells. Collapse markers on the same campus and prefer our authoritative
+  // site marker/name. Nord/Syd remain far enough apart to stay distinct.
+  for (const ft of gj.features) {
+    if (!ft || !ft.geometry || ft.geometry.type !== 'Point') continue;
+    let hit = -1;
+    for (let i = 0; i < kept.length; i++) {
+      try {
+        if (turf.distance(ft, kept[i], { units: 'meters' }) <= 350) { hit = i; break; }
+      } catch (_) { /* ignore malformed feature */ }
+    }
+    if (hit < 0) { kept.push(ft); continue; }
+    const a = kept[hit], ap = a.properties || {}, fp = ft.properties || {};
+    if (fp.authoritative && !ap.authoritative) kept[hit] = ft;
+    else if (!!fp.authoritative === !!ap.authoritative) {
+      const an = String(ap.name || ap.__displayName || '');
+      const fn = String(fp.name || fp.__displayName || '');
+      if (fn.length > an.length) kept[hit] = ft;
+    }
+  }
+  return { type: 'FeatureCollection', features: kept };
+}
+
 function buildMatchingPoiLayer(gj, mode) {
   const group = L.layerGroup([], { pane: 'poiPane' });
   for (const ft of (gj && gj.features) || []) {
@@ -1560,14 +1605,22 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
     const cacheKey = matchingPoiCacheKey(mode);
     let gj = matchingPoiCache.get(cacheKey) || null;
     if (!gj) {
-      try {
-        gj = mergeMatchingPoiCollections(await fetchMatchingPoiJson(mode), mode);
-      } catch (err) {
-        if (!(mode.fallback && mode.fallback.length)) throw err;
-        gj = { type: 'FeatureCollection', features: [] };
+      if (mode.authoritativeOnly) {
+        // Verified local categories (libraries, cinemas, airport, zoo, golf)
+        // should be immediate and deterministic. Their fallbacks are the source,
+        // not a last resort after a slow Overpass request.
+        gj = appendFallbackPois({ type: 'FeatureCollection', features: [] }, mode, mode.fallback || []);
+      } else {
+        try {
+          gj = mergeMatchingPoiCollections(await fetchMatchingPoiJson(mode), mode);
+        } catch (err) {
+          if (!(mode.fallback && mode.fallback.length)) throw err;
+          gj = { type: 'FeatureCollection', features: [] };
+        }
+        const resolvedFallback = await resolveMatchingPoiFallbacks(mode, gj);
+        gj = appendFallbackPois(gj, mode, resolvedFallback);
       }
-      const resolvedFallback = await resolveMatchingPoiFallbacks(mode, gj);
-      gj = appendFallbackPois(gj, mode, resolvedFallback);
+      gj = collapseNearbyPoiSites(gj, mode);
       matchingPoiCache.set(cacheKey, gj);
     }
     const inPlay = filterMatchingPoisToPlayArea(gj);
@@ -4490,7 +4543,7 @@ async function addMissingBusRouteSupplements(gj) {
   return added;
 }
 
-const ROUTE_CACHE_VERSION = '20260802b';
+const ROUTE_CACHE_VERSION = '20260802c';
 const ROUTE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function readRouteCache(kind) {
@@ -4518,7 +4571,7 @@ async function fetchOsmBusRoutes() {
   let networkError = null;
   if (!gj) {
     try {
-      gj = await fetchOverpass('["route"="bus"]');
+      gj = await fetchBusRelationsSectioned();
       annotateRouteGeoJson(gj, 'osm');
     } catch (err) {
       networkError = err;
@@ -4646,9 +4699,51 @@ async function fetchRailwayLines() {
 
 /* ---------- OpenStreetMap routes via Overpass -------------------------- */
 
-function overpassQuery(filter) {
-  const [s2, w, n, e] = OVERPASS_BBOX;
+function overpassQuery(filter, bbox = OVERPASS_BBOX) {
+  const [s2, w, n, e] = bbox;
   return `[out:json][timeout:90];relation(${s2},${w},${n},${e})["type"="route"]${filter};out geom;`;
+}
+
+function mergeOverpassRelationReplies(replies) {
+  const byId = new Map();
+  for (const json of replies || []) {
+    for (const el of (json && json.elements) || []) {
+      if (el && el.type === 'relation') byId.set(el.id, el);
+    }
+  }
+  return { elements: Array.from(byId.values()) };
+}
+
+async function fetchBusRelationsSectioned() {
+  // One giant Aalborg bus-relation query has proven brittle: when it times out,
+  // the only thing left is a bundled supplement such as line 11. Fetch four
+  // overlapping-ish quadrants instead and merge whatever succeeds.
+  const [south, west, north, east] = OVERPASS_BBOX;
+  const midLat = (south + north) / 2, midLng = (west + east) / 2;
+  const padLat = .012, padLng = .020;
+  const boxes = [
+    [south, west, midLat + padLat, midLng + padLng],
+    [south, midLng - padLng, midLat + padLat, east],
+    [midLat - padLat, west, north, midLng + padLng],
+    [midLat - padLat, midLng - padLng, north, east]
+  ];
+  const settled = await Promise.allSettled(boxes.map((box) =>
+    overpassJson(overpassQuery('["route"="bus"]', box), { timeoutMs: 45000 })
+  ));
+  const replies = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!replies.length) throw new Error('all four OpenStreetMap bus areas failed');
+  let gj = parseOverpassRoutes(mergeOverpassRelationReplies(replies));
+  // A suspiciously tiny result usually means one mirror returned a partial
+  // response. Give the old whole-area query one chance to improve it, but keep
+  // the sectional data if that request fails.
+  if (routeSummary(gj).count < 8) {
+    try {
+      const whole = parseOverpassRoutes(await overpassJson(overpassQuery('["route"="bus"]'), { timeoutMs: 55000 }));
+      gj.features = dedupeRouteFeatures([...(gj.features || []), ...(whole.features || [])]);
+    } catch (_) { /* sectional result is still useful */ }
+  }
+  if (!gj.features.length) throw new Error('no bus routes in the OpenStreetMap replies');
+  return gj;
 }
 
 /* Route relations list the roads they run along as `way` members with no
