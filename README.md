@@ -513,3 +513,6 @@ POI-based Measuring keeps a movable seeker position. Rail-station Measuring auto
 
 The scheduled map-data workflow treats Aalborg KortInfo as an optional refresh source rather than a dependency for the whole build. Zone requests use a padded game-area WFS BBOX and native/projected GML first, Zone 2 is refreshed before the other levels, and Zone 1/3/4 are refreshed independently. Existing valid snapshots are retained per layer when the municipality is temporarily unavailable. The GitHub Actions zone step also has a hard two-minute ceiling and is non-blocking, so bus, train, stop, POI and hydro updates still deploy even during a KortInfo outage.
 
+### Zone snapshot corruption guard (v4.3)
+
+The scheduled zone refresh now filters Zone 2 to the four recognised game areas before rebuilding `scripts/play_area.geojson`, and rejects implausible bounds/area changes. A bad KortInfo response can therefore no longer expand the play area and cause GTFS stop counts to explode; the last committed play area remains in use instead.

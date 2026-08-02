@@ -106,3 +106,6 @@ The Aalborg KortInfo service can be slow from GitHub-hosted runners. The zone sn
 
 On the very first run, if KortInfo is completely unreachable, `zone-data.js` remains the safe placeholder and `scripts/play_area.geojson` remains the committed fallback. The browser still uses its live KortInfo/traced fallback. A later successful scheduled/manual run will populate the zone cache automatically.
 
+### Zone snapshot corruption guard (v4.3)
+
+The scheduled zone refresh now filters Zone 2 to the four recognised game areas before rebuilding `scripts/play_area.geojson`, and rejects implausible bounds/area changes. A bad KortInfo response can therefore no longer expand the play area and cause GTFS stop counts to explode; the last committed play area remains in use instead.

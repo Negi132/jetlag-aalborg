@@ -53,10 +53,19 @@ def load_play_area(path: Path):
         geoms = [shape(f['geometry']) for f in data.get('features', []) if f.get('geometry')]
         if not geoms:
             raise RuntimeError('play-area file has no polygon geometry')
-        return unary_union(geoms)
-    if data.get('type') == 'Feature':
-        return shape(data['geometry'])
-    return shape(data)
+        play = unary_union(geoms)
+    elif data.get('type') == 'Feature':
+        play = shape(data['geometry'])
+    else:
+        play = shape(data)
+    minx, miny, maxx, maxy = play.bounds
+    if minx < 9.65 or miny < 56.86 or maxx > 10.32 or maxy > 57.24:
+        raise RuntimeError(
+            'play-area snapshot is outside the expected Aalborg game vicinity: '
+            f'{minx:.4f},{miny:.4f},{maxx:.4f},{maxy:.4f}. '
+            'Keep the previous scripts/play_area.geojson and refresh zones later.'
+        )
+    return play
 
 
 def feed_dates(zf: zipfile.ZipFile):

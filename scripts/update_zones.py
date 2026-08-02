@@ -60,16 +60,25 @@ def zone2_def(props):
 
 
 def annotate_zone2(features):
+    """Return only polygon parts belonging to the four game Zone-2 areas.
+
+    KortInfo can ignore BBOX filters and return additional polygons. The browser
+    already filters the official layer down to the four recognised play areas
+    before building the play-area union; the scheduled snapshot must do the same.
+    Keeping unrelated Zone-2 polygons here can silently expand the game area by
+    tens of kilometres and then poison every downstream GTFS/OSM extraction.
+    """
     recognised = set()
     out = []
     for ft in features:
         cp = dict(ft)
         props = dict(cp.get('properties') or {})
         definition = zone2_def(props)
-        if definition:
-            number, name = definition
-            props.update({'n': number, 'area': number, 'name': name, 'navn': name, 'playZone': True})
-            recognised.add(number)
+        if not definition:
+            continue
+        number, name = definition
+        props.update({'n': number, 'area': number, 'name': name, 'navn': name, 'playZone': True})
+        recognised.add(number)
         cp['properties'] = props
         out.append(cp)
     if recognised != {1, 2, 3, 4}:
@@ -359,11 +368,58 @@ def previous_counts():
     return {k: len((v or {}).get('features', [])) for k, v in (data.get('zones') or {}).items()} if data else {}
 
 
+def current_play_geometry():
+    """Read the last committed/known-good play-area snapshot, if available."""
+    if not PLAY_OUTPUT.exists():
+        return None
+    try:
+        data = json.loads(PLAY_OUTPUT.read_text(encoding='utf-8'))
+        if data.get('type') == 'FeatureCollection':
+            geoms = [shape(ft['geometry']) for ft in data.get('features', []) if ft.get('geometry')]
+            return unary_union(geoms) if geoms else None
+        if data.get('type') == 'Feature':
+            return shape(data['geometry'])
+        return shape(data)
+    except Exception:
+        return None
+
+
+def validate_play_geometry(play, previous_play=None):
+    """Reject obviously corrupted/over-broad Zone-2 snapshots.
+
+    The four-area Aalborg small-game union is stable. These limits are deliberately
+    generous enough for real municipal edits, while rejecting cases where KortInfo
+    ignores BBOX or a parser accidentally unions unrelated municipal polygons.
+    """
+    if play is None or play.is_empty:
+        raise RuntimeError('Zone 2 play-area union is empty')
+    minx, miny, maxx, maxy = play.bounds
+    hard = (9.65, 56.86, 10.32, 57.24)
+    if minx < hard[0] or miny < hard[1] or maxx > hard[2] or maxy > hard[3]:
+        raise RuntimeError(
+            'Zone 2 snapshot has implausible Aalborg bounds '
+            f'({minx:.4f}, {miny:.4f}, {maxx:.4f}, {maxy:.4f})'
+        )
+    to_utm = Transformer.from_crs('EPSG:4326', 'EPSG:25832', always_xy=True)
+    from shapely.ops import transform
+    area_km2 = transform(to_utm.transform, play).area / 1_000_000
+    if not (120 <= area_km2 <= 420):
+        raise RuntimeError(f'Zone 2 snapshot has implausible area {area_km2:.1f} km²')
+    if previous_play is not None and not previous_play.is_empty:
+        prev_km2 = transform(to_utm.transform, previous_play).area / 1_000_000
+        if prev_km2 > 0 and not (0.65 <= area_km2 / prev_km2 <= 1.55):
+            raise RuntimeError(
+                f'Zone 2 area changed suspiciously from {prev_km2:.1f} to {area_km2:.1f} km²'
+            )
+    return area_km2
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.parse_args()
 
     previous = previous_bundle()
+    previous_play = current_play_geometry()
     downloaded = {}
     errors = {}
 
@@ -402,13 +458,19 @@ def main():
                     print(f'WARNING: {key} refresh failed; this layer will remain live-only for now: {exc}')
 
     cleaned = {k: valid_polygon_features(v) for k, v in downloaded.items()}
-    cleaned['zone2'] = annotate_zone2(cleaned['zone2'])
-    if len(cleaned['zone2']) < 4:
-        raise RuntimeError(f'Zone 2 returned only {len(cleaned["zone2"])} polygon features')
-
-    play = unary_union([shape(ft['geometry']) for ft in cleaned['zone2']])
-    if play.is_empty:
-        raise RuntimeError('Could not construct the Zone 2 play-area union')
+    try:
+        cleaned['zone2'] = annotate_zone2(cleaned['zone2'])
+        if len(cleaned['zone2']) < 4:
+            raise RuntimeError(f'Zone 2 returned only {len(cleaned["zone2"])} polygon features')
+        play = unary_union([shape(ft['geometry']) for ft in cleaned['zone2']])
+        area_km2 = validate_play_geometry(play, previous_play)
+        print(f'Validated Zone 2 play area: {area_km2:.1f} km², {len(cleaned["zone2"])} polygon part(s)')
+    except Exception as exc:
+        # Never let a malformed municipal response overwrite the last known-good
+        # play area. Returning success allows GTFS/OSM jobs to continue using the
+        # committed snapshot already present in scripts/play_area.geojson.
+        print(f'WARNING: rejected Zone 2 snapshot; retaining committed play area: {exc}')
+        return
     # Roughly 2–3 km around the game area. KortInfo normally honours the
     # EPSG:4326 request, but if it ever sends UTM32 metres anyway, use a metre
     # buffer here and let the browser's existing proj4 normaliser reproject the
