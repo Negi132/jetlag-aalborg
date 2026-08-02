@@ -494,7 +494,7 @@ const discoveredBusTables = window.eval("HS.ntBusLayerDefs(window.__ntCapsLayers
 check('WFS discovery includes regional branch runs', discoveredBusTables.includes('rutekortweb.ntmap_regionalbus_biforloeb_murl'));
 check('WFS discovery includes local branch runs', discoveredBusTables.includes('rutekortweb.ntmap_lokalbus_biforloeb_murl'));
 check('WFS discovery excludes trains', !discoveredBusTables.includes('rutekortweb.ntmap_tog_murl'));
-check('route 11 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11')"));
+check('route 11 has a guaranteed bundled fallback geometry', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11' && Array.isArray(x.staticGeometry) && x.staticGeometry.length>10)"));
 check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
 window.__stopsFixture = [
   {type:'node',lat:57.043,lon:9.918,tags:{name:'Aalborg St. (Perron C9)'}},
@@ -1225,11 +1225,10 @@ check('generic map loading manager can represent non-zone loads', window.eval(`(
 })()`));
 
 console.log('\n== bus and train stops ==');
-check('stop query requests only named bus/rail features in the compact game-area bbox', window.eval(`(() => {
+check('stop query restores full nwr coverage and unnamed results are filtered after parsing', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();
-  const bb = HS.activeGameBbox(.35);
-  return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$') &&
-    q.includes('["name"]') && q.includes(String(bb[0])) && !q.includes('56.94,9.7,57.18,10.25');
+  return q.includes('highway\"=\"bus_stop') && q.includes('nwr(') &&
+    q.includes('public_transport\"=\"platform') && q.includes('railway\"~\"^(station|halt|tram_stop)$');
 })()`));
 check('stop parser classifies named bus/train points and drops unnamed transit stops', window.eval(`(() => {
   const gj = HS.parseTransitStops({elements:[
@@ -1243,9 +1242,8 @@ check('stop parser classifies named bus/train points and drops unnamed transit s
          gj.features.every((f) => !!f.properties.name && !/^Unnamed/.test(f.properties.name));
 })()`));
 
-check('train layer uses lightweight physical railway geometry instead of route relations', window.eval(`(() => {
-  const q = HS.fetchRailwayLines ? true : false;
-  return q && HS.ROUTE_SOURCES.train.kind === 'railways';
+check('train layer prefers route relations and keeps physical railway as fallback', window.eval(`(() => {
+  return HS.ROUTE_SOURCES.train.kind === 'overpass' && /train/.test(HS.ROUTE_SOURCES.train.filter) && !!HS.fetchRailwayLines;
 })()`));
 
 console.log('\n== runtime errors ==');

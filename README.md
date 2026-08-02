@@ -370,3 +370,18 @@ On phones, the old permanent Questions drawer handle has been replaced by a five
 Transit data deliberately uses different strategies by data type. Bus routes combine NT's public vector layers, OSM supplementation and named-stop reconstruction for known current lines that are missing from the map feed (currently 11 and 38). Train lines use physical OSM railway ways rather than heavy route relations. Bus/train stops load progressively in six small sections, so successful sections appear even if another Overpass request times out.
 
 Automatic Matching POIs use authoritative local fallbacks where available (libraries, Aalborg Airport, Aalborg Zoo, golf and Aalborg University Hospital sites) and use OSM as enrichment rather than as the sole source.
+
+
+## Loading reliability rollback (2026-08-02)
+
+After real-game testing showed that the aggressive compact/parallel loaders were dropping data,
+network-backed map data now uses the older, more reliable strategy again. POIs first request the
+full greater-Aalborg search rectangle and are filtered to the actual game area afterwards. Bus/train
+stops first use the proven full Overpass query; only a failed full request falls back to four smaller
+areas. Train lines prefer the original train route relations, with physical railway tracks as a
+fallback. The common loading indicator remains visible while these requests are running.
+
+Bus line 11 is also bundled with a local fallback geometry. The earlier route-11 fallback still
+depended on successfully downloading named stops, which meant it disappeared during the same
+Overpass failures it was intended to protect against. The bundled line is used only when NT and OSM
+both fail to provide a real line-11 feature.
