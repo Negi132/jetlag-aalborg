@@ -4,3 +4,13 @@ nwr/natural=water
 nwr/water
 nwr/landuse=reservoir,basin
 nwr/waterway=riverbank,river,canal
+# Harbour/marina geometry supplements the formal OSM coastline in urban basins.
+nwr/leisure=marina
+nwr/waterway=dock
+nwr/man_made=quay
+nwr/water=harbour
+nwr/harbour
+# Some water-filled chalk pits are mapped primarily as quarries. The generator
+# only accepts chalk/limestone-named quarry polygons as a fallback when there is
+# no better mapped water polygon inside them.
+nwr/landuse=quarry

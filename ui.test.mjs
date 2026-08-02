@@ -225,12 +225,15 @@ click($('#toolForm .question-back'));
 
 console.log('\n== automatic coastline / water Measuring ==');
 window.AALBORG_HYDRO_DATA = {
-  version: 1, ready: true,
+  version: 2, ready: true,
   coastlines: {
     north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.056],[10.05,57.056]]}}]},
     south: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.050],[10.05,57.050]]}}]}
   },
-  waterBodies: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Test Lake'},geometry:{type:'Polygon',coordinates:[[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]]}}]}
+  waterBodies: {type:'FeatureCollection',features:[
+    {type:'Feature',properties:{name:'Test Lake',__waterId:'test:lake'},geometry:{type:'Polygon',coordinates:[[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]]}},
+    {type:'Feature',properties:{name:'Unnamed pond',__waterId:'test:pond',__unnamed:true},geometry:{type:'Polygon',coordinates:[[[9.970,57.030],[9.974,57.030],[9.974,57.034],[9.970,57.034],[9.970,57.030]]]}}
+  ]}
 };
 click(doc.querySelector('[data-question-type="measuring"][data-card="Coastline"]'));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.060, 9.922) })");
@@ -243,10 +246,15 @@ check('Coastline Measuring switches to the southern shore elsewhere',
       window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName})"));
 click($('#toolForm .question-back'));
 click(doc.querySelector('[data-question-type="measuring"][data-card="Body of water"]'));
+check('Body-of-water Measuring draws reference markers before the first tap',
+      window.eval("HS.previewShapeLayer.getLayers().length >= 2"),
+      window.eval("`layers=${HS.previewShapeLayer.getLayers().length}`"));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.035, 9.940) })");
 check('Body-of-water Measuring automatically selects the nearest water geometry',
-      window.eval("HS.draft.autoFeatureName === 'Test Lake' && HS.draft.borderBandGeometry"),
-      window.eval("JSON.stringify({name:HS.draft.autoFeatureName,distance:HS.draft.borderDistanceM})"));
+      window.eval("HS.draft.autoFeatureName === 'Test Lake' && HS.draft.autoFeatureIndex === 0 && HS.draft.borderBandGeometry"),
+      window.eval("JSON.stringify({name:HS.draft.autoFeatureName,index:HS.draft.autoFeatureIndex,distance:HS.draft.borderDistanceM})"));
+check('Body-of-water candidates keep distinct unnamed water features',
+      window.eval("HS.bundledHydroData().waterBodies.features.some(f => f.properties && f.properties.__unnamed)"));
 click($('#toolForm .question-back'));
 
 console.log('\n== radar flow ==');

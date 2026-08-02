@@ -8,7 +8,7 @@ The normal game no longer waits for live route/stop/POI discovery. GitHub Action
 - `transit-data.js` from Rejseplanen GTFS (scheduled passenger train services plus named bus/train stops), and
 - `poi-data.js` from Geofabrik OSM plus the project's curated Aalborg lists.
 
-Train lines and bus/train stops therefore load locally just like bus routes. OpenStreetMap/Overpass remains only as an emergency fallback for transit data. POI-based **Matching and Measuring** questions share the same bundled catalogue. For Measuring, the seeker's movable position automatically selects the nearest candidate to establish the reference distance; that same distance is then applied around every candidate in the category, matching wording such as "closer to a rail station" rather than one specific station. The Measuring **Rail station** card reuses the scheduled GTFS rail-station points from `transit-data.js`. Commercial airport uses the Aalborg Airport passenger-terminal point inside the play area.
+Train lines and bus/train stops therefore load locally just like bus routes. OpenStreetMap/Overpass remains only as an emergency fallback for transit data. POI-based **Matching and Measuring** questions share the same bundled catalogue; Measuring markers are tappable targets. The Measuring **Rail station** card reuses the scheduled GTFS rail-station points from `transit-data.js`. Aalborg Airport is intentionally retained even though it sits just outside the Zone-2 play boundary, because it is the relevant Commercial airport for the game.
 
 ## Bus routes: bundled Rejseplanen GTFS
 
@@ -135,8 +135,8 @@ Two things worth knowing:
 - **Muting beats deleting.** Each logged answer has a ◉ toggle. If the map goes black — meaning
   no area is left — one of your answers is wrong. Mute them one at a time to find the culprit
   instead of starting over.
-- **Measuring works on point features.** For coastlines, the Limfjord, and administrative
-  borders, draw a free shape instead; a single pin can't represent a line.
+- **Measuring supports point and line/area features.** Administrative borders, the Limfjord
+  coastline, and bodies of water use their real cached geometry rather than pretending they are pins.
 
 ---
 
@@ -505,7 +505,7 @@ The browser prefers these local bundles, so normal play does not wait on Overpas
 
 ### Measuring automation
 
-POI-based Measuring keeps a movable seeker position. The nearest POI to that position establishes the seeker's reference distance, and the app draws that radius around every POI in the category; Rail station uses the scheduled passenger stations from GTFS in exactly the same way. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring uses the nearest water body for the reference distance and applies that threshold around every bundled water body. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
+POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. The hydro updater supplements formal OSM coastline ways with adjacent marina/dock/quay geometry so urban harbour basins and waterfront quays count as shoreline too. Body-of-water Measuring shows markers for every cached water target, automatically selects the nearest geometry, and preserves distinct unnamed lakes/ponds instead of merging them by generic water type. Named chalk/limestone quarries can be used as a boundary fallback when OSM has no separate water polygon. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
 
 > **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.
 
@@ -516,3 +516,7 @@ The scheduled map-data workflow treats Aalborg KortInfo as an optional refresh s
 ### Zone snapshot corruption guard (v4.3)
 
 The scheduled zone refresh now filters Zone 2 to the four recognised game areas before rebuilding `scripts/play_area.geojson`, and rejects implausible bounds/area changes. A bad KortInfo response can therefore no longer expand the play area and cause GTFS stop counts to explode; the last committed play area remains in use instead.
+
+### Hydro completeness and harbour shoreline (v4.5)
+
+The weekly hydro snapshot now treats `natural=coastline` as the backbone rather than the only possible shoreline source. Marina/dock polygons and quay lines close to Limfjorden are used to fill urban harbour gaps, but only the portions adjacent to playable land are retained so a polygon edge across a harbour entrance cannot become a fake coastline. Unnamed OSM water features keep stable per-object identities, and named chalk/limestone quarry polygons are only used when no better mapped water geometry exists inside them.

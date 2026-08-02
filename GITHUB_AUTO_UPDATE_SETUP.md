@@ -57,7 +57,7 @@ The browser applies the current live Zone-2 union again before displaying stops/
 
 ## POI behavior
 
-The same generated POI catalogue is used by both **Matching** and POI-based **Measuring** cards. Measuring automatically chooses the candidate nearest the movable seeker position to establish the reference distance, then applies that same radius around every candidate in the category. This matches questions such as "are you closer to a rail station than me?" rather than treating one selected station as special. The Measuring **Rail station** card uses the scheduled passenger-station points already bundled in `transit-data.js`, not a separate live OSM query.
+The same generated POI catalogue is used by both **Matching** and POI-based **Measuring** cards. Measuring displays the candidates as tappable cyan markers; selecting one makes it the target of the normal closer/further geometry rule. A category with only one candidate, such as Commercial airport, is selected automatically. The Measuring **Rail station** card uses the scheduled passenger-station points already bundled in `transit-data.js`, not a separate live OSM query.
 
 Commercial airport uses the passenger-terminal point inside Zone 2. Normal POI categories are filtered to the game area.
 
@@ -87,7 +87,7 @@ The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is
 
 ## Additional generated geometry
 
-The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. To keep Zone 1/4 especially small and fast, display polygons are clipped to the actual play area. Genuine administrative border lines are generated separately from the unclipped official polygons and kept only near the game area, so the clip edge can never become a fake Measuring border.
+The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. The zone updater retains complete official polygons near the game area rather than clipping polygon edges, because artificial clip edges must never become fake Measuring borders.
 
 After a successful manual/scheduled run you should also see `HYDRO_AUDIT.md` and `ZONE_AUDIT.md`. If either source looks suspiciously incomplete, the workflow exits non-zero before committing/deploying the new generated bundle.
 

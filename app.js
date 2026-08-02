@@ -1988,16 +1988,26 @@ function hydroCoastFeatures(side) {
   return gj && Array.isArray(gj.features) ? gj.features : [];
 }
 
+function hydroFeatureMarkerCoord(ft) {
+  if (!ft || !ft.geometry) return null;
+  try {
+    if (ft.geometry.type === 'Point') return ft.geometry.coordinates.slice();
+    const p = turf.pointOnFeature(ft);
+    return p && p.geometry && p.geometry.coordinates ? p.geometry.coordinates.slice() : null;
+  } catch (_) { return null; }
+}
+
 function nearestWaterFeature(coord) {
   const b = bundledHydroData();
   const feats = b && b.waterBodies && Array.isArray(b.waterBodies.features)
     ? b.waterBodies.features : [];
-  let best = Infinity, chosen = null;
-  for (const ft of feats) {
+  let best = Infinity, chosen = null, chosenIndex = -1;
+  for (let i = 0; i < feats.length; i++) {
+    const ft = feats[i];
     const d = distanceToFeatureM(coord, ft);
-    if (d != null && d < best) { best = d; chosen = ft; }
+    if (d != null && d < best) { best = d; chosen = ft; chosenIndex = i; }
   }
-  return chosen ? { feature: chosen, distanceM: best } : null;
+  return chosen ? { feature: chosen, index: chosenIndex, distanceM: best } : null;
 }
 
 function updateMeasuringHydroFromCoord(coord) {
@@ -2019,6 +2029,7 @@ function updateMeasuringHydroFromCoord(coord) {
     if (!Number.isFinite(best)) return false;
     distanceM = best;
     name = `${side === 'north' ? 'northern' : 'southern'} Limfjord coastline`;
+    draft.autoFeatureIndex = null;
   } else {
     const hit = nearestWaterFeature(coord);
     if (!hit) return false;
@@ -2030,6 +2041,7 @@ function updateMeasuringHydroFromCoord(coord) {
     features = allWater.length ? allWater : [hit.feature];
     distanceM = hit.distanceM;
     name = (hit.feature.properties || {}).name || 'body of water';
+    draft.autoFeatureIndex = hit.index;
   }
 
   const band = bufferFeatureSet(features, distanceM);
@@ -2814,6 +2826,34 @@ function renderPreviewShapes() {
     }
   }
 
+  if (activeTool === 'measuring' && measuringHydroMode()) {
+    const hydroMode = measuringHydroMode();
+    const hydro = bundledHydroData();
+    if (hydroMode.kind === 'water' && hydro && hydro.waterBodies && Array.isArray(hydro.waterBodies.features)) {
+      // Show every available water target immediately. These markers are only
+      // visual references: map taps still reposition where the question was
+      // asked, and the nearest geometry is selected automatically.
+      hydro.waterBodies.features.forEach((ft, i) => {
+        const c = hydroFeatureMarkerCoord(ft);
+        if (!c) return;
+        const selected = draft.autoFeatureIndex === i;
+        L.circleMarker([c[1], c[0]], {
+          pane: 'previewPane', radius: selected ? 7 : 3.5,
+          color: selected ? '#cffafe' : P, weight: selected ? 2.4 : 1.4,
+          fillColor: selected ? '#0891b2' : '#0e7490', fillOpacity: selected ? 1 : .72,
+          opacity: selected ? 1 : .82, interactive: false
+        }).addTo(previewShapeLayer);
+      });
+    }
+    if (hydroMode.kind === 'coastline' && draft.autoFeatureSide) {
+      const coast = hydroCoastFeatures(draft.autoFeatureSide);
+      if (coast.length) L.geoJSON({type:'FeatureCollection', features: coast}, {
+        pane: 'previewPane', interactive: false,
+        style: { color: P, weight: 3.2, opacity: .96 }
+      }).addTo(previewShapeLayer);
+    }
+  }
+
   if (activeTool === 'measuring' && (measuringBorderMode() || measuringHydroMode()) && draft.seeker) {
     L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
     if (draft.borderBandGeometry && !draft.answer) {
@@ -3356,7 +3396,7 @@ function measuringForm(box) {
           : `The cyan area is every playable location closer to that coastline than your current position.`);
     } else {
       info.textContent = bundledHydroData()
-        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'correct north/south Limfjord shore' : 'nearest named body of water'} is selected automatically.`
+        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'correct north/south Limfjord shore' : 'nearest body of water'} is selected automatically.`
         : 'The local coastline/water bundle is not ready yet. Run the GitHub map-data workflow.';
     }
     box.appendChild(info);
@@ -7211,7 +7251,7 @@ if (!restoredFromUrl) loadOfficialZone2PlayArea();
 
 /* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
-  map, S, CONFIG, draft, drawing, RADAR_PRESETS,
+  map, S, CONFIG, draft, drawing, RADAR_PRESETS, previewShapeLayer,
   recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
@@ -7251,7 +7291,7 @@ window.HS = {
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, setMeasuringPoiTargetFromCoord, syncAutomaticMeasuringPoiTarget, matchingPoiCell, parsePositiveDecimal,
-  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
+  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsReliable, splitBboxGrid, fetchRailwayLines,
   fmtDist, fmtArea, wfsUrl, gc2Url
