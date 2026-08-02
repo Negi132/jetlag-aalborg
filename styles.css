@@ -1037,3 +1037,6 @@ body.cal-mode #map{ touch-action:none; }
   box-shadow:0 0 0 1px rgba(13,20,29,.65);
 }
 .matching-poi-status small{ line-height:1.4; }
+
+/* Compact live-draft status: the redundant Open map / Clear draft controls were removed. */
+.live-draft-inline{ margin:8px 1px 10px; color:#bceff7; font-size:11.5px; line-height:1.45; }

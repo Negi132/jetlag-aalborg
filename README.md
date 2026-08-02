@@ -339,9 +339,17 @@ bisector for different possible travel directions.
 
 The Layers tab has a separate **Bus & train stops** toggle. It loads OpenStreetMap bus stops, railway
 stations, halts and tram stops. Bus and rail points use different symbols, appear from zoom level 12,
-and can be tapped directly while preparing Matching or Measuring questions.
+and can be tapped directly while preparing Matching or Measuring questions. **Unnamed stops are filtered
+out completely**, so anonymous platforms/stop positions no longer clutter the map or Matching candidates.
 
 
 ### Mobile navigation
 
 On phones, the old permanent Questions drawer handle has been replaced by a five-button bottom bar: **Map, Ask, Log, Layers, Game**. The area HUD is hidden, and the drawing controls appear only while manually tracing a line or custom shape.
+
+### Post-game UI/library refinements
+
+- Cancelling or closing a question now leaves its question family expanded while you remain in **Ask**, so you can immediately choose another card in the same category. Leaving Ask and coming back still starts with all six families collapsed.
+- The redundant **Open map** / **Clear map draft** controls were removed. The compact draft/impact text remains; use the mobile **Map** tab to view the map, and Close/Cancel to clear a draft.
+- Danish `aa` and `å` spellings are now canonicalised **for every automatic POI category**, not just libraries. This fixes cases such as **Vejgaard/Vejgård** while also making duplicate/fallback matching consistent for museums, parks, golf courses, hospitals, etc.
+- Library Matching now uses Aalborg Bibliotekernes complete current physical network as its authoritative list: **10 libraries plus Haraldslund service point**. All eleven locations have authoritative fallback metadata. The six central locations retain fixed current coordinates; if one of the other official branches is missing from OSM, its official street address is resolved through Dataforsyningen. The usual play-area filter still runs afterward, so Nibe/Hals/etc. cannot affect an Aalborg-small-game nearest-library question merely because they are on the municipal list.

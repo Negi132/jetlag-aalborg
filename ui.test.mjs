@@ -127,6 +127,14 @@ check('a Matching card opens the answer workspace inline', !$('#toolForm').hidde
 check('selected card pre-fills the category', $('#toolForm input[type="text"]').value === 'park', $('#toolForm input[type="text"]').value);
 click($('#toolForm .question-back'));
 check('close keeps the six-category deck and hides the workspace', !$('#questionDeck').hidden && $('#toolForm').hidden);
+check('cancel/close leaves the current question family expanded',
+      !!doc.querySelector('[data-question-panel="matching"]')?.open);
+check('redundant Open map / Clear map draft control box is gone',
+      !/Clear map draft/.test($('#questionDeck').textContent) && !/Open map\s*Clear map draft/.test($('#questionDeck').textContent));
+click(doc.querySelector('[data-tab="log"]'));
+click(doc.querySelector('[data-tab="ask"]'));
+check('leaving and re-entering Ask collapses all question families again',
+      [...doc.querySelectorAll('.question-type')].every((e) => !e.open));
 check('all four default zone sources use KortInfo', window.eval(`
   Object.values(HS.S.sources).every(s => s.url === HS.KORTINFO && s.kind === 'wfs')
 `));
@@ -1179,6 +1187,24 @@ check('large named public OSM parks are admitted while small/private ones stay e
          !HS.matchingPoiElementAllowed(tiny, tiny.tags.name, mode) &&
          !HS.matchingPoiElementAllowed(priv, priv.tags.name, mode);
 })()`));
+check('library authority matching treats Vejgaard and Vejgård as equivalent', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['library'];
+  return HS.matchingPoiNameAllowed('Vejgård Bibliotek', mode) &&
+         HS.matchingPoiNameAllowed('Vejgaard Bibliotek', mode);
+})()`));
+check('the complete official Aalborg library/service-point list has authoritative fallbacks', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['library'];
+  const names = (mode.fallback || []).map((f) => f.name);
+  const expected = ['Hovedbiblioteket i Aalborg','Haraldslund','Hasseris Bibliotek','Nørresundby Bibliotek',
+    'Trekanten - Bibliotek og Kulturhus','Vejgaard Bibliotek','Svenstrup Bibliotek','Vodskov Bibliotek',
+    'Storvorde Bibliotek','Nibe Bibliotek','Hals Bibliotek'];
+  return expected.every((n) => names.includes(n)) && mode.fallback.length >= expected.length &&
+    mode.fallback.every((f) => f.authoritative === true && !!f.address);
+})()`));
+check('aa/å canonicalisation is shared by all POI names, not only libraries', window.eval(`(() => {
+  return HS.normalisePoiName('Vejgaard Museum') === HS.normalisePoiName('Vejgård Museum') &&
+         HS.normalisePoiName('Aalborg Golf') === HS.normalisePoiName('Ålborg Golf');
+})()`));
 check('automatic Matching removes candidates outside the current game area', window.eval(`(() => {
   const inside = turf.center(HS.S.playArea).geometry.coordinates;
   const outside = [11.5, 58.0];
@@ -1193,13 +1219,16 @@ check('stop query requests both bus and railway features', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();
   return q.includes('highway"="bus_stop') && q.includes('railway"~"^(station|halt|tram_stop)$');
 })()`));
-check('stop parser classifies bus and train points', window.eval(`(() => {
+check('stop parser classifies named bus/train points and drops unnamed transit stops', window.eval(`(() => {
   const gj = HS.parseTransitStops({elements:[
     {type:'node',id:1,lat:57.04,lon:9.91,tags:{highway:'bus_stop',name:'Test bus'}},
-    {type:'node',id:2,lat:57.05,lon:9.92,tags:{railway:'station',name:'Test station'}}
+    {type:'node',id:2,lat:57.05,lon:9.92,tags:{railway:'station',name:'Test station'}},
+    {type:'node',id:3,lat:57.045,lon:9.915,tags:{highway:'bus_stop'}},
+    {type:'node',id:4,lat:57.055,lon:9.925,tags:{public_transport:'platform'}}
   ]});
   return gj.features.length === 2 && gj.features[0].properties.__stopKind === 'bus' &&
-         gj.features[1].properties.__stopKind === 'train';
+         gj.features[1].properties.__stopKind === 'train' &&
+         gj.features.every((f) => !!f.properties.name && !/^Unnamed/.test(f.properties.name));
 })()`));
 
 console.log('\n== runtime errors ==');

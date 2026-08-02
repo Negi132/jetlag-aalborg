@@ -273,12 +273,39 @@ const AALBORG_PARK_ADJACENT_FALLBACK = [
    never subject to this size threshold. */
 const PARK_AUTO_MIN_AREA_M2 = 10000; // 1 hectare
 
-const OFFICIAL_AALBORG_LIBRARIES = [
-  'Hovedbiblioteket i Aalborg', 'Aalborg Hovedbibliotek', 'Haraldslund', 'Haraldslund Bibliotek',
-  'Hasseris Bibliotek', 'Nørresundby Bibliotek', 'Trekanten - Bibliotek og Kulturhus', 'Trekanten',
-  'Vejgaard Bibliotek', 'Svenstrup Bibliotek', 'Vodskov Bibliotek',
-  'Storvorde Bibliotek', 'Nibe Bibliotek', 'Hals Bibliotek'
+/* Aalborg Bibliotekerne's current organisation is ten physical libraries plus
+   Haraldslund as a service point. Keep the whole official set here, even though
+   the small Aalborg game-area filter will later discard branches outside the four
+   Zone-2 areas. Addresses are retained so a missing OSM branch can be resolved
+   through Dataforsyningen instead of silently disappearing. */
+const AALBORG_LIBRARY_LOCATIONS = [
+  { name: 'Hovedbiblioteket i Aalborg', address: 'Rendsburggade 2, 9000 Aalborg', coordinates: [9.9275896, 57.0472572] },
+  { name: 'Haraldslund', address: 'Kastetvej 83, 9000 Aalborg', coordinates: [9.89904347, 57.05420492], servicePoint: true },
+  { name: 'Hasseris Bibliotek', address: 'Thulebakken 46, 9000 Aalborg', coordinates: [9.88452416, 57.03559821] },
+  { name: 'Nørresundby Bibliotek', address: 'Torvet 5, 9400 Nørresundby', coordinates: [9.9231595, 57.05896286] },
+  { name: 'Trekanten - Bibliotek og Kulturhus', address: 'Sebbersundvej 2A, 9220 Aalborg Øst', coordinates: [10.0008729, 57.0276469] },
+  { name: 'Vejgaard Bibliotek', address: 'Hadsundvej 35, 9000 Aalborg', coordinates: [9.95176, 57.04130] },
+  { name: 'Svenstrup Bibliotek', address: 'Godthåbsvej 14B, 9230 Svenstrup J' },
+  { name: 'Vodskov Bibliotek', address: 'Brorsonsvej 3B, 9310 Vodskov' },
+  { name: 'Storvorde Bibliotek', address: 'Stationsvej 5, 9280 Storvorde' },
+  { name: 'Nibe Bibliotek', address: 'St Algade 4, 9240 Nibe' },
+  { name: 'Hals Bibliotek', address: 'Østergade 2A, 9370 Hals' }
 ];
+
+const OFFICIAL_AALBORG_LIBRARIES = [
+  ...AALBORG_LIBRARY_LOCATIONS.map((x) => x.name),
+  // Common/OSM aliases. The aa/å normaliser below makes Vejgaard/Vejgård
+  // equivalent, but keeping the visible alias also helps older cached data.
+  'Aalborg Hovedbibliotek', 'Haraldslund Bibliotek', 'Trekanten', 'Vejgård Bibliotek'
+];
+
+/* Authoritative fallbacks are used only when needed. Entries without hard-coded
+   coordinates are geocoded from the official address through Dataforsyningen at
+   question-load time. This keeps the official list complete without trusting
+   stale OSM coordinates after a library move. */
+const AALBORG_LIBRARY_FALLBACK = AALBORG_LIBRARY_LOCATIONS.map((x) => ({
+  ...x, authoritative: true
+}));
 
 const MATCHING_POI_DEFS = {
   'commercial airport': {
@@ -324,7 +351,8 @@ const MATCHING_POI_DEFS = {
   },
   'library': {
     key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]'],
-    officialNames: OFFICIAL_AALBORG_LIBRARIES
+    officialNames: OFFICIAL_AALBORG_LIBRARIES,
+    fallback: AALBORG_LIBRARY_FALLBACK
   },
   'foreign consulate': {
     key: 'consulate', singular: 'foreign consulate', plural: 'foreign consulates',
@@ -989,6 +1017,10 @@ $('#drawFinish').addEventListener('click', () => {
 
 let activeTool = null;
 let selectedQuestion = null;
+// UI-only: when a question is cancelled, keep its family expanded so the
+// player can immediately choose another card from the same category. This is
+// reset when the Ask tab is entered afresh from another tab.
+let questionDeckOpenKey = null;
 const draft = {};
 const questionPreview = { active: false, type: null, metrics: null };
 
@@ -1133,6 +1165,22 @@ function normaliseMatchingPoiLabel(value) {
   return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/* Aalborg's official pages often use the traditional Danish `aa` spelling
+   where OpenStreetMap uses `å` (Vejgaard vs Vejgård is the concrete case).
+   normaliseStopName turns å into `a`; collapse `aa` as well when comparing
+   authoritative place names so the two spellings match without weakening the
+   actual POI-tag filter. */
+function normalisePoiName(value) {
+  // Use one canonical spelling for all POI comparisons, not only libraries.
+  // Danish place names are commonly written with either `aa` or `å` across
+  // municipal/OSM datasets (Vejgaard/Vejgård is the obvious example).
+  return normaliseStopName(value).replace(/aa/g, 'a');
+}
+
+function normaliseAuthorityPlaceName(value) {
+  return normalisePoiName(value);
+}
+
 function matchingPoiMode() {
   if (!selectedQuestion || selectedQuestion.typeKey !== 'matching' || draft.poiManual) return null;
   return MATCHING_POI_DEFS[normaliseMatchingPoiLabel(selectedQuestion.label)] || null;
@@ -1160,17 +1208,17 @@ function matchingPoiOverpassQuery(mode) {
 
 function matchingPoiNameAllowed(name, mode) {
   if (!mode) return true;
-  const n = normaliseStopName(name);
+  const n = normaliseAuthorityPlaceName(name);
   if (!n) return false;
 
   // Some curated park-adjacent areas need exact matching so a feature such as
   // "Østerådalen Hundeskov" does not become a second, unintended park simply
   // because it contains the word Østerådalen.
-  if ((mode.officialExactNames || []).some((official) => n === normaliseStopName(official))) return true;
+  if ((mode.officialExactNames || []).some((official) => n === normaliseAuthorityPlaceName(official))) return true;
 
   if (!mode.officialNames || !mode.officialNames.length) return !(mode.officialExactNames || []).length;
   return mode.officialNames.some((official) => {
-    const o = normaliseStopName(official);
+    const o = normaliseAuthorityPlaceName(official);
     return n === o || n.includes(o) || o.includes(n);
   });
 }
@@ -1237,23 +1285,86 @@ function filterMatchingPoisToPlayArea(gj) {
   return { type: 'FeatureCollection', features };
 }
 
-function appendFallbackPois(gj, mode) {
+const poiFallbackGeocodeCache = new Map();
+
+async function geocodePoiFallback(fallback) {
+  if (!fallback) return null;
+  if (Array.isArray(fallback.coordinates) && fallback.coordinates.length >= 2) return fallback;
+  if (!fallback.address) return null;
+
+  const cacheKey = String(fallback.address).trim().toLowerCase();
+  if (poiFallbackGeocodeCache.has(cacheKey)) {
+    const cached = poiFallbackGeocodeCache.get(cacheKey);
+    return cached ? { ...fallback, coordinates: cached.slice() } : null;
+  }
+
+  try {
+    const url = `${CONFIG.dawa}/adresser?q=${encodeURIComponent(fallback.address)}&struktur=mini&per_side=1`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = await res.json();
+    const hit = Array.isArray(rows) && rows[0];
+    const x = Number(hit && (hit.x ?? (hit.adgangsadresse && hit.adgangsadresse.adgangspunkt && hit.adgangsadresse.adgangspunkt.koordinater && hit.adgangsadresse.adgangspunkt.koordinater[0])));
+    const y = Number(hit && (hit.y ?? (hit.adgangsadresse && hit.adgangsadresse.adgangspunkt && hit.adgangsadresse.adgangspunkt.koordinater && hit.adgangsadresse.adgangspunkt.koordinater[1])));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('no coordinates');
+    const coord = [x, y];
+    poiFallbackGeocodeCache.set(cacheKey, coord);
+    return { ...fallback, coordinates: coord };
+  } catch (_) {
+    poiFallbackGeocodeCache.set(cacheKey, null);
+    return null;
+  }
+}
+
+async function resolveMatchingPoiFallbacks(mode, existingGeoJson) {
+  const existing = (existingGeoJson && existingGeoJson.features) || [];
+  const fallback = (mode && mode.fallback) || [];
+  const resolved = [];
+
+  // Hard-coded coordinates are authoritative and cheap, so always retain them.
+  for (const f of fallback) {
+    if (Array.isArray(f.coordinates) && f.coordinates.length >= 2) resolved.push(f);
+  }
+
+  // Address-only fallbacks are needed only when that official place is absent
+  // from OSM. Resolve those in parallel so a complete library outage does not
+  // serially trigger five slow address lookups.
+  const missing = fallback.filter((f) => {
+    if (Array.isArray(f.coordinates) && f.coordinates.length >= 2) return false;
+    const wanted = normalisePoiName(f.name);
+    return !existing.some((ft) => normalisePoiName((ft.properties || {}).name || (ft.properties || {}).__displayName) === wanted);
+  });
+  const geocoded = await Promise.all(missing.map(geocodePoiFallback));
+  for (const f of geocoded) if (f) resolved.push(f);
+  return resolved;
+}
+
+function appendFallbackPois(gj, mode, resolvedFallback = null) {
   const out = gj && Array.isArray(gj.features) ? gj.features.slice() : [];
-  for (const f of (mode && mode.fallback) || []) {
+  for (const f of resolvedFallback || (mode && mode.fallback) || []) {
     const coord = f.coordinates;
     if (!coord || coord.length < 2) continue;
-    const norm = normaliseStopName(f.name);
-    let duplicate = false;
-    for (const ft of out) {
-      const p = ft.properties || {};
+    const norm = normalisePoiName(f.name);
+    const authorityNorm = normaliseAuthorityPlaceName(f.name);
+    let duplicateIndex = -1;
+    for (let i = 0; i < out.length; i++) {
+      const ft = out[i], p = ft.properties || {};
       let d = Infinity;
       try { d = turf.distance(ft, turf.point(coord), { units: 'meters' }); } catch (_) {}
-      if (d < 300 || (norm && p.__norm === norm)) { duplicate = true; break; }
+      const sameAuthorityName = authorityNorm && normaliseAuthorityPlaceName(p.name || p.__displayName || '') === authorityNorm;
+      if (d < 30 || (norm && p.__norm === norm) || sameAuthorityName) { duplicateIndex = i; break; }
     }
-    if (!duplicate) out.push(turf.point(coord.slice(), {
+    const fallbackPoint = () => turf.point(coord.slice(), {
       name: f.name, __displayName: f.name, __poiKind: mode.key, __norm: norm,
-      fallback: true
-    }));
+      fallback: true, authoritative: !!f.authoritative
+    });
+    if (duplicateIndex >= 0) {
+      // For current municipal branch locations, prefer the authoritative point
+      // over a nearby OSM feature that may still describe an old building/location.
+      if (f.authoritative) out[duplicateIndex] = fallbackPoint();
+      continue;
+    }
+    out.push(fallbackPoint());
   }
   return { type: 'FeatureCollection', features: out };
 }
@@ -1322,7 +1433,7 @@ function parseMatchingPois(json, mode) {
     const name = tags.name || tags['name:da'] || tags.official_name || tags.brand ||
       `Unnamed ${mode.singular}`;
     if (!matchingPoiElementAllowed(el, name, mode)) continue;
-    const norm = normaliseStopName(name);
+    const norm = normalisePoiName(name);
     let duplicate = false;
     for (const ft of features) {
       const p = ft.properties || {};
@@ -1379,7 +1490,8 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
         if (!(mode.fallback && mode.fallback.length)) throw err;
         gj = { type: 'FeatureCollection', features: [] };
       }
-      gj = appendFallbackPois(gj, mode);
+      const resolvedFallback = await resolveMatchingPoiFallbacks(mode, gj);
+      gj = appendFallbackPois(gj, mode, resolvedFallback);
       matchingPoiCache.set(mode.key, gj);
     }
     // The card rules use places *inside the game area*. The Overpass search box
@@ -1698,9 +1810,14 @@ function renderQuestionDeck() {
       (isActiveType ? ' has-active-question' : '');
     details.dataset.questionPanel = type.key;
     if (type.disabled) details.setAttribute('aria-disabled', 'true');
-    // No question family is privileged on entry: start collapsed unless a card
-    // from that family is actively being answered.
-    details.open = isActiveType;
+    // No question family is privileged on entry. A cancelled question may keep
+    // its own family open while the player remains in Ask, so another card from
+    // that family is one tap away.
+    details.open = isActiveType || questionDeckOpenKey === type.key;
+    details.addEventListener('toggle', () => {
+      if (details.open) questionDeckOpenKey = type.key;
+      else if (!selectedQuestion && questionDeckOpenKey === type.key) questionDeckOpenKey = null;
+    });
     const summary = document.createElement('summary');
     summary.className = 'question-type-summary';
     summary.innerHTML = `<span class="question-number">${type.number}</span>
@@ -1756,6 +1873,7 @@ function chooseQuestion(type, card) {
   const zoneSession = questionZoneSession;
   deactivateQuestionPreview();
   activeTool = type.tool;
+  questionDeckOpenKey = type.key;
   selectedQuestion = { typeKey: type.key, title: type.title, meta: type.meta, ...card };
   for (const k of Object.keys(draft)) delete draft[k];
   if (activeTool === 'nearest') draft.categoryName = card.phrase;
@@ -1838,11 +1956,13 @@ function chooseQuestion(type, card) {
 }
 
 function closeQuestionForm() {
+  const stayOpen = selectedQuestion ? selectedQuestion.typeKey : questionDeckOpenKey;
   releaseQuestionZoneLayers();
   releaseQuestionPoiLayer();
   deactivateQuestionPreview();
   activeTool = null;
   selectedQuestion = null;
+  questionDeckOpenKey = stayOpen || null;
   for (const k of Object.keys(draft)) delete draft[k];
   endPick(); stopDrawing();
   renderToolForm();
@@ -1856,6 +1976,7 @@ function selectTool(key) {
   deactivateQuestionPreview();
   activeTool = key;
   selectedQuestion = null;
+  questionDeckOpenKey = null;
   for (const k of Object.keys(draft)) delete draft[k];
   endPick(); stopDrawing();
   if (previewCapableTool(key)) {
@@ -2368,25 +2489,14 @@ function clearLiveDraftGeometry() {
 }
 
 function addPreviewControls(box) {
-  const section = document.createElement('section');
-  section.className = 'question-preview-controls is-active';
+  // Map is always one tap away in the mobile nav, and closing/cancelling the
+  // question already clears its draft. Keep the useful impact/instruction text
+  // without spending vertical space on redundant Open Map / Clear Draft buttons.
   const text = document.createElement('p');
   text.id = 'previewImpactText';
-  text.className = 'question-preview-impact';
+  text.className = 'question-preview-impact live-draft-inline';
   text.textContent = 'Live map draft — nothing is logged until you press Log answer.';
-  section.appendChild(text);
-
-  const controls = document.createElement('div');
-  controls.className = 'live-draft-actions';
-  const mapButton = document.createElement('button');
-  mapButton.type = 'button'; mapButton.className = 'ghost-btn'; mapButton.textContent = 'Open map';
-  mapButton.addEventListener('click', closeSheet);
-  const clear = document.createElement('button');
-  clear.type = 'button'; clear.className = 'ghost-btn'; clear.textContent = 'Clear map draft';
-  clear.addEventListener('click', () => { clearLiveDraftGeometry(); renderToolForm(); });
-  controls.append(mapButton, clear);
-  section.appendChild(controls);
-  box.appendChild(section);
+  box.appendChild(text);
 }
 
 function commit(c) {
@@ -2398,6 +2508,7 @@ function commit(c) {
   S.constraints.unshift(c);
   activeTool = null;
   selectedQuestion = null;
+  questionDeckOpenKey = null;
   renderToolForm();
   recompute();
   switchTab('log');
@@ -4045,8 +4156,10 @@ function parseTransitStops(json) {
       (!isTrain && /^(platform|stop_position|station)$/.test(pt) && tags.ferry !== 'yes');
     if (!isTrain && !isBus) continue;
     const kind = isTrain ? 'train' : 'bus';
-    const name = tags.name || tags['name:da'] || tags.official_name ||
-      (kind === 'train' ? 'Unnamed rail stop' : 'Unnamed bus stop');
+    const name = tags.name || tags['name:da'] || tags.official_name;
+    // Unnamed platforms/stop positions add visual clutter and are useless for
+    // Matching by station/stop identity, so do not expose them at all.
+    if (!name || !String(name).trim()) continue;
     const key = `${kind}:${Math.round(lon * 1e6)}:${Math.round(lat * 1e6)}:${normaliseStopName(name)}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -4070,7 +4183,7 @@ function buildTransitStopLayer(gj) {
       color: train ? '#c4b5fd' : '#fde68a', weight: train ? 2.2 : 1.8,
       fillColor: train ? '#7c3aed' : '#d97706', fillOpacity: .92
     });
-    marker.bindTooltip(`${train ? 'Train' : 'Bus'} · ${p.name || 'Unnamed stop'}`, {
+    marker.bindTooltip(`${train ? 'Train' : 'Bus'} · ${p.name}`, {
       className: 'stop-tip', direction: 'top', offset: [0, -5], sticky: true
     });
     marker.on('click', (e) => {
@@ -4078,7 +4191,7 @@ function buildTransitStopLayer(gj) {
       marker.openTooltip();
       if (activeTool === 'measuring') {
         draft.target = c.slice();
-        draft.targetName = p.name || (train ? 'rail station' : 'bus stop');
+        draft.targetName = p.name;
         renderToolForm(); openSheet();
       } else if (activeTool === 'nearest') {
         draft.points = draft.points || [];
@@ -5447,11 +5560,14 @@ function syncMobileNav(view) {
 }
 
 function switchTab(name) {
+  const previous = document.querySelector('.tabpane.is-active');
+  const enteringAsk = name === 'ask' && (!previous || previous.dataset.pane !== 'ask');
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.tabpane').forEach((p) => p.classList.toggle('is-active', p.dataset.pane === name));
-  // Returning to Ask with no draft should present a clean deck, not whatever
-  // accordion happened to be open last time.
-  if (name === 'ask' && !activeTool) {
+  // A freshly entered Ask tab starts clean, but cancelling while already in Ask
+  // deliberately leaves that question family open.
+  if (enteringAsk && !activeTool) {
+    questionDeckOpenKey = null;
     $$('.question-type').forEach((d) => { d.open = false; });
   }
   if ($('#panel').classList.contains('is-open')) syncMobileNav(name);
@@ -5767,7 +5883,9 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode,
+  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, MATCHING_POI_DEFS,
+  OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
+  normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
