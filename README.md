@@ -8,7 +8,7 @@ The normal game no longer waits for live route/stop/POI discovery. GitHub Action
 - `transit-data.js` from Rejseplanen GTFS (scheduled passenger train services plus named bus/train stops), and
 - `poi-data.js` from Geofabrik OSM plus the project's curated Aalborg lists.
 
-Train lines and bus/train stops therefore load locally just like bus routes. OpenStreetMap/Overpass remains only as an emergency fallback for transit data. POI-based **Matching and Measuring** questions share the same bundled catalogue; Measuring markers are tappable targets. The Measuring **Rail station** card reuses the scheduled GTFS rail-station points from `transit-data.js`. Aalborg Airport is intentionally retained even though it sits just outside the Zone-2 play boundary, because it is the relevant Commercial airport for the game.
+Train lines and bus/train stops therefore load locally just like bus routes. OpenStreetMap/Overpass remains only as an emergency fallback for transit data. POI-based **Matching and Measuring** questions share the same bundled catalogue. For Measuring, the seeker's movable position automatically selects the nearest candidate to establish the reference distance; that same distance is then applied around every candidate in the category, matching wording such as "closer to a rail station" rather than one specific station. The Measuring **Rail station** card reuses the scheduled GTFS rail-station points from `transit-data.js`. Commercial airport uses the Aalborg Airport passenger-terminal point inside the play area.
 
 ## Bus routes: bundled Rejseplanen GTFS
 
@@ -505,7 +505,7 @@ The browser prefers these local bundles, so normal play does not wait on Overpas
 
 ### Measuring automation
 
-POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring automatically selects the nearest bundled water feature. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
+POI-based Measuring keeps a movable seeker position. The nearest POI to that position establishes the seeker's reference distance, and the app draws that radius around every POI in the category; Rail station uses the scheduled passenger stations from GTFS in exactly the same way. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring uses the nearest water body for the reference distance and applies that threshold around every bundled water body. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
 
 > **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.
 

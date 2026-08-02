@@ -897,7 +897,7 @@ function refreshDerivedLayers() {
     const wasVisible = rec.visible;
     const fresh = addLayer(rec.name, gj, {
       key: rec.key, nameField: rec.nameField, style: rec.style, derived: rec.derived,
-      sourceKey: rec.sourceKey, baseGeojson: rec.baseGeojson || gj
+      sourceKey: rec.sourceKey, baseGeojson: rec.baseGeojson || gj, borderGeojson: rec.borderGeojson
     });
     if (fresh && !wasVisible) setLayerVisible(fresh, false);
   }
@@ -1096,8 +1096,8 @@ map.on('click', (e) => {
         const poiMode = measuringPoiMode();
         if (poiMode) {
           // Background map taps always set/reposition where the question was
-          // asked. Specific POIs are chosen by tapping their cyan markers;
-          // auto-nearest cards such as Rail station update immediately.
+          // asked. The nearest candidate is chosen automatically for every
+          // POI Measuring category and the category-wide threshold updates live.
           draft.seeker = coord;
           syncAutomaticMeasuringPoiTarget();
         } else if (!draft.seeker) draft.seeker = coord;
@@ -1352,7 +1352,13 @@ function normaliseAuthorityPlaceName(value) {
 
 function poiModeForQuestion(typeKey) {
   if (!selectedQuestion || selectedQuestion.typeKey !== typeKey || draft.poiManual) return null;
-  return MATCHING_POI_DEFS[normaliseMatchingPoiLabel(selectedQuestion.label)] || null;
+  const base = MATCHING_POI_DEFS[normaliseMatchingPoiLabel(selectedQuestion.label)] || null;
+  if (!base) return null;
+  // Measuring asks about the CATEGORY ("a rail station", "a museum", etc.),
+  // not one manually chosen instance. Where the question is asked determines
+  // the reference distance to the nearest candidate, and the answer is then
+  // evaluated against the nearest candidate everywhere in the play area.
+  return typeKey === 'measuring' ? Object.assign({}, base, { autoNearest: true }) : base;
 }
 
 function matchingPoiMode() { return poiModeForQuestion('matching'); }
@@ -1858,7 +1864,14 @@ function syncAutomaticMeasuringPoiTarget() {
   const p = chosen.properties || {};
   draft.targetName = p.name || p.__displayName || mode.singular;
   draft.targetDistanceM = best;
-  return true;
+  // The card asks whether the hider is closer/further from *a* member of this
+  // category. Therefore the threshold applies around EVERY candidate, not only
+  // around the candidate nearest the seeker. The selected target is retained
+  // purely as the seeker's nearest-reference marker/readout.
+  const band = bufferFeatureSet(feats, best);
+  draft.proximityBandGeometry = band ? band.geometry : null;
+  draft.proximityCandidateCount = feats.length;
+  return !!draft.proximityBandGeometry;
 }
 
 function matchingPoiCell() {
@@ -2009,7 +2022,12 @@ function updateMeasuringHydroFromCoord(coord) {
   } else {
     const hit = nearestWaterFeature(coord);
     if (!hit) return false;
-    features = [hit.feature];
+    const allWater = bundle.waterBodies && Array.isArray(bundle.waterBodies.features)
+      ? bundle.waterBodies.features : [];
+    // As with POI Measuring, "a body of water" means distance to the nearest
+    // member of the category. The seeker's nearest water establishes the
+    // threshold, then that threshold is buffered around every water body.
+    features = allWater.length ? allWater : [hit.feature];
     distanceM = hit.distanceM;
     name = (hit.feature.properties || {}).name || 'body of water';
   }
@@ -2035,11 +2053,21 @@ function geometryLineParts(geometry) {
 function zoneBorderLines(rec) {
   if (!rec) return [];
   if (rec.__zoneBorderLines) return rec.__zoneBorderLines;
-  const source = rec.baseGeojson || rec.geojson;
+  const source = rec.borderGeojson || rec.baseGeojson || rec.geojson;
   const lines = [];
   for (const ft of (source && source.features) || []) {
-    if (!ft || !ft.geometry || !/Polygon/.test(ft.geometry.type)) continue;
+    if (!ft || !ft.geometry) continue;
     try {
+      // v2 zone snapshots carry genuine border lines separately from their
+      // play-area-clipped display polygons. Live/legacy sources still arrive
+      // as polygons and are converted here as before.
+      if (/LineString/.test(ft.geometry.type)) {
+        for (const coords of geometryLineParts(ft.geometry)) {
+          if (coords && coords.length >= 2) lines.push(turf.lineString(coords));
+        }
+        continue;
+      }
+      if (!/Polygon/.test(ft.geometry.type)) continue;
       const boundary = turf.polygonToLine(ft);
       const feats = boundary.type === 'FeatureCollection' ? boundary.features : [boundary];
       for (const lineFt of feats) {
@@ -2351,13 +2379,9 @@ function chooseQuestion(type, card) {
       if (currentPoiMode && currentPoiMode.key === poiMode.key) {
         draft.poiLoading = false;
         draft.poiCount = (gj && gj.features ? gj.features.length : 0);
-        if (selectedQuestion && selectedQuestion.typeKey === 'measuring' && draft.poiCount === 1 && !draft.target) {
-          const only = gj.features[0];
-          draft.target = only.geometry.coordinates.slice();
-          const p = only.properties || {};
-          draft.targetName = p.name || p.__displayName || poiMode.singular;
-        }
         if (selectedQuestion && selectedQuestion.typeKey === 'measuring' && poiMode.autoNearest) {
+          // Measuring targets are derived from the seeker's position, even for
+          // single-candidate categories such as Commercial airport.
           syncAutomaticMeasuringPoiTarget();
         }
         renderToolForm();
@@ -2594,12 +2618,20 @@ function previewConstraintFromDraft() {
     case 'measuring': {
       const borderMode = measuringBorderMode();
       const hydroMode = measuringHydroMode();
+      const poiMode = measuringPoiMode();
       if (borderMode || hydroMode) {
         const label = borderMode ? borderMode.label : (draft.autoFeatureName || hydroMode.label);
         return draft.borderBandGeometry && draft.answer
           ? { type: 'borderDistance', geometry: draft.borderBandGeometry, answer: draft.answer,
               distanceM: draft.borderDistanceM, zoneLevel: borderMode ? borderMode.level : null,
               borderName: label }
+          : null;
+      }
+      if (poiMode) {
+        return draft.proximityBandGeometry && draft.answer
+          ? { type: 'borderDistance', geometry: draft.proximityBandGeometry, answer: draft.answer,
+              distanceM: draft.targetDistanceM,
+              borderName: `nearest ${poiMode.singular}` }
           : null;
       }
       return draft.seeker && draft.target && draft.answer
@@ -2692,7 +2724,7 @@ function previewInstruction() {
     const mode = measuringHydroMode();
     if (!bundledHydroData()) return 'Coastline/water geometry has not been generated yet. Run the map-data workflow.';
     if (!draft.seeker || !draft.borderBandGeometry) return `Tap your position. The nearest ${mode.label} will be detected automatically.`;
-    if (!draft.answer) return `Drag the point or tap elsewhere to reposition it. ${draft.autoFeatureName || mode.label} is ${fmtDist(draft.borderDistanceM)} away; choose Closer or Further to preview the cut.`;
+    if (!draft.answer) return `Drag the point or tap elsewhere to reposition it. ${draft.autoFeatureName || mode.label} is ${fmtDist(draft.borderDistanceM)} away${mode.kind === 'water' ? '; that radius is applied around every body of water' : ''}; choose Closer or Further to preview the cut.`;
   }
   if (activeTool === 'measuring' && measuringPoiMode()) {
     const mode = measuringPoiMode();
@@ -2700,10 +2732,11 @@ function previewInstruction() {
     if (draft.poiError) return `Could not load ${mode.plural}: ${draft.poiError}`;
     if (!matchingPoiFeatures().length) return `No ${mode.plural} are available for this question.`;
     if (!draft.seeker) return `${matchingPoiFeatures().length} ${mode.plural} loaded. Tap your position on the map.`;
-    if (!draft.target) return mode.autoNearest ? `Move your position; the nearest ${mode.singular} will be selected automatically.` : `Tap the cyan ${mode.singular} marker you are measuring to.`;
+    if (!draft.target) return `Move your position; the nearest ${mode.singular} will be selected automatically.`;
     if (!draft.answer) {
-      const r = turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
-      return `${draft.targetName || mode.singular}${mode.autoNearest ? ' · nearest to your position' : ' selected'}. Cyan shows your current distance (${fmtDist(r)}); drag or tap elsewhere to reposition, then choose Closer or Further.`;
+      const r = draft.targetDistanceM != null ? draft.targetDistanceM
+        : turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
+      return `${draft.targetName || mode.singular} is nearest to you (${fmtDist(r)}). Matching cyan-radius areas are drawn around all ${mode.plural}; drag or tap elsewhere to reposition, then choose Closer or Further.`;
     }
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
@@ -2801,6 +2834,8 @@ function renderPreviewShapes() {
   }
 
   if (activeTool === 'measuring' && measuringPoiMode()) {
+    const mode = measuringPoiMode();
+    const feats = matchingPoiFeatures();
     if (draft.seeker) L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
     if (draft.target) {
       L.circleMarker([draft.target[1], draft.target[0]], {
@@ -2813,11 +2848,29 @@ function renderPreviewShapes() {
         pane: 'previewPane', color: P, weight: 1.8, opacity: .8, dashArray: '4 5', interactive: false
       }).addTo(previewShapeLayer);
       if (!draft.answer) {
-        const radiusM = turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
-        if (radiusM > 0) {
-          L.circle([draft.target[1], draft.target[0]], { pane: 'previewPane', radius: radiusM,
-            color: P, weight: 2.2, opacity: .95, dashArray: '7 5', fillColor: P,
-            fillOpacity: .055, interactive: false }).addTo(previewShapeLayer);
+        const radiusM = draft.targetDistanceM != null ? draft.targetDistanceM
+          : turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
+        if (radiusM >= 0) {
+          // Draw the same reference radius around every candidate. The hider's
+          // comparison is to the nearest member of the category, not to the one
+          // that happened to be nearest the seeker.
+          for (const ft of feats) {
+            if (!ft || !ft.geometry || ft.geometry.type !== 'Point') continue;
+            const c = ft.geometry.coordinates;
+            L.circle([c[1], c[0]], { pane: 'previewPane', radius: Math.max(.5, radiusM),
+              color: P, weight: 1.7, opacity: .78, dashArray: '6 5', fillColor: P,
+              fillOpacity: .025, interactive: false }).addTo(previewShapeLayer);
+          }
+          if (draft.proximityBandGeometry) {
+            L.geoJSON(turf.feature(draft.proximityBandGeometry), { pane: 'previewPane', interactive: false,
+              style: { color: P, weight: 2.2, opacity: .95, dashArray: '7 5',
+                       fillColor: P, fillOpacity: .07 } }).addTo(previewShapeLayer);
+            const before = solveCurrentArea().possible;
+            const closer = before ? gIntersect(before, turf.feature(draft.proximityBandGeometry)) : null;
+            if (before) questionPreview.metrics = {
+              borderDual: true, beforeM2: turf.area(before), closerM2: closer ? turf.area(closer) : 0
+            };
+          }
         }
         updatePreviewImpactText();
         return;
@@ -3013,6 +3066,7 @@ function clearLiveDraftGeometry() {
     delete draft.a; delete draft.b; delete draft.distanceConfirmed;
   } else if (activeTool === 'measuring') {
     delete draft.seeker; delete draft.target; delete draft.targetDistanceM;
+    delete draft.proximityBandGeometry; delete draft.proximityCandidateCount;
     delete draft.borderDistanceM; delete draft.borderBandGeometry;
     delete draft.autoFeatureName; delete draft.autoFeatureKind; delete draft.autoFeatureSide;
   } else if (activeTool === 'nearest') {
@@ -3296,8 +3350,10 @@ function measuringForm(box) {
     const info = document.createElement('div');
     info.className = 'zone-distance-readout';
     if (draft.borderDistanceM != null && draft.autoFeatureName) {
-      info.innerHTML = `Detected <strong>${escapeHtml(draft.autoFeatureName)}</strong> · <strong>${escapeHtml(fmtDist(draft.borderDistanceM))}</strong> away.<br>` +
-        `The cyan area is every playable location closer to that feature than your current position.`;
+      info.innerHTML = `Detected nearest <strong>${escapeHtml(draft.autoFeatureName)}</strong> · <strong>${escapeHtml(fmtDist(draft.borderDistanceM))}</strong> away.<br>` +
+        (hydroMode.kind === 'water'
+          ? `The cyan area is every playable location closer to any body of water than your current position.`
+          : `The cyan area is every playable location closer to that coastline than your current position.`);
     } else {
       info.textContent = bundledHydroData()
         ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'correct north/south Limfjord shore' : 'nearest named body of water'} is selected automatically.`
@@ -3308,7 +3364,10 @@ function measuringForm(box) {
     answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
     actions(box, draft.seeker && draft.borderBandGeometry && draft.answer, () =>
       commit({ type: 'borderDistance', geometry: draft.borderBandGeometry,
-               distanceM: draft.borderDistanceM, borderName: draft.autoFeatureName || hydroMode.label,
+               distanceM: draft.borderDistanceM,
+               borderName: hydroMode.kind === 'water'
+                 ? `body of water (nearest: ${draft.autoFeatureName || 'water'})`
+                 : (draft.autoFeatureName || hydroMode.label),
                answer: draft.answer }));
     return;
   }
@@ -3326,26 +3385,28 @@ function measuringForm(box) {
     let state = `Loading ${poiMode.plural}…`;
     if (draft.poiError) state = `Could not load: ${draft.poiError}`;
     else if (!questionPoi.loading && !draft.poiLoading && !feats.length) state = `No ${poiMode.plural} available for this question`;
-    else if (draft.target) state = `${draft.targetName || poiMode.singular} · ${poiMode.autoNearest ? 'nearest to your position' : 'selected'}`;
-    else if (feats.length) state = `${feats.length} ${poiMode.plural} loaded · tap a cyan marker`;
+    else if (draft.target) state = `${draft.targetName || poiMode.singular} · nearest to your position · ${feats.length} total`;
+    else if (feats.length) state = `${feats.length} ${poiMode.plural} loaded · set your position`;
     info.innerHTML = `<div><strong>The ${escapeHtml(poiMode.singular)} being measured</strong><small>${escapeHtml(state)}</small></div>`;
     box.appendChild(info);
 
     const hint = document.createElement('p');
     hint.className = 'hint';
     hint.textContent = feats.length
-      ? (poiMode.autoNearest
-          ? `Set or drag your position; the nearest ${poiMode.singular} is selected automatically and changes live as you move.`
-          : 'Set or drag your position, then tap the specific cyan POI marker you measured to. Background map taps reposition your position.')
+      ? `Set or drag your position; the nearest ${poiMode.singular} is selected automatically. Your distance to it becomes the radius around every ${poiMode.singular}, because the card asks about distance to a ${poiMode.singular}, not that one specific place.`
       : (questionPoi.loading || draft.poiLoading
           ? 'The candidate places are loading from the local POI bundle.'
           : `This category currently has no usable ${poiMode.plural}.`);
     box.appendChild(hint);
 
     answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
-    actions(box, draft.seeker && draft.target && draft.answer, () =>
-      commit({ type: 'measuring', seeker: draft.seeker, target: draft.target,
-               targetName: draft.targetName || poiMode.singular, answer: draft.answer }));
+    actions(box, draft.seeker && draft.target && draft.proximityBandGeometry && draft.answer, () =>
+      commit({ type: 'borderDistance', geometry: draft.proximityBandGeometry,
+               distanceM: draft.targetDistanceM,
+               borderName: `nearest ${poiMode.singular}`,
+               targetName: draft.targetName || poiMode.singular,
+               candidateCount: feats.length,
+               answer: draft.answer }));
     return;
   }
 
@@ -4099,6 +4160,17 @@ function bundledZoneGeoJson(key) {
   try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
 }
 
+
+function bundledZoneBorderGeoJson(key) {
+  const src = S && S.sources ? S.sources[key] : null;
+  const def = DEFAULT_SOURCES[key];
+  if (src && def && (src.url !== def.url || String(src.typeName || '') !== String(def.typeName || ''))) return null;
+  const bundle = window.AALBORG_ZONE_DATA;
+  const gj = bundle && bundle.ready === true && bundle.borders ? bundle.borders[key] : null;
+  if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
+  try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
+}
+
 function officialZone2Data() {
   if (S.zone2Official) return S.zone2Official;
   const layer = layerByKey('src:zone2');
@@ -4188,7 +4260,7 @@ function addLayer(name, geojson, opts = {}) {
   const fcol = { type: 'FeatureCollection', features: feats };
   const baseGeojson = opts.baseGeojson || { type: 'FeatureCollection', features: sourceFeats };
   const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
-                baseGeojson, sourceKey: opts.sourceKey || null,
+                baseGeojson, borderGeojson: opts.borderGeojson || null, sourceKey: opts.sourceKey || null,
                 nameField: opts.nameField || '', style: opts.style || 'plain',
                 derived: opts.derived || null, visible: true, layer: null,
                 routeLayer: !!opts.routeLayer, routeCount: opts.routeCount || 0,
@@ -5650,6 +5722,7 @@ async function toggleSource(key, btn) {
   setStatus(`Loading ${src.name}…`);
   try {
     const cached = bundledZoneGeoJson(key);
+    const cachedBorders = cached ? bundledZoneBorderGeoJson(key) : null;
     let gj = (key === 'zone2' && S.zone2Official) ? S.zone2Official
       : (cached || await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]));
     let note = cached ? 'cached official snapshot' : '';
@@ -5664,7 +5737,7 @@ async function toggleSource(key, btn) {
     const displayNameField = prepareSourceLabels(gj, key, src.nameField);
     const rec = addLayer(src.name, gj, {
       key: 'src:' + key, nameField: displayNameField || src.nameField, style: src.style,
-      sourceKey: key, baseGeojson: gj
+      sourceKey: key, baseGeojson: gj, borderGeojson: cachedBorders
     });
     if (key === 'zone2' && S.playAreaMeta && S.playAreaMeta.type === 'zones') {
       setZonesPlayArea(false);
@@ -7143,7 +7216,7 @@ window.HS = {
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
   buildDistrictZones, buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
-  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, georef, pxToLngLat,
+  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate,
   nudgeCal, scaleCal, setCalMode, placementSnippet, georef,
   snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,

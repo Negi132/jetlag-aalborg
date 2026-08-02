@@ -2,9 +2,11 @@
 """Snapshot Aalborg's four official KortInfo game-zone WFS layers.
 
 The browser prefers the generated local bundle for instant play. The live WFS
-remains an emergency fallback. Zone 2 defines the exact game area; the other
-layers keep complete official polygons that intersect a small buffer around it, so
-no artificial clipping edge can ever be mistaken for a real zone border.
+remains an emergency fallback. Zone 2 defines the exact game area. For display,
+all four cached layers are clipped to that game area to avoid shipping/drawing
+irrelevant municipal geometry. Real administrative border lines are cached
+separately from the unclipped official polygons, so artificial clip edges can
+never be mistaken for genuine Measuring borders.
 """
 from __future__ import annotations
 
@@ -332,18 +334,62 @@ def valid_polygon_features(gj):
     return out
 
 
-def nearby_features(features, clip_geom):
-    """Keep complete official polygons that can matter near the game area.
+def _polygonal_part(g):
+    if g is None or g.is_empty:
+        return None
+    if g.geom_type in ('Polygon', 'MultiPolygon'):
+        return g
+    parts = [x for x in getattr(g, 'geoms', []) if x.geom_type in ('Polygon', 'MultiPolygon') and not x.is_empty]
+    return unary_union(parts) if parts else None
 
-    Do not geometrically clip them: a clip boundary would become a fake zone
-    border and could corrupt Measuring-to-border questions.
+
+def _linear_part(g):
+    if g is None or g.is_empty:
+        return None
+    if g.geom_type in ('LineString', 'MultiLineString'):
+        return g
+    parts = [x for x in getattr(g, 'geoms', []) if x.geom_type in ('LineString', 'MultiLineString') and not x.is_empty]
+    return unary_union(parts) if parts else None
+
+
+def clip_zone_features(features, play_geom):
+    """Clip display polygons to the playable area only."""
+    out = []
+    for ft in features:
+        try:
+            g = _polygonal_part(shape(ft['geometry']).intersection(play_geom))
+            if not g or g.is_empty:
+                continue
+            cp = dict(ft)
+            cp['properties'] = dict(ft.get('properties') or {})
+            cp['geometry'] = mapping(g)
+            out.append(cp)
+        except Exception:
+            continue
+    return out
+
+
+def zone_border_features(features, vicinity_geom):
+    """Cache only REAL official boundary lines near the game area.
+
+    Boundaries are derived before display clipping, then intersected with a
+    modest vicinity polygon. This drastically reduces Zone 1/4 payload size
+    without introducing the artificial edge of the game-area clip as a border.
     """
     out = []
     for ft in features:
         try:
             g = shape(ft['geometry'])
-            if g.intersects(clip_geom):
-                out.append(ft)
+            border = _linear_part(g.boundary.intersection(vicinity_geom))
+            if not border or border.is_empty:
+                continue
+            out.append({
+                'type': 'Feature',
+                # Border Measuring needs geometry only; dropping the often-large
+                # municipal attribute payload keeps Zone 1/4 snapshots smaller.
+                'properties': {},
+                'geometry': mapping(border),
+            })
         except Exception:
             continue
     return out
@@ -471,31 +517,38 @@ def main():
         # committed snapshot already present in scripts/play_area.geojson.
         print(f'WARNING: rejected Zone 2 snapshot; retaining committed play area: {exc}')
         return
-    # Roughly 2–3 km around the game area. KortInfo normally honours the
-    # EPSG:4326 request, but if it ever sends UTM32 metres anyway, use a metre
-    # buffer here and let the browser's existing proj4 normaliser reproject the
-    # cached coordinates when loading them.
-    sample = None
-    for ft in downloaded['zone2'].get('features', []):
-        sample = first_coord((ft.get('geometry') or {}).get('coordinates'))
-        if sample:
-            break
-    projected = bool(sample and (abs(sample[0]) > 180 or abs(sample[1]) > 90))
-    clip = play.buffer(3000 if projected else 0.035)
+    # The layer shown on the phone never needs polygons outside the actual game
+    # area. Measuring still needs real boundaries just outside it, so derive a
+    # separate compact line cache from the UNCLIPPED official polygons.
+    border_vicinity = play.buffer(0.035)  # roughly 2–4 km around the game area
+    zones = {}
+    borders = {}
+    previous_borders = (previous or {}).get('borders') or {}
 
-    zones = {
-        'zone2': {'type': 'FeatureCollection', 'features': cleaned['zone2']},
-    }
-    for key in ('zone1', 'zone3', 'zone4'):
-        if key in cleaned:
-            features = nearby_features(cleaned[key], clip)
-            if len(features) >= MIN_COUNTS[key]:
-                zones[key] = {'type': 'FeatureCollection', 'features': features}
-            else:
-                print(f'WARNING: {key} snapshot suspiciously small ({len(features)}); leaving it live-only/previous instead.')
-                old = previous and (previous.get('zones') or {}).get(key)
-                if old:
-                    zones[key] = old
+    for key in ('zone1', 'zone2', 'zone3', 'zone4'):
+        source_features = cleaned.get(key, [])
+        if not source_features:
+            continue
+        display_features = clip_zone_features(source_features, play)
+        if len(display_features) < MIN_COUNTS[key]:
+            print(f'WARNING: {key} display snapshot suspiciously small ({len(display_features)}); retaining previous/live fallback where possible.')
+            old = previous and (previous.get('zones') or {}).get(key)
+            if old:
+                zones[key] = old
+            continue
+        zones[key] = {'type': 'FeatureCollection', 'features': display_features}
+
+        # If this layer itself was retained from a previous v2+ snapshot because
+        # the live request failed, retain its already-correct real-border cache
+        # as well. Otherwise derive borders from the current unclipped polygons.
+        if key in errors and key in previous_borders:
+            borders[key] = previous_borders[key]
+        else:
+            lines = zone_border_features(source_features, border_vicinity)
+            if lines:
+                borders[key] = {'type': 'FeatureCollection', 'features': lines}
+            elif key in previous_borders:
+                borders[key] = previous_borders[key]
 
     counts = {k: len(v['features']) for k, v in zones.items()}
     if counts.get('zone2', 0) < MIN_COUNTS['zone2']:
@@ -507,6 +560,8 @@ def main():
             prior = previous and (previous.get('zones') or {}).get(key)
             if prior:
                 zones[key] = prior
+                if key in ((previous or {}).get('borders') or {}):
+                    borders[key] = previous['borders'][key]
                 counts[key] = len(prior.get('features', []))
                 print(f'WARNING: {key} collapsed from {old_count}; retaining previous snapshot.')
 
@@ -517,10 +572,11 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 1, 'ready': True, 'generatedAt': now,
+        'version': 2, 'ready': True, 'generatedAt': now,
         'source': ENDPOINT,
         'layers': LAYERS,
         'zones': zones,
+        'borders': borders,
     }
     payload = '/* Generated from Aalborg Kommune KortInfo WFS. Do not edit by hand. */\n' \
               + 'window.AALBORG_ZONE_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
@@ -532,13 +588,14 @@ def main():
         '# Aalborg zone snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Source: `{ENDPOINT}`',
-        '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary; Zone 1/3/4 retain complete polygons that intersect the game vicinity.', '',
-        '| Layer | WFS type | Cached polygon features | Status |',
-        '|---|---|---:|---|',
+        '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area; genuine border lines are cached separately from the unclipped official geometry for Measuring.', '',
+        '| Layer | WFS type | Cached display polygons | Cached real-border features | Status |',
+        '|---|---|---:|---:|---|',
     ]
     for key in ('zone1', 'zone2', 'zone3', 'zone4'):
         status = 'fresh/retained cache' if key in zones else 'unavailable (live WFS fallback)'
-        lines.append(f'| {key.title()} | `{LAYERS[key]}` | {counts.get(key, 0)} | {status} |')
+        border_count = len((borders.get(key) or {}).get('features', []))
+        lines.append(f'| {key.title()} | `{LAYERS[key]}` | {counts.get(key, 0)} | {border_count} | {status} |')
     AUDIT.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('Zone cache:', ', '.join(f'{k}={counts[k]}' for k in counts))
 

@@ -191,11 +191,14 @@ click(doc.querySelector('[data-question-type="measuring"][data-card="Commercial 
 await new Promise(r => setTimeout(r, 20));
 check('Measuring recognises the same automatic POI catalogue as Matching',
       window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().key === 'airport'"));
-check('Commercial airport uses the passenger-terminal point inside the game area',
-      window.eval("HS.draft.poiCount === 1 && /Aalborg Airport terminal/.test(HS.draft.targetName || '') && HS.matchingPoiInsidePlayArea(turf.point(HS.draft.target))"),
-      window.eval("JSON.stringify({count:HS.draft.poiCount,target:HS.draft.targetName})"));
-check('single-candidate Measuring POI auto-selects its target',
-      window.eval("Array.isArray(HS.draft.target) && HS.draft.target.length === 2"));
+check('Commercial airport loads exactly the passenger-terminal candidate',
+      window.eval("HS.draft.poiCount === 1 && HS.matchingPoiFeatures().length === 1 && /Aalborg Airport terminal/.test((HS.matchingPoiFeatures()[0].properties||{}).name || '') && HS.matchingPoiInsidePlayArea(HS.matchingPoiFeatures()[0])"),
+      window.eval("JSON.stringify({count:HS.draft.poiCount,name:(HS.matchingPoiFeatures()[0]||{}).properties})"));
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.060, 9.920) })");
+check('single-candidate Measuring POI is selected automatically from the seeker position',
+      window.eval("Array.isArray(HS.draft.target) && HS.draft.target.length === 2 && HS.draft.proximityBandGeometry"));
+check('all Measuring POI categories use automatic nearest-category semantics',
+      window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().autoNearest === true"));
 click($('#toolForm .question-back'));
 click(doc.querySelector('[data-question-type="measuring"][data-card="Rail station"]'));
 await new Promise(r => setTimeout(r, 20));
@@ -206,6 +209,18 @@ window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
 check('Rail-station Measuring auto-selects the station nearest the movable seeker point',
       window.eval("Array.isArray(HS.draft.seeker) && Array.isArray(HS.draft.target) && /station|Aalborg/i.test(HS.draft.targetName || '')"),
       window.eval("JSON.stringify({seeker:HS.draft.seeker,target:HS.draft.targetName})"));
+check('Rail-station Measuring builds the threshold around every scheduled station', window.eval(`(() => {
+  const fs = HS.matchingPoiFeatures();
+  if (fs.length < 2 || !HS.draft.proximityBandGeometry) return false;
+  const target = turf.point(HS.draft.target);
+  let far = fs[0], farD = -1;
+  for (const ft of fs) {
+    const d = turf.distance(target, ft, {units:'meters'});
+    if (d > farD) { farD = d; far = ft; }
+  }
+  return farD > HS.draft.targetDistanceM &&
+    turf.booleanPointInPolygon(far, turf.feature(HS.draft.proximityBandGeometry));
+})()`), window.eval("JSON.stringify({count:HS.draft.proximityCandidateCount,r:HS.draft.targetDistanceM})"));
 click($('#toolForm .question-back'));
 
 console.log('\n== automatic coastline / water Measuring ==');
