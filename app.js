@@ -810,6 +810,9 @@ const BASES = {
     maxZoom: 19, attribution: 'Imagery &copy; Esri' })
 };
 BASES.light.addTo(map);
+if (window.AALBORG_POI_DATA && window.AALBORG_POI_DATA.ready === true) {
+  map.attributionControl.addAttribution('POI data &copy; OpenStreetMap contributors');
+}
 
 const fogLayer = L.layerGroup([], { pane: 'fogPane' }).addTo(map);
 const previewShapeLayer = L.layerGroup([], { pane: 'previewPane' }).addTo(map);
@@ -1310,6 +1313,18 @@ function matchingPoiMode() {
 const matchingPoiCache = new Map();
 const questionPoi = { session: 0, modeKey: null, loading: false, geojson: null, layer: null };
 
+/* Weekly GitHub Actions builds can ship every Matching POI as a tiny local
+   snapshot. A bundle is used only after its generator marked it ready; the old
+   live/curated loaders remain an emergency fallback if the file is absent or a
+   scheduled refresh fails. */
+function bundledMatchingPoiGeoJson(mode) {
+  const bundle = window.AALBORG_POI_DATA;
+  if (!mode || !bundle || bundle.ready !== true || !bundle.categories) return null;
+  const gj = bundle.categories[mode.key];
+  if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
+  return gj;
+}
+
 function matchingPoiCacheKey(mode) {
   const bb = activeGameBbox(0);
   return `${mode.key}:${bb.map((v) => Number(v).toFixed(3)).join(',')}`;
@@ -1651,7 +1666,12 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
     const cacheKey = matchingPoiCacheKey(mode);
     let gj = matchingPoiCache.get(cacheKey) || null;
     if (!gj) {
-      if (mode.authoritativeOnly) {
+      const bundled = bundledMatchingPoiGeoJson(mode);
+      if (bundled) {
+        // Normal path: already filtered/deduplicated by the scheduled builder.
+        // This turns a potentially minute-long Overpass request into a local lookup.
+        gj = bundled;
+      } else if (mode.authoritativeOnly) {
         // Verified local categories (libraries, cinemas, airport, zoo, golf)
         // should be immediate and deterministic. Their fallbacks are the source,
         // not a last resort after a slow Overpass request.
@@ -6645,7 +6665,7 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, MATCHING_POI_DEFS,
+  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
   OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,

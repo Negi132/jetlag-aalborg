@@ -1,49 +1,42 @@
-# One-time GitHub setup for automatic Aalborg bus updates
+# GitHub automatic map-data updates
 
-The project already contains the updater and workflow. You only need to enable the permissions/deployment mode once.
+This version automatically refreshes both:
 
-## 1. Upload/push this project
+- `bus-routes.js` from Rejseplanen's GTFS feed; and
+- `poi-data.js` from the current Geofabrik Denmark OpenStreetMap extract plus the project's authoritative Aalborg fallbacks.
 
-Put the contents of this ZIP in the root of your existing GitHub repository and commit/push them to `main`.
+The large source downloads happen only on GitHub's runner. Phones loading the game receive the small generated JavaScript bundles.
 
-Important new files:
+## One-time setup
 
-- `bus-routes.js`
-- `scripts/update_bus_routes.py`
-- `scripts/play_area.geojson`
-- `scripts/bus_route_categories.json`
-- `.github/workflows/update-bus-routes.yml`
+1. Upload/push **all files and folders** from this project to the repository. Make sure the hidden `.github` folder and the `scripts` folder are included.
+2. Open **Settings → Actions → General → Workflow permissions**.
+3. Select **Read and write permissions**, then save.
+4. Open **Settings → Pages → Build and deployment → Source**.
+5. Select **GitHub Actions**.
+6. Commit/push the project to `main`.
+7. Open **Actions → Update Aalborg map data and deploy Pages**.
+8. Click **Run workflow → Run workflow** once.
 
-Do **not** upload `GTFS.zip`. GitHub downloads a fresh copy itself.
+The manual run is important for this release because the repository initially contains a safe
+`poi-data.js` placeholder. The first successful Action replaces it with the real bundled POI
+snapshot and deploys it.
 
-## 2. Allow the workflow to save route updates
+## What a scheduled/manual run does
 
-In the repository:
+1. Downloads current `GTFS.zip` from Rejseplanen.
+2. Generates and validates the Aalborg bus-route bundle.
+3. Downloads `denmark-latest.osm.pbf` from Geofabrik.
+4. Uses `osmium tags-filter` to keep only POI-relevant OSM objects.
+5. Generates the Aalborg Matching-POI snapshot.
+6. Applies the game's existing curated/authoritative rules and filters representative points to the play area.
+7. Runs sanity checks. Suspiciously incomplete results make the workflow fail instead of replacing known-good data.
+8. Commits changed generated bundles/audits.
+9. Deploys the validated static site to GitHub Pages.
 
-1. **Settings**
-2. **Actions** → **General**
-3. Scroll to **Workflow permissions**
-4. Select **Read and write permissions**
-5. Click **Save**
+## Normal expected bus result
 
-## 3. Switch GitHub Pages to Actions
-
-1. **Settings**
-2. **Pages**
-3. Under **Build and deployment** → **Source**
-4. Select **GitHub Actions**
-
-Do not create another Pages workflow from GitHub's suggested templates; this project already contains one.
-
-## 4. Run the updater manually once
-
-1. Open the repository's **Actions** tab.
-2. Select **Update Aalborg bus routes and deploy Pages**.
-3. Click **Run workflow** → **Run workflow**.
-4. Open the running job.
-5. Expand **Regenerate Aalborg bus routes**.
-
-With the GTFS feed used to build this package, a healthy result is:
+The August 2026 baseline is:
 
 - Bybus: 14
 - Regionalbus: 15
@@ -51,30 +44,23 @@ With the GTFS feed used to build this package, a healthy result is:
 - Lokalbus: 2
 - Total: 39
 
-Future legitimate NT changes may change these counts.
+Future legitimate timetable changes may change those numbers.
 
-## 5. Verify the deployment
+## POI validation
 
-The same workflow deploys the validated site to GitHub Pages. When the job is green, open your normal Pages URL and test the four bus overlays.
+The POI builder deliberately allows genuinely empty categories, but requires stable categories such
+as airport, parks, zoo, cinema, hospitals, libraries and museums to remain above conservative sanity
+floors. It also compares against the last known-good bundle and rejects unusually large drops.
 
-## What happens automatically afterwards?
+After a successful run, open `POI_AUDIT.md` in the repository to see the exact current counts and
+names in every category.
 
-Every Sunday at 04:17 Copenhagen time GitHub will:
+## Schedule
 
-1. download the newest Rejseplanen `GTFS.zip`;
-2. verify that the ZIP is valid;
-3. extract NT bus routes and scheduled shapes;
-4. select routes intersecting the Aalborg game area;
-5. preserve distinct route variants;
-6. regenerate `bus-routes.js`;
-7. run sanity checks so a broken/partial GTFS cannot wipe the map;
-8. commit changed route data to the repository; and
-9. deploy that validated version to GitHub Pages.
+The workflow runs every Sunday at 04:17 in `Europe/Copenhagen`, and it can always be run manually
+from the Actions tab.
 
-Ordinary pushes to `main` do not redownload GTFS; they simply deploy your current site.
+## Source/licensing note
 
-## If an update fails
-
-Do not replace anything manually just because one scheduled run fails. The previous `bus-routes.js` remains in the repository and therefore remains the live route dataset. Open the failed Action and inspect the `Download current Rejseplanen GTFS` or `Regenerate Aalborg bus routes` step.
-
-The human-readable `BUS_ROUTE_AUDIT.md` file records the latest successful route set and any additions/removals.
+The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is © OpenStreetMap
+contributors and used under ODbL 1.0. The deployed site retains OpenStreetMap attribution.

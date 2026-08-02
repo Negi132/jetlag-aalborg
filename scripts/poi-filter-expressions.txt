@@ -1,0 +1,10 @@
+# Matching POI source tags. The Python generator applies the narrower game rules.
+nwr/aeroway=aerodrome
+nwr/leisure=park,garden,nature_reserve,golf_course
+nwr/landuse=recreation_ground,forest
+nwr/boundary=protected_area
+nwr/natural=wood
+nwr/tourism=theme_park,zoo,aquarium,museum
+nwr/amenity=cinema,hospital,library,consulate
+nwr/healthcare=hospital
+nwr/office=diplomatic

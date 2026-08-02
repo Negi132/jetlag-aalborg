@@ -1,4 +1,4 @@
-name: Update Aalborg bus routes and deploy Pages
+name: Update Aalborg map data and deploy Pages
 
 on:
   push:
@@ -32,9 +32,12 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install GTFS generator dependency
+      - name: Install map-data generator dependencies
         if: github.event_name != 'push'
-        run: python -m pip install --disable-pip-version-check "shapely==2.1.2"
+        run: |
+          python -m pip install --disable-pip-version-check "shapely==2.1.2"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
 
       - name: Download current Rejseplanen GTFS
         if: github.event_name != 'push'
@@ -48,28 +51,59 @@ jobs:
         if: github.event_name != 'push'
         run: python scripts/update_bus_routes.py GTFS.zip
 
-      - name: Show route changes
+      - name: Download current Denmark OpenStreetMap extract
         if: github.event_name != 'push'
-        id: route_changes
+        run: |
+          curl --fail --location --retry 3 --retry-delay 8 \
+            https://download.geofabrik.de/europe/denmark-latest.osm.pbf \
+            --output denmark-latest.osm.pbf
+          osmium fileinfo denmark-latest.osm.pbf >/dev/null
+
+      - name: Extract Aalborg POI-relevant OpenStreetMap objects
+        if: github.event_name != 'push'
+        run: |
+          # First cut a padded Greater-Aalborg extract. The smart strategy keeps
+          # multipolygon relations reference-complete, which matters for parks
+          # and other area POIs near the edge of the game area.
+          osmium extract \
+            --bbox=9.70,56.94,10.25,57.18 \
+            --strategy=smart \
+            denmark-latest.osm.pbf \
+            --output=aalborg-source.osm.pbf --overwrite
+          osmium tags-filter \
+            --expressions=scripts/poi-filter-expressions.txt \
+            aalborg-source.osm.pbf \
+            --output=poi-source.osm.pbf --overwrite
+          osmium export poi-source.osm.pbf \
+            --attributes=type,id \
+            --output=poi-source.geojson --output-format=geojson --overwrite
+
+      - name: Regenerate Aalborg Matching POIs
+        if: github.event_name != 'push'
+        run: python scripts/update_pois.py poi-source.geojson
+
+      - name: Show map-data changes
+        if: github.event_name != 'push'
+        id: data_changes
         shell: bash
         run: |
-          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md; then
+          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No GTFS route changes."
+            echo "No route or POI changes."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "GTFS route data changed:"
-            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md
-            git diff -- BUS_ROUTE_AUDIT.md || true
+            echo "Generated map data changed:"
+            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md
+            git diff -- BUS_ROUTE_AUDIT.md POI_AUDIT.md || true
           fi
 
-      - name: Commit updated route bundle
-        if: github.event_name != 'push' && steps.route_changes.outputs.changed == 'true'
+      - name: Commit updated map-data bundles
+        if: github.event_name != 'push' && steps.data_changes.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bus-routes.js BUS_ROUTE_AUDIT.md
-          git commit -m "Update Aalborg GTFS bus routes"
+          git add bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md
+          git commit -m "Update Aalborg map data"
           git push
 
       - name: Configure GitHub Pages
@@ -85,6 +119,8 @@ jobs:
             --exclude 'scripts/' \
             --exclude '_site/' \
             --exclude 'GTFS.zip' \
+            --exclude '*.pbf' \
+            --exclude 'poi-source.geojson' \
             --exclude '*.test.mjs' \
             --exclude '*.patch' \
             --exclude '*.zip'
