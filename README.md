@@ -520,3 +520,8 @@ The scheduled zone refresh now filters Zone 2 to the four recognised game areas 
 ### Hydro completeness and harbour shoreline (v4.5)
 
 The weekly hydro snapshot now treats `natural=coastline` as the backbone rather than the only possible shoreline source. Marina/dock polygons and quay lines close to Limfjorden are used to fill urban harbour gaps, but only the portions adjacent to playable land are retained so a polygon edge across a harbour entrance cannot become a fake coastline. Unnamed OSM water features keep stable per-object identities, and named chalk/limestone quarry polygons are only used when no better mapped water geometry exists inside them.
+
+### Strict play-area display clipping (v4.6)
+
+Hydro collection still uses a padded source area so distance calculations near the edge remain correct, but the generated `coastlines` and `waterBodies` shown to the player are clipped to the exact Zone-2 play area. A separate hidden `coastlineDistance` cache may extend slightly beyond the game and is used only for distance calculation. The browser repeats the clipping defensively, so an old bundle cannot draw water markers or coastline outside the current play area. Zone 1/3/4 display polygons are likewise clipped again in the browser, while their genuine unclipped/cached border geometry remains hidden for Measuring. Zone 2 is additionally filtered to the four recognised game polygons even when the live WFS returns extra features.
+

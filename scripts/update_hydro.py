@@ -90,6 +90,22 @@ def fc(features):
     return {'type': 'FeatureCollection', 'features': features}
 
 
+def clip_feature_geometry(g, play):
+    """Return only the part of a hydro geometry that lies in the play area.
+
+    Hydro source collection intentionally uses a padded area so shoreline
+    calculations near the edge remain correct. The user-visible bundle must not
+    expose that padding, though, so display/target geometries are clipped here.
+    """
+    try:
+        clipped = g.intersection(play)
+        if clipped.is_empty:
+            return None
+        return clipped
+    except Exception:
+        return None
+
+
 def feature(g, props):
     return {'type': 'Feature', 'properties': props, 'geometry': mapping(g)}
 
@@ -237,14 +253,22 @@ def main():
     # marina/dock boundary describe the same physical water edge.
     shore_union = unary_union(shore_lines)
 
-    north_parts, south_parts = [], []
+    # Keep a slightly broader, HIDDEN distance cache so a player close to the
+    # outer play boundary still gets the true nearest shoreline. The visible
+    # coastline is clipped strictly to the playable polygon.
+    distance_north_parts, distance_south_parts = [], []
+    visible_north_parts, visible_south_parts = [], []
     for ln in iter_lines(shore_union):
         side = classify_shore(ln, north_land, south_land)
         props = {'name': 'Limfjorden', '__hydroKind': 'coastline', '__shoreSide': side}
-        (north_parts if side == 'north' else south_parts).append(feature(ln, props))
+        (distance_north_parts if side == 'north' else distance_south_parts).append(feature(ln, props))
+        clipped = clip_feature_geometry(ln, play)
+        if clipped and not clipped.is_empty:
+            for part in iter_lines(clipped):
+                (visible_north_parts if side == 'north' else visible_south_parts).append(feature(part, props))
 
-    if not north_parts or not south_parts:
-        raise RuntimeError(f'Could not identify both Limfjord shores (north={len(north_parts)}, south={len(south_parts)})')
+    if not visible_north_parts or not visible_south_parts:
+        raise RuntimeError(f'Could not identify both Limfjord shores inside play area (north={len(visible_north_parts)}, south={len(visible_south_parts)})')
 
     # Keep each unnamed water independently. Only explicitly named features are
     # merged by name (multiple polygons/segments of the same named lake/river).
@@ -287,35 +311,46 @@ def main():
         except Exception:
             merged = chosen[0]
         if not merged.is_empty:
-            water_features.append(feature(merged, {
-                'name': label, '__hydroKind': 'water', '__waterSource': 'osm-named',
-                '__waterId': 'name:' + norm(label)
-            }))
+            clipped = clip_feature_geometry(merged, play)
+            if clipped and not clipped.is_empty:
+                water_features.append(feature(clipped, {
+                    'name': label, '__hydroKind': 'water', '__waterSource': 'osm-named',
+                    '__waterId': 'name:' + norm(label)
+                }))
 
     for label, g, props in unnamed:
         if g.is_empty:
             continue
-        water_features.append(feature(g, {
+        clipped = clip_feature_geometry(g, play)
+        if not clipped or clipped.is_empty:
+            continue
+        water_features.append(feature(clipped, {
             'name': label, '__hydroKind': 'water', '__waterSource': 'osm-unnamed',
             '__waterId': osm_identity(props, g), '__unnamed': True
         }))
 
     for label, g, props in quarry_added:
-        water_features.append(feature(g, {
+        clipped = clip_feature_geometry(g, play)
+        if not clipped or clipped.is_empty:
+            continue
+        water_features.append(feature(clipped, {
             'name': label, '__hydroKind': 'water', '__waterSource': 'quarry-fallback',
             '__waterId': osm_identity(props, g), '__approximateBoundary': True
         }))
 
-    # The fjord itself is represented by shoreline lines rather than a polygon.
-    water_features.append(feature(shore_union, {
+    # The fjord itself is represented by its IN-PLAY shoreline. This keeps its
+    # reference marker and water-distance target inside the game boundary.
+    fjord_visible = unary_union([shape(ft['geometry']) for ft in visible_north_parts + visible_south_parts])
+    water_features.append(feature(fjord_visible, {
         'name': 'Limfjorden', '__hydroKind': 'fjord', '__waterSource': 'shoreline',
         '__waterId': 'fjord:limfjorden'
     }))
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 2, 'ready': True, 'generatedAt': now,
-        'coastlines': {'north': fc(north_parts), 'south': fc(south_parts)},
+        'version': 3, 'ready': True, 'generatedAt': now,
+        'coastlines': {'north': fc(visible_north_parts), 'south': fc(visible_south_parts)},
+        'coastlineDistance': {'north': fc(distance_north_parts), 'south': fc(distance_south_parts)},
         'waterBodies': fc(water_features),
     }
     payload = '/* Generated from Geofabrik/OpenStreetMap water geometry. Do not edit by hand. */\n' \
@@ -333,8 +368,10 @@ def main():
         f'- Generated: `{now}`',
         f'- Formal OSM coastline pieces before harbour supplementation: **{len(formal_coast)}**',
         f'- Accepted marina/dock/quay shoreline supplements: **{len(accepted_supplements)}**',
-        f'- Northern Limfjord coastline pieces after merge: **{len(north_parts)}**',
-        f'- Southern Limfjord coastline pieces after merge: **{len(south_parts)}**',
+        f'- Visible northern Limfjord coastline pieces inside play area: **{len(visible_north_parts)}**',
+        f'- Visible southern Limfjord coastline pieces inside play area: **{len(visible_south_parts)}**',
+        f'- Hidden northern distance-cache pieces: **{len(distance_north_parts)}**',
+        f'- Hidden southern distance-cache pieces: **{len(distance_south_parts)}**',
         f'- Total body-of-water targets: **{len(water_features)}**',
         f'- Distinct unnamed mapped water targets: **{unnamed_count}**',
         f'- Chalk/limestone quarry fallback targets: **{quarry_count}**', '',
@@ -342,7 +379,7 @@ def main():
     ]), encoding='utf-8')
     print(
         f'Hydro cache: formal coast={len(formal_coast)}, harbour supplements={len(accepted_supplements)}, '
-        f'north coast={len(north_parts)}, south coast={len(south_parts)}, '
+        f'visible north coast={len(visible_north_parts)}, visible south coast={len(visible_south_parts)}, '
         f'water bodies={len(water_features)} (unnamed={unnamed_count}, quarry fallback={quarry_count})'
     )
 

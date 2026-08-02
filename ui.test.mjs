@@ -227,12 +227,14 @@ console.log('\n== automatic coastline / water Measuring ==');
 window.AALBORG_HYDRO_DATA = {
   version: 2, ready: true,
   coastlines: {
-    north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.056],[10.05,57.056]]}}]},
-    south: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.050],[10.05,57.050]]}}]}
+    north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.70,57.056],[10.30,57.056]]}}]},
+    south: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.70,57.050],[10.30,57.050]]}}]}
   },
+  coastlineDistance: null,
   waterBodies: {type:'FeatureCollection',features:[
     {type:'Feature',properties:{name:'Test Lake',__waterId:'test:lake'},geometry:{type:'Polygon',coordinates:[[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]]}},
-    {type:'Feature',properties:{name:'Unnamed pond',__waterId:'test:pond',__unnamed:true},geometry:{type:'Polygon',coordinates:[[[9.970,57.030],[9.974,57.030],[9.974,57.034],[9.970,57.034],[9.970,57.030]]]}}
+    {type:'Feature',properties:{name:'Unnamed pond',__waterId:'test:pond',__unnamed:true},geometry:{type:'Polygon',coordinates:[[[9.970,57.030],[9.974,57.030],[9.974,57.034],[9.970,57.034],[9.970,57.030]]]}},
+    {type:'Feature',properties:{name:'Outside Lake',__waterId:'test:outside'},geometry:{type:'Polygon',coordinates:[[[10.25,57.000],[10.26,57.000],[10.26,57.010],[10.25,57.010],[10.25,57.000]]]}}
   ]}
 };
 click(doc.querySelector('[data-question-type="measuring"][data-card="Coastline"]'));
@@ -249,6 +251,16 @@ click(doc.querySelector('[data-question-type="measuring"][data-card="Body of wat
 check('Body-of-water Measuring draws reference markers before the first tap',
       window.eval("HS.previewShapeLayer.getLayers().length >= 2"),
       window.eval("`layers=${HS.previewShapeLayer.getLayers().length}`"));
+check('Body-of-water runtime filter removes targets outside the play area',
+      window.eval("HS.hydroWaterFeatures().length === 2 && !HS.hydroWaterFeatures().some(f => (f.properties||{}).name === 'Outside Lake')"),
+      window.eval("JSON.stringify(HS.hydroWaterFeatures().map(f => (f.properties||{}).name))"));
+check('Visible coastline geometry is clipped to the play area', window.eval(`(() => {
+  const feats = HS.hydroCoastFeatures('south');
+  return feats.length > 0 && feats.every(ft => {
+    const coords = ft.geometry.type === 'LineString' ? [ft.geometry.coordinates] : ft.geometry.coordinates;
+    return coords.every(line => line.every(c => turf.booleanPointInPolygon(turf.point(c), HS.S.playArea)));
+  });
+})()`));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.035, 9.940) })");
 check('Body-of-water Measuring automatically selects the nearest water geometry',
       window.eval("HS.draft.autoFeatureName === 'Test Lake' && HS.draft.autoFeatureIndex === 0 && HS.draft.borderBandGeometry"),
@@ -1256,6 +1268,15 @@ check('commercial airport is retained as the deliberate outside-play-area except
     turf.point([9.849243,57.092759], {name:'Aalborg Airport (AAL)'})
   ]), mode);
   return mode.allowOutsidePlayArea === true && gj.features.length === 1;
+})()`));
+
+check('zone display clipping never exposes polygon area outside the play area', window.eval(`(() => {
+  const huge = turf.buffer(HS.S.playArea, 10, {units:'kilometers'});
+  huge.properties = {name:'Oversized test zone'};
+  const clipped = HS.clipZoneDisplayGeoJsonToPlayArea(turf.featureCollection([huge]), 'zone4');
+  if (!clipped.features.length) return false;
+  const extra = turf.difference(turf.featureCollection([clipped.features[0], HS.S.playArea]));
+  return !extra || turf.area(extra) < 1;
 })()`));
 
 check('generic map loading manager can represent non-zone loads', window.eval(`(() => {

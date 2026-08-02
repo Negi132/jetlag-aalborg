@@ -1982,10 +1982,54 @@ function bufferFeatureSet(features, distanceM) {
   return unioned ? gIntersect(S.playArea, unioned) : null;
 }
 
-function hydroCoastFeatures(side) {
+function clipHydroFeatureToPlayArea(ft) {
+  if (!ft || !ft.geometry || !S.playArea) return ft || null;
+  try {
+    if (/Polygon/.test(ft.geometry.type)) {
+      const clipped = gIntersect(S.playArea, ft);
+      if (!clipped) return null;
+      clipped.properties = Object.assign({}, ft.properties || {});
+      return clipped;
+    }
+    if (/LineString/.test(ft.geometry.type)) {
+      const boundaries = playAreaBoundaryLines();
+      const parts = [];
+      for (const coords of geometryLineParts(ft.geometry)) {
+        parts.push(...clipLineCoordsToPlayArea(coords, boundaries));
+      }
+      if (!parts.length) return null;
+      return {
+        type: 'Feature', properties: Object.assign({}, ft.properties || {}),
+        geometry: parts.length === 1
+          ? { type: 'LineString', coordinates: parts[0] }
+          : { type: 'MultiLineString', coordinates: parts }
+      };
+    }
+    if (ft.geometry.type === 'Point') {
+      return pointInsideFeature(ft.geometry.coordinates, S.playArea) ? turf.clone(ft) : null;
+    }
+  } catch (_) { return null; }
+  return null;
+}
+
+function hydroCoastFeatures(side, forDistance = false) {
   const b = bundledHydroData();
-  const gj = b && b.coastlines && b.coastlines[side];
-  return gj && Array.isArray(gj.features) ? gj.features : [];
+  const group = forDistance && b && b.coastlineDistance ? b.coastlineDistance : (b && b.coastlines);
+  const gj = group && group[side];
+  const features = gj && Array.isArray(gj.features) ? gj.features : [];
+  // Distance geometry may extend a little beyond the game boundary invisibly
+  // so edge distances stay correct. Anything drawn on the map is clipped.
+  return forDistance ? features : features.map(clipHydroFeatureToPlayArea).filter(Boolean);
+}
+
+function hydroWaterFeatures() {
+  const b = bundledHydroData();
+  const features = b && b.waterBodies && Array.isArray(b.waterBodies.features)
+    ? b.waterBodies.features : [];
+  // v3 bundles are already clipped by the generator. Runtime clipping is kept
+  // as a second guard so an old/stale cache can never show water targets beyond
+  // the current play area.
+  return features.map(clipHydroFeatureToPlayArea).filter(Boolean);
 }
 
 function hydroFeatureMarkerCoord(ft) {
@@ -1998,9 +2042,7 @@ function hydroFeatureMarkerCoord(ft) {
 }
 
 function nearestWaterFeature(coord) {
-  const b = bundledHydroData();
-  const feats = b && b.waterBodies && Array.isArray(b.waterBodies.features)
-    ? b.waterBodies.features : [];
+  const feats = hydroWaterFeatures();
   let best = Infinity, chosen = null, chosenIndex = -1;
   for (let i = 0; i < feats.length; i++) {
     const ft = feats[i];
@@ -2020,7 +2062,8 @@ function updateMeasuringHydroFromCoord(coord) {
     const regions = landmassRegions();
     if (!regions) return false;
     side = pointInsideFeature(coord, regions.north) ? 'north' : 'south';
-    features = hydroCoastFeatures(side);
+    const distanceFeatures = hydroCoastFeatures(side, true);
+    features = distanceFeatures;
     let best = Infinity;
     for (const ft of features) {
       const d = distanceToFeatureM(coord, ft);
@@ -2033,8 +2076,7 @@ function updateMeasuringHydroFromCoord(coord) {
   } else {
     const hit = nearestWaterFeature(coord);
     if (!hit) return false;
-    const allWater = bundle.waterBodies && Array.isArray(bundle.waterBodies.features)
-      ? bundle.waterBodies.features : [];
+    const allWater = hydroWaterFeatures();
     // As with POI Measuring, "a body of water" means distance to the nearest
     // member of the category. The seeker's nearest water establishes the
     // threshold, then that threshold is buffered around every water body.
@@ -2829,11 +2871,11 @@ function renderPreviewShapes() {
   if (activeTool === 'measuring' && measuringHydroMode()) {
     const hydroMode = measuringHydroMode();
     const hydro = bundledHydroData();
-    if (hydroMode.kind === 'water' && hydro && hydro.waterBodies && Array.isArray(hydro.waterBodies.features)) {
-      // Show every available water target immediately. These markers are only
+    if (hydroMode.kind === 'water' && hydro) {
+      // Show every IN-PLAY water target immediately. These markers are only
       // visual references: map taps still reposition where the question was
       // asked, and the nearest geometry is selected automatically.
-      hydro.waterBodies.features.forEach((ft, i) => {
+      hydroWaterFeatures().forEach((ft, i) => {
         const c = hydroFeatureMarkerCoord(ft);
         if (!c) return;
         const selected = draft.autoFeatureIndex === i;
@@ -2846,7 +2888,7 @@ function renderPreviewShapes() {
       });
     }
     if (hydroMode.kind === 'coastline' && draft.autoFeatureSide) {
-      const coast = hydroCoastFeatures(draft.autoFeatureSide);
+      const coast = hydroCoastFeatures(draft.autoFeatureSide, false);
       if (coast.length) L.geoJSON({type:'FeatureCollection', features: coast}, {
         pane: 'previewPane', interactive: false,
         style: { color: P, weight: 3.2, opacity: .96 }
@@ -4200,6 +4242,30 @@ function bundledZoneGeoJson(key) {
   try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
 }
 
+
+function clipZoneDisplayGeoJsonToPlayArea(gj, key) {
+  if (!gj || !Array.isArray(gj.features)) return gj;
+  // Zone 2 defines the play area. A live KortInfo response can contain extra
+  // polygons, so display ONLY the four recognised game areas rather than every
+  // feature the WFS happened to return. Do not clip these against a traced or
+  // stale pre-load area: these four polygons are the authoritative boundary.
+  if (key === 'zone2') {
+    return { type: 'FeatureCollection', features: officialPlayZoneFeatures(gj).map((ft) => turf.clone(ft)) };
+  }
+  // Every other level only needs geometry where the hider can actually be.
+  if (!S.playArea) return gj;
+  const features = [];
+  for (const ft of gj.features) {
+    if (!ft || !ft.geometry || !/Polygon/.test(ft.geometry.type)) continue;
+    try {
+      const clipped = gIntersect(S.playArea, ft);
+      if (!clipped) continue;
+      clipped.properties = Object.assign({}, ft.properties || {});
+      features.push(clipped);
+    } catch (_) { /* skip malformed feature */ }
+  }
+  return { type: 'FeatureCollection', features };
+}
 
 function bundledZoneBorderGeoJson(key) {
   const src = S && S.sources ? S.sources[key] : null;
@@ -5775,9 +5841,14 @@ async function toggleSource(key, btn) {
       }
     }
     const displayNameField = prepareSourceLabels(gj, key, src.nameField);
-    const rec = addLayer(src.name, gj, {
+    const displayGj = clipZoneDisplayGeoJsonToPlayArea(gj, key);
+    // For Zone 2, the four displayed polygons ARE the authoritative game-level
+    // geometry. For other levels keep the full source hidden so Measuring can
+    // use real borders without treating play-area clip edges as boundaries.
+    const baseGj = key === 'zone2' ? displayGj : gj;
+    const rec = addLayer(src.name, displayGj, {
       key: 'src:' + key, nameField: displayNameField || src.nameField, style: src.style,
-      sourceKey: key, baseGeojson: gj, borderGeojson: cachedBorders
+      sourceKey: key, baseGeojson: baseGj, borderGeojson: cachedBorders
     });
     if (key === 'zone2' && S.playAreaMeta && S.playAreaMeta.type === 'zones') {
       setZonesPlayArea(false);
@@ -7256,7 +7327,7 @@ window.HS = {
   toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
   buildDistrictZones, buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
-  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, georef, pxToLngLat,
+  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, clipZoneDisplayGeoJsonToPlayArea, georef, pxToLngLat,
   defaultCal, anchorPx, applyCal, autoCalibrate,
   nudgeCal, scaleCal, setCalMode, placementSnippet, georef,
   snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,
@@ -7291,7 +7362,7 @@ window.HS = {
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, setMeasuringPoiTargetFromCoord, syncAutomaticMeasuringPoiTarget, matchingPoiCell, parsePositiveDecimal,
-  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
+  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, hydroWaterFeatures, clipHydroFeatureToPlayArea, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsReliable, splitBboxGrid, fetchRailwayLines,
   fmtDist, fmtArea, wfsUrl, gc2Url
