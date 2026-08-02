@@ -64,3 +64,7 @@ from the Actions tab.
 
 The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is © OpenStreetMap
 contributors and used under ODbL 1.0. The deployed site retains OpenStreetMap attribution.
+
+## Hospital fallback reliability
+
+The POI generator stores coordinates for the five curated Aalborg University Hospital sites directly in `scripts/update_pois.py`. The weekly build does not depend on address geocoding for these known sites; geocoding is only a best-effort compatibility fallback for a future hospital entry that has no stored coordinates.

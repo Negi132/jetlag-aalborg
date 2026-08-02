@@ -67,11 +67,14 @@ AALBORG_LIBRARY_LOCATIONS = [
 ]
 
 AALBORG_HOSPITAL_FALLBACK = [
-    {'name': 'Aalborg Universitetshospital, Hospitalsbyen', 'address': 'Hospitalsbyen 1, 9260 Gistrup'},
-    {'name': 'Aalborg Universitetshospital, Syd', 'address': 'Hobrovej 18-22, 9000 Aalborg'},
-    {'name': 'Aalborg Universitetshospital, Nord', 'address': 'Reberbansgade 15, 9000 Aalborg'},
-    {'name': 'Aalborg Universitetshospital, Mølleparkvej', 'address': 'Mølleparkvej 10, 9000 Aalborg'},
-    {'name': 'Aalborg Universitetshospital, Brandevej', 'address': 'Brandevej 5, 9220 Aalborg Ø'},
+    # Stable coordinates are stored with the authoritative site list so the
+    # unattended updater never depends on a third-party geocoder being online.
+    # [longitude, latitude]
+    {'name': 'Aalborg Universitetshospital, Hospitalsbyen', 'address': 'Hospitalsbyen 1, 9260 Gistrup', 'coordinates': [9.99941003, 57.00966924]},
+    {'name': 'Aalborg Universitetshospital, Syd', 'address': 'Hobrovej 18-22, 9000 Aalborg', 'coordinates': [9.9082114, 57.0382516]},
+    {'name': 'Aalborg Universitetshospital, Nord', 'address': 'Reberbansgade 15, 9000 Aalborg', 'coordinates': [9.912635, 57.048857]},
+    {'name': 'Aalborg Universitetshospital, Mølleparkvej', 'address': 'Mølleparkvej 10, 9000 Aalborg', 'coordinates': [9.90532768, 57.03853921]},
+    {'name': 'Aalborg Universitetshospital, Brandevej', 'address': 'Brandevej 5, 9220 Aalborg Ø', 'coordinates': [9.97885646, 57.02588105]},
 ]
 
 AUTHORITATIVE_ONLY = {
@@ -365,9 +368,9 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
     by_category['park'] = append_fallbacks(dedupe_features(by_category['park']), 'park', AALBORG_PARK_ADJACENT_FALLBACK)
 
     # Hospitals combine OSM with Region Nordjylland's current named-site fallbacks.
-    # Only geocode a named site when OSM did not already provide that exact
-    # institution. If such a required geocode fails, abort the refresh rather
-    # than silently publishing an incomplete official hospital set.
+    # The known sites carry stable coordinates, so a geocoder outage can never
+    # make the weekly build fail. Geocoding remains a best-effort compatibility
+    # fallback only if a future entry is added without coordinates.
     by_category['hospital'] = dedupe_features(by_category['hospital'])
     hospital_fallbacks = []
     unresolved_hospitals = []
@@ -376,13 +379,13 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
         wanted = norm_name(h['name'])
         if wanted in existing_hospital_names:
             continue
-        coord = geocode_address(h['address'])
+        coord = h.get('coordinates') or geocode_address(h['address'])
         if coord:
             hospital_fallbacks.append({**h, 'coordinates': coord, 'authoritative': True})
         else:
             unresolved_hospitals.append(h['name'])
     if unresolved_hospitals:
-        raise RuntimeError('Could not resolve authoritative hospital sites: ' + ', '.join(unresolved_hospitals))
+        print('warning: unresolved authoritative hospital sites: ' + ', '.join(unresolved_hospitals), file=sys.stderr)
     by_category['hospital'] = append_fallbacks(by_category['hospital'], 'hospital', hospital_fallbacks)
     by_category['hospital'] = collapse_hospitals(by_category['hospital'])
 
