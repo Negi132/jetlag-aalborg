@@ -222,27 +222,33 @@ underneath the explicit polygons and remains tappable for zone questions.
 
 ### Bus and train routes
 
-The **All bus routes** toggle combines NT's separate vector layers for city buses, regional buses,
-X buses, local buses and telebuses. It now reads NT's WFS layer catalogue at load time and includes
-both the main layers and their separate **biforløb** (branch/secondary-run) layers. This matters for
-smaller services and route branches that are visible in NT's map but were absent when the website
-requested only the five main tables — including route **38** through Hasseris toward Nørholm and
-Klitgård.
+The bus controls now mirror the four categories in NT's supplied **Find din køreplan** list:
 
-OpenStreetMap remains a general fallback. As a final safety net, route 38 is checked explicitly: if
-neither NT nor OSM supplied it, the app finds its named stops in OpenStreetMap and routes a line
-through them on the road network. That supplement is never added when an official route 38 feature
-is already present, so it cannot create a duplicate.
+- **Bybus**
+- **Regionalbus**
+- **Expresbus**
+- **Lokalbus**
 
-Each numbered route receives a deterministic colour and a slightly different dash phase. Shared
-street corridors therefore show several colours instead of one route painting over every route
-underneath it. Number labels repeat along the network. When several routes use the same corridor,
-the label is combined — for example **11, 12, 14** — while branches return to their individual
-route numbers.
+The route references from that timetable list are built into `app.js` as the authoritative catalogue.
+Choosing a category asks OpenStreetMap only for relations whose route numbers occur in that NT
+catalogue, rather than asking for every bus relation in greater Aalborg. Large categories are divided
+into small requests and successful replies are merged, which is both lighter and more tolerant of an
+individual Overpass request failing.
 
-The routes remain tappable for the Bus route question. Train lines continue to come from
-OpenStreetMap via Overpass, and the NT route-map picture overlay remains available as a visual
-fallback.
+**Only the part inside the current play area is retained.** After route geometry is downloaded, every
+line is split at the exact Zone-2 play-area boundary and all outside pieces are discarded. This is an
+actual polygon clip, not a rectangular crop. If the play area is changed later, already-loaded bus
+data is re-clipped locally without another network request.
+
+The four category buttons are independent toggles, but visible categories are combined into a single
+rendering layer. That preserves the existing shared-corridor behaviour: routes keep distinct colours
+and repeated number labels, and a street shared by several visible routes can still display a combined
+label such as **11, 12, 14**.
+
+Known public-map holes still have supplements for lines 11, 14 and 38. In particular, line 11 retains
+its bundled last-resort geometry if no network source supplies it.
+
+Train lines remain a separate toggle and continue to use the existing train loader.
 
 ### Also available
 
@@ -390,10 +396,10 @@ both fail to provide a real line-11 feature.
 
 ## 2026-08 transport-source correction
 
-NT's public Vidi map is still online, but the old internal GC2 SQL/WFS table URLs used by earlier
-versions now return HTTP 404. The functional **All bus routes** layer therefore uses OpenStreetMap
-route relations as its primary browser-safe source. Lines 11, 14 and 38 have local supplement logic
-when a public map export omits them; line 11 additionally has bundled fallback geometry.
+**Superseded for buses by the category-based loader above.** The old internal NT/GC2 table URLs
+returned HTTP 404, so the current version uses the NT timetable's route-number catalogue to drive
+smaller OpenStreetMap requests for Bybus, Regionalbus, Expresbus and Lokalbus separately. Lines
+11, 14 and 38 retain supplement logic; line 11 additionally has bundled fallback geometry.
 
 The train-route layer remains based on OSM train route relations because it gives a cleaner passenger
 corridor than drawing every physical rail track. A successful train response is cached locally for
@@ -402,16 +408,3 @@ seven days so subsequent loads on the same device are immediate.
 The transit-stop layer deliberately hides Limfjordsbanen's heritage-only railway halts at
 Østerådalen, Gug, Hadsundvej and Limfjorden. This affects only rail markers: identically named bus
 stops remain visible.
-
-
-### Reliability notes — bus routes and local POIs
-
-- Bus routes are fetched from OpenStreetMap in four overlapping Aalborg sections and merged.
-  This avoids the all-or-nothing failure of one very large route-relation request. A whole-area
-  request is used only as an extra recovery pass when the sectional result looks suspiciously small.
-- Aalborg Bibliotekerne's physical libraries/service point are stored as authoritative local
-  candidates, so the Library Matching card opens immediately and does not wait for Overpass.
-- Aalborg's three current cinemas, Aalborg Airport, Aalborg Zoo and the two golf-course fallbacks
-  are likewise local authoritative candidates.
-- Hospital markers closer than 350 m are treated as the same hospital campus for Matching; an
-  authoritative site marker wins over duplicate OSM building/campus labels.

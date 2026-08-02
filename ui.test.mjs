@@ -478,51 +478,44 @@ check('first is the GC2 SQL API', /api\/v2\/sql\/nt/.test(u[0]));
 check('second is the GC2 WFS', /\/wfs\/nt\/rutekortweb\/4326/.test(u[1]), u[1].slice(0,60));
 check('WFS strategy strips the schema from typeName', /typeName=ntmap_bybus_murl/.test(u[1]));
 
-console.log('\n== complete NT bus families and route labels ==');
-const ntTables = window.eval('HS.NT_BUS_TABLES.map(x=>x.table)');
-check('all five NT bus families are configured', ntTables.length === 5, ntTables.join(' | '));
-check('yellow/local bus table is included', ntTables.includes('rutekortweb.ntmap_lokalbus_murl'));
-check('telebus table is included', ntTables.includes('rutekortweb.ntmap_telebus_murl'));
-check('bus source prefers the combined NT loader', window.eval("HS.ROUTE_SOURCES.bus.kind") === 'nt-all');
-window.__ntCapsLayers = [
-  {name:'rutekortweb:ntmap_regionalbus_murl', title:'Regionalbus'},
-  {name:'rutekortweb:ntmap_regionalbus_biforloeb_murl', title:'Regionalbus biforløb'},
-  {name:'rutekortweb:ntmap_lokalbus_biforloeb_murl', title:'Lokalbus biforløb'},
-  {name:'rutekortweb:ntmap_tog_murl', title:'Tog'}
-];
-const discoveredBusTables = window.eval("HS.ntBusLayerDefs(window.__ntCapsLayers).map(x=>x.table)");
-check('WFS discovery includes regional branch runs', discoveredBusTables.includes('rutekortweb.ntmap_regionalbus_biforloeb_murl'));
-check('WFS discovery includes local branch runs', discoveredBusTables.includes('rutekortweb.ntmap_lokalbus_biforloeb_murl'));
-check('WFS discovery excludes trains', !discoveredBusTables.includes('rutekortweb.ntmap_tog_murl'));
+console.log('\n== NT timetable bus categories and route labels ==');
+const routeCatalogue = window.eval('HS.NT_ROUTE_CATALOGUE');
+check('four NT timetable bus categories are configured',
+      Object.keys(routeCatalogue).sort().join(',') === 'bybus,express,local,regional',
+      Object.keys(routeCatalogue).join(','));
+check('Bybus catalogue contains line 11', routeCatalogue.bybus.refs.includes('11'));
+check('Regionalbus catalogue contains route 38', routeCatalogue.regional.refs.includes('38'));
+check('Expresbus catalogue contains 950X', routeCatalogue.express.refs.includes('950X'));
+check('Lokalbus catalogue contains 271', routeCatalogue.local.refs.includes('271'));
 check('route 11 has a guaranteed bundled fallback geometry', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11' && Array.isArray(x.staticGeometry) && x.staticGeometry.length>10)"));
 check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
-window.__stopsFixture = [
-  {type:'node',lat:57.043,lon:9.918,tags:{name:'Aalborg St. (Perron C9)'}},
-  {type:'node',lat:57.042,lon:9.910,tags:{name:'Prinsensgade (Aalborg)'}},
-  {type:'node',lat:57.039,lon:9.899,tags:{name:'Sankt Jørgens Gade (Hasserisgade)'}},
-  {type:'node',lat:57.034,lon:9.879,tags:{name:'Fyrrebakken (Hasserisvej)'}},
-  {type:'node',lat:57.031,lon:9.864,tags:{name:'Hundeklemmen'}},
-  {type:'node',lat:57.028,lon:9.850,tags:{name:'Nørholmsvej (Under Lien)'}},
-  {type:'node',lat:57.025,lon:9.820,tags:{name:'Nældevej'}},
-  {type:'node',lat:57.020,lon:9.760,tags:{name:'Nørholm'}},
-  {type:'node',lat:57.015,lon:9.720,tags:{name:'Klitgård'}}
-];
-window.__parsedStops = window.eval("HS.parseOverpassStops({elements:window.__stopsFixture})");
-const matched38Stops = window.eval("HS.matchSupplementStops(window.__parsedStops, HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.find(x=>x.ref==='38'))");
-check('route 38 stop names match despite parenthetical text', matched38Stops.length >= 8, `got ${matched38Stops.length}`);
-const extractedRefs = window.eval("HS.extractRouteRefs({rutenr:'Linje 11, 12 og 14'}).join(', ')");
-check('combined line-number fields are parsed', extractedRefs === '11, 12, 14', extractedRefs);
+const bybusQ = window.eval("HS.overpassBusRefsQuery(['11','14'])");
+check('category query asks only for requested refs', /ref.*11\\|14/.test(bybusQ), bybusQ.slice(0,130));
+check('category query is geographically bounded', /relation\(/.test(bybusQ));
+
 window.__sharedRoutes = {type:'FeatureCollection',features:[
   {type:'Feature',properties:{rutenr:'11'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}},
   {type:'Feature',properties:{rutenr:'12'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}},
   {type:'Feature',properties:{rutenr:'14'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}}
 ]};
-window.eval("HS.annotateRouteGeoJson(window.__sharedRoutes, 'local')");
+window.eval("HS.annotateRouteGeoJson(window.__sharedRoutes, 'bybus')");
 const sharedLabels = window.eval("HS.routeLabelPoints(window.__sharedRoutes).map(x=>x.text)");
 check('shared corridor labels contain every bus', sharedLabels.includes('11, 12, 14'), sharedLabels.join(' | '));
 const routeDisplay = window.eval("HS.prepareRouteDisplayGeoJson(window.__sharedRoutes)");
 check('one coloured display path is made per bus', routeDisplay.features.length === 3, `got ${routeDisplay.features.length}`);
 check('different route numbers receive different colours', new Set(routeDisplay.features.map(f=>f.properties.__routeColor)).size === 3);
+
+window.__crossingRoute = {type:'FeatureCollection',features:[
+  {type:'Feature',properties:{ref:'11',__routeRefs:['11']},
+   geometry:{type:'LineString',coordinates:[[9.50,57.04],[10.30,57.04]]}}
+]};
+window.__clippedRoute = window.eval("HS.clipRoutesToPlayArea(window.__crossingRoute)");
+check('route clipping keeps a route that crosses the play area', window.__clippedRoute.features.length === 1);
+const clippedBb = window.eval("turf.bbox(window.__clippedRoute)");
+const playBbForRoute = window.eval("turf.bbox(HS.S.playArea)");
+check('clipped route stays inside play-area longitude extent',
+      clippedBb[0] >= playBbForRoute[0]-1e-6 && clippedBb[2] <= playBbForRoute[2]+1e-6,
+      `${clippedBb[0].toFixed(4)}..${clippedBb[2].toFixed(4)} vs ${playBbForRoute[0].toFixed(4)}..${playBbForRoute[2].toFixed(4)}`);
 
 console.log('\n== Overpass route parsing ==');
 window.__op = {
@@ -564,55 +557,16 @@ check('query asks for geometry', /out geom;/.test(q));
 check('query bounded to greater Aalborg', /relation\(56\.94,9\.7,57\.18,10\.25\)/.test(q), q.slice(0,64));
 check('query filters to bus route relations', /\["type"="route"\]\["route"="bus"\]/.test(q));
 
-console.log('\n== combined NT bus routes load ==');
-window.__tried = [];
-const ntFeature = (ref, y = 57.04) => ({
-  type:'Feature', properties:{rutenr:ref},
-  geometry:{type:'LineString',coordinates:[[9.88,y],[9.98,y]]}
-});
-window.fetch = async (url) => {
-  const text = String(url);
-  window.__tried.push(text);
-  if (/GetCapabilities/i.test(text)) return { ok:true, status:200, text:async()=>`<WFS_Capabilities><FeatureTypeList>
-    <FeatureType><Name>rutekortweb:ntmap_bybus_murl</Name><Title>Bybus</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_regionalbus_murl</Name><Title>Regionalbus</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_regionalbus_biforloeb_murl</Name><Title>Regionalbus biforløb</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_xbus_murl</Name><Title>Expresbus</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_lokalbus_murl</Name><Title>Lokalbus</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_telebus_murl</Name><Title>Telebus</Title></FeatureType>
-    <FeatureType><Name>rutekortweb:ntmap_tog_murl</Name><Title>Tog</Title></FeatureType>
-  </FeatureTypeList></WFS_Capabilities>` };
-  if (text.includes('ntmap_regionalbus_biforloeb_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('38',57.047)]}) };
-  if (text.includes('ntmap_bybus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('2')]}) };
-  if (text.includes('ntmap_regionalbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('950X',57.045)]}) };
-  if (text.includes('ntmap_xbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('970X',57.05)]}) };
-  if (text.includes('ntmap_lokalbus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('11, 12, 14',57.055)]}) };
-  if (text.includes('ntmap_telebus_murl')) return { ok:true, status:200, text:async()=>JSON.stringify({type:'FeatureCollection',features:[ntFeature('99',57.06)]}) };
-  return { ok:false, status:404, text:async()=>'' };
-};
+console.log('\n== category route controls ==');
 click(doc.querySelector('[data-tab="layers"]'));
-click(doc.querySelectorAll('#routeSources .src-main')[0]);
-await new Promise(r => setTimeout(r, 120));
-check('every NT bus family was requested', window.eval('HS.NT_BUS_TABLES.every(t=>window.__tried.some(u=>u.includes(t.table.split(".").pop())))'));
-check('route layer ended up loaded', window.eval("!!HS.layerByKey('route:bus')"));
-check('loaded as tappable lines', window.eval("(HS.layerByKey('route:bus')||{}).kind") === 'line');
-check('all numbered routes are counted', window.eval("HS.layerByKey('route:bus').routeCount") === 8,
-      `got ${window.eval("HS.layerByKey('route:bus').routeCount")}`);
-check('local routes 11, 12 and 14 are present', window.eval("['11','12','14'].every(r=>HS.layerByKey('route:bus').routeRefs.includes(r))"));
-check('small regional route 38 is loaded from a branch layer', window.eval("HS.layerByKey('route:bus').routeRefs.includes('38')"));
-check('branch layer was requested dynamically', window.__tried.some(u=>u.includes('ntmap_regionalbus_biforloeb_murl')));
-check('periodic route labels were created', window.eval("HS.layerByKey('route:bus').labelLayer.getLayers().length") > 0);
-check('route row now shows on', /is-on/.test($('#routeSources').innerHTML));
-check('status reports numbered routes', /8 numbered routes on/.test($('#zoneStatus').textContent),
-      $('#zoneStatus').textContent.slice(0, 90));
-const callsBefore = window.__tried.length;
-click(doc.querySelectorAll('#routeSources .src-main')[0]);
-await new Promise(r => setTimeout(r, 30));
-check('second tap only toggles, no refetch', window.__tried.length === callsBefore);
-check('route hidden after second tap', window.eval("HS.layerByKey('route:bus').visible") === false);
-click(doc.querySelectorAll('#routeSources .src-main')[0]);
-await new Promise(r => setTimeout(r, 30));
-check('third tap shows it again', window.eval("HS.layerByKey('route:bus').visible") === true);
+const routeRows = [...doc.querySelectorAll('#routeSources .src-main')];
+check('four bus category controls plus train are rendered', routeRows.length === 5, `got ${routeRows.length}`);
+const routeText = $('#routeSources').textContent;
+check('Bybus button is present', /Bybus/.test(routeText));
+check('Regionalbus button is present', /Regionalbus/.test(routeText));
+check('Expresbus button is present', /Expresbus/.test(routeText));
+check('Lokalbus button is present', /Lokalbus/.test(routeText));
+check('Train lines button remains present', /Train lines/.test(routeText));
 
 console.log('\n== traced zone 2 and zone 3 ==');
 click(doc.querySelector('[data-tab="layers"]'));

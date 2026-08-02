@@ -156,8 +156,9 @@ function categoryFor(styleKey, props) {
 /* NT's route map runs on GC2, which exposes every layer over SQL and WMS. */
 const GC2 = 'https://nt.vidi.gc2.io';
 
-/* OpenStreetMap remains the fallback for route data and the primary source
-   for trains. The bus layer below prefers NT's own separated route families. */
+/* OpenStreetMap supplies browser-safe route geometry. Bus route numbers are
+   constrained by the authoritative NT timetable catalogue below; trains use
+   OSM route relations as before. */
 const OVERPASS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
@@ -165,10 +166,9 @@ const OVERPASS = [
 ];
 const OVERPASS_BBOX = [56.94, 9.70, 57.18, 10.25];   // S, W, N, E — greater Aalborg
 
-/* NT publishes the route families as separate vector layers. Loading only
-   OpenStreetMap omitted several Aalborg lines, especially the yellow local
-   and secondary city routes. The bus toggle now combines every NT bus family
-   and uses OSM only as a fallback/supplement when an NT table is unavailable. */
+/* Legacy NT/GC2 table definitions are retained only for old shared-state
+   compatibility and diagnostics. Those internal endpoints have returned 404
+   in real-world testing, so the shipped bus controls no longer depend on them. */
 const NT_BUS_TABLES = [
   { key: 'city',    label: 'city',    table: 'rutekortweb.ntmap_bybus_murl' },
   { key: 'regional',label: 'regional',table: 'rutekortweb.ntmap_regionalbus_murl' },
@@ -258,10 +258,53 @@ const ROUTE_PALETTE = [
 ];
 const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
 
+/* Route catalogue taken from NT's current "Find din køreplan" list supplied
+   with the project. The four buttons in Layers mirror NT's own filters.
+   Routes are fetched by ref inside greater Aalborg and then clipped to the
+   exact current play area before they are ever drawn or made tappable. */
+const NT_ROUTE_CATALOGUE = {
+  bybus: {
+    name: 'Bybus',
+    refs: ['1','FR1','HO1','NY1','TH1','2','FR2','HO2','NY2','TH2','3','FR3','FR4','5','6','11','FR11','12','FR12','13','FR13','14','15','16','17','18','19']
+  },
+  regional: {
+    name: 'Regionalbus',
+    refs: ['36','38','40','42','45','46','50','52','53','54','55','56','57','58','61','64','67','68','70','72','73','77','78','80','81','82','87','90','100','102','103','104','107','111','112','113','118','158','176','200','202','208','209','212','213','230','234','235','237','265','270','274','275','276','278','311','312','313','320','321','322','360','361','362','363','370','371','372','373','380','381','382','383','439','440','442','454','456','457','460','461','462','463','464','468','470','543','701','702','703','704','705','706','707','708','709','790','813','840']
+  },
+  express: {
+    name: 'Expresbus',
+    refs: ['60X','940X','950X','951X','954X','958X','970X','971X','973X','974X']
+  },
+  local: {
+    name: 'Lokalbus',
+    refs: ['271','273','404','407','409','414','417','419','422','600','605','607','608','609','610','611','615','617','618','621','625']
+  }
+};
+
+const BUS_CATEGORY_STATE = Object.fromEntries(
+  Object.keys(NT_ROUTE_CATALOGUE).map((key) => [key, {
+    loaded: false, visible: false, loading: false, rawGeojson: null, geojson: null,
+    note: '', supplements: []
+  }])
+);
+
 const ROUTE_SOURCES = {
-  bus:   { name: 'All bus routes',
-           meta: 'OpenStreetMap routes · verified local supplements for missing lines',
-           kind: 'osm-bus', filter: '["route"="bus"]' },
+  busBybus: {
+    name: 'Bybus', meta: 'NT timetable catalogue · only the part inside the play area',
+    kind: 'bus-category', category: 'bybus'
+  },
+  busRegional: {
+    name: 'Regionalbus', meta: 'NT timetable catalogue · only the part inside the play area',
+    kind: 'bus-category', category: 'regional'
+  },
+  busExpress: {
+    name: 'Expresbus', meta: 'NT timetable catalogue · only the part inside the play area',
+    kind: 'bus-category', category: 'express'
+  },
+  busLocal: {
+    name: 'Lokalbus', meta: 'NT timetable catalogue · only the part inside the play area',
+    kind: 'bus-category', category: 'local'
+  },
   train: { name: 'Train lines', meta: 'OpenStreetMap train route relations · tappable', kind: 'overpass',
            filter: '["route"~"^(train|light_rail)$"]' }
 };
@@ -826,6 +869,9 @@ function refreshDerivedLayers() {
     });
     if (fresh && !wasVisible) setLayerVisible(fresh, false);
   }
+  // Bus routes are stored in their source geometry so a play-area change can
+  // re-clip them without another network request.
+  reclipBusCategories();
 }
 
 /* ---------- the core ------------------------------------------------ */
@@ -3976,8 +4022,12 @@ function routeRefCompare(a, b) {
 function routeTokens(value) {
   if (value == null || (typeof value !== 'string' && typeof value !== 'number')) return [];
   const text = String(value).toUpperCase().replace(/\b(?:LINJE|RUTE|ROUTE|LINE)\b/g, ' ');
-  const found = text.match(/(?:^|[^A-Z0-9])(\d{1,3}[A-Z]?)(?=$|[^A-Z0-9])/g) || [];
-  return found.map((x) => (x.match(/\d{1,3}[A-Z]?/) || [''])[0]).filter(Boolean);
+  // NT also has city prefixes such as FR1/HO2/NY1/TH2. They normally fall
+  // outside the Aalborg play area, but keeping them parseable makes the
+  // timetable catalogue exact rather than silently numeric-only.
+  const token = '(?:[A-ZÆØÅ]{1,3}\\d{1,3}[A-Z]?|\\d{1,3}[A-Z]?)';
+  const found = text.match(new RegExp(`(?:^|[^A-ZÆØÅ0-9])(${token})(?=$|[^A-ZÆØÅ0-9])`, 'g')) || [];
+  return found.map((x) => (x.match(new RegExp(token)) || [''])[0]).filter(Boolean);
 }
 
 const ROUTE_REF_KEYS = [
@@ -4057,7 +4107,7 @@ function geometryParts(geometry) {
 function prepareRouteDisplayGeoJson(gj) {
   const out = [];
   const allRefs = routeSummary(gj).refs;
-  const colors = new Map(allRefs.map((ref, i) => [ref, ROUTE_PALETTE[i % ROUTE_PALETTE.length]]));
+  const colors = new Map(allRefs.map((ref) => [ref, routeColor(ref)]));
   for (const original of (gj && gj.features) || []) {
     if (!original || !original.geometry || !/LineString/.test(original.geometry.type)) continue;
     const refs = extractRouteRefs(original.properties);
@@ -4514,28 +4564,40 @@ async function routeThroughStops(coords) {
   return geometry;
 }
 
-async function addMissingBusRouteSupplements(gj) {
-  const missing = REQUIRED_BUS_ROUTE_SUPPLEMENTS.filter((d) => !hasRouteRef(gj, d.ref));
+async function addMissingBusRouteSupplements(gj, allowedRefs = null) {
+  const allowed = allowedRefs ? new Set(Array.from(allowedRefs, (x) => String(x))) : null;
+  const missing = REQUIRED_BUS_ROUTE_SUPPLEMENTS.filter((d) =>
+    (!allowed || allowed.has(String(d.ref))) && !hasRouteRef(gj, d.ref));
   if (!missing.length) return [];
+
+  // A bundled route should be immediate. Only contact Overpass for supplements
+  // that genuinely need named stops to reconstruct their geometry.
+  const needsStops = missing.some((d) => !(Array.isArray(d.staticGeometry) && d.staticGeometry.length >= 2));
   let stops = [];
-  try { stops = await fetchOverpassStops(); } catch (_) { /* static fallback below */ }
+  if (needsStops) {
+    try { stops = await fetchOverpassStops(); } catch (_) { /* individual defs may still have static geometry */ }
+  }
+
   const added = [];
   for (const def of missing) {
-    const coords = stops.length ? matchSupplementStops(stops, def) : [];
     let geometry = null;
-    if (coords.length >= Math.max(5, Math.ceil((def.anchors || []).length * .55))) {
-      try { geometry = await routeThroughStops(coords); }
-      catch (_) { geometry = { type: 'LineString', coordinates: coords }; }
-    }
-    if (!geometry && Array.isArray(def.staticGeometry) && def.staticGeometry.length >= 2) {
+    let routeClass = 'bundled supplement';
+    if (Array.isArray(def.staticGeometry) && def.staticGeometry.length >= 2) {
       geometry = { type: 'LineString', coordinates: def.staticGeometry.map((c) => c.slice()) };
+    } else {
+      const coords = stops.length ? matchSupplementStops(stops, def) : [];
+      if (coords.length >= Math.max(5, Math.ceil((def.anchors || []).length * .55))) {
+        routeClass = 'stop-routed supplement';
+        try { geometry = await routeThroughStops(coords); }
+        catch (_) { geometry = { type: 'LineString', coordinates: coords }; }
+      }
     }
     if (!geometry) continue;
     gj.features.push({
       type: 'Feature', geometry,
       properties: { ref: def.ref, name: def.name, __displayName: def.ref,
         __routeRefs: [def.ref], __routeName: def.name,
-        __routeClass: geometry && def.staticGeometry ? 'bundled supplement' : 'stop-routed supplement',
+        __routeClass: routeClass,
         __supplement: true }
     });
     added.push(def.ref);
@@ -4543,7 +4605,7 @@ async function addMissingBusRouteSupplements(gj) {
   return added;
 }
 
-const ROUTE_CACHE_VERSION = '20260802c';
+const ROUTE_CACHE_VERSION = '20260802d-buscat';
 const ROUTE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function readRouteCache(kind) {
@@ -4787,6 +4849,252 @@ function parseOverpassRoutes(json) {
   return { type: 'FeatureCollection', features: merged };
 }
 
+
+function routeRefRegexEscape(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function busRouteQueryBbox() {
+  if (!S.playArea) return OVERPASS_BBOX.slice();
+  try {
+    const bb = turf.bbox(S.playArea);
+    // Relation selection only needs to reach a little outside the play area;
+    // the exact line geometry is clipped again after download.
+    return [
+      Math.max(OVERPASS_BBOX[0], bb[1] - .025),
+      Math.max(OVERPASS_BBOX[1], bb[0] - .040),
+      Math.min(OVERPASS_BBOX[2], bb[3] + .025),
+      Math.min(OVERPASS_BBOX[3], bb[2] + .040)
+    ];
+  } catch (_) { return OVERPASS_BBOX.slice(); }
+}
+
+function overpassBusRefsQuery(refs, bbox = busRouteQueryBbox()) {
+  const [s2, w, n, e] = bbox;
+  const pattern = refs.map(routeRefRegexEscape).join('|');
+  return `[out:json][timeout:90];relation(${s2},${w},${n},${e})["type"="route"]["route"="bus"]["ref"~"^(?:${pattern})$"];out geom;`;
+}
+
+function routeCatalogueFilter(gj, category) {
+  const allowed = new Set((NT_ROUTE_CATALOGUE[category] || {}).refs || []);
+  const features = [];
+  for (const ft of (gj && gj.features) || []) {
+    const refs = extractRouteRefs(ft.properties).filter((ref) => allowed.has(String(ref)));
+    if (!refs.length) continue;
+    const copy = turf.clone(ft);
+    copy.properties = Object.assign({}, copy.properties, {
+      __routeRefs: refs,
+      __displayName: refs.join(', ')
+    });
+    features.push(copy);
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function playAreaBoundaryLines() {
+  if (!S.playArea || !S.playArea.geometry) return [];
+  const g = S.playArea.geometry;
+  const polygons = g.type === 'Polygon' ? [g.coordinates]
+    : g.type === 'MultiPolygon' ? g.coordinates : [];
+  const out = [];
+  for (const poly of polygons) for (const ring of poly || []) {
+    if (ring && ring.length >= 2) {
+      try { out.push(turf.lineString(ring)); } catch (_) { /* ignore malformed ring */ }
+    }
+  }
+  return out;
+}
+
+function clipLineCoordsToPlayArea(coords, boundaries) {
+  if (!S.playArea || !coords || coords.length < 2) return [];
+  let pieces;
+  try { pieces = [turf.lineString(coords)]; } catch (_) { return []; }
+
+  // Split at every polygon edge first. A midpoint test can then classify each
+  // resulting piece without approximating the play-area outline by a bbox.
+  for (const edge of boundaries) {
+    const next = [];
+    for (const piece of pieces) {
+      try {
+        const split = turf.lineSplit(piece, edge);
+        if (split && split.features && split.features.length > 1) next.push(...split.features);
+        else next.push(piece);
+      } catch (_) { next.push(piece); }
+    }
+    pieces = next;
+  }
+
+  return pieces.filter((piece) => {
+    try {
+      const len = turf.length(piece, { units: 'kilometers' });
+      if (!(len > .005)) return false;
+      const mid = turf.along(piece, len / 2, { units: 'kilometers' });
+      return turf.booleanPointInPolygon(mid, S.playArea);
+    } catch (_) { return false; }
+  }).map((piece) => piece.geometry.coordinates);
+}
+
+function clipRoutesToPlayArea(gj) {
+  if (!S.playArea) return gj;
+  const boundaries = playAreaBoundaryLines();
+  const out = [];
+  for (const ft of (gj && gj.features) || []) {
+    if (!ft || !ft.geometry || !/LineString/.test(ft.geometry.type)) continue;
+    const clippedParts = [];
+    for (const coords of geometryParts(ft.geometry)) {
+      clippedParts.push(...clipLineCoordsToPlayArea(coords, boundaries));
+    }
+    if (!clippedParts.length) continue;
+    const copy = turf.clone(ft);
+    copy.geometry = clippedParts.length === 1
+      ? { type: 'LineString', coordinates: clippedParts[0] }
+      : { type: 'MultiLineString', coordinates: clippedParts };
+    out.push(copy);
+  }
+  return { type: 'FeatureCollection', features: dedupeRouteFeatures(out) };
+}
+
+async function fetchBusCategoryRoutes(category) {
+  const def = NT_ROUTE_CATALOGUE[category];
+  if (!def) throw new Error(`unknown bus category ${category}`);
+
+  let raw = readRouteCache(`bus-${category}`);
+  let note = raw ? 'cached route geometry' : 'OpenStreetMap';
+  let networkError = null;
+
+  if (!raw) {
+    const chunks = [];
+    for (let i = 0; i < def.refs.length; i += 18) chunks.push(def.refs.slice(i, i + 18));
+    const replies = [];
+
+    // Keep the requests small and process only two at a time. This is much
+    // lighter than one "all buses in Aalborg" relation query, while still
+    // allowing a slow/failed chunk to leave the other chunks usable.
+    for (let i = 0; i < chunks.length; i += 2) {
+      const batch = await Promise.allSettled(chunks.slice(i, i + 2).map((refs) =>
+        overpassJson(overpassBusRefsQuery(refs), { timeoutMs: 65000 })
+      ));
+      for (const result of batch) {
+        if (result.status === 'fulfilled') replies.push(result.value);
+        else networkError = result.reason || networkError;
+      }
+    }
+
+    if (replies.length) {
+      raw = parseOverpassRoutes(mergeOverpassRelationReplies(replies));
+      annotateRouteGeoJson(raw, `osm-${category}`);
+      raw = routeCatalogueFilter(raw, category);
+    } else {
+      // One final compatibility fallback to the old relation loader. The
+      // authoritative catalogue still filters the result afterwards.
+      try {
+        raw = routeCatalogueFilter(await fetchBusRelationsSectioned(), category);
+        annotateRouteGeoJson(raw, `osm-${category}`);
+        note = 'OpenStreetMap fallback';
+      } catch (err) {
+        networkError = err || networkError;
+        raw = { type: 'FeatureCollection', features: [] };
+      }
+    }
+  } else {
+    raw = routeCatalogueFilter(raw, category);
+    annotateRouteGeoJson(raw, `cache-${category}`);
+  }
+
+  const supplementRefs = new Set(def.refs);
+  const supplements = await addMissingBusRouteSupplements(raw, supplementRefs);
+  raw.features = dedupeRouteFeatures(raw.features || []);
+  if (raw.features.length) writeRouteCache(`bus-${category}`, raw);
+
+  const clipped = clipRoutesToPlayArea(raw);
+  return {
+    raw,
+    gj: clipped,
+    supplements,
+    summary: routeSummary(clipped),
+    note,
+    networkError
+  };
+}
+
+function rebuildVisibleBusLayer() {
+  removeLayerByKey('route:bus');
+  const features = [];
+  for (const state of Object.values(BUS_CATEGORY_STATE)) {
+    if (!state.visible || !state.geojson) continue;
+    features.push(...(state.geojson.features || []));
+  }
+  if (!features.length) {
+    renderSourceRows();
+    return null;
+  }
+
+  const merged = { type: 'FeatureCollection', features: dedupeRouteFeatures(features) };
+  const summary = routeSummary(merged);
+  const display = prepareRouteDisplayGeoJson(merged);
+  return addLayer('Bus routes', display, {
+    key: 'route:bus', kind: 'line', routeLayer: true,
+    routeLabelGeojson: merged, routeCount: summary.count, routeRefs: summary.refs,
+    baseGeojson: merged
+  });
+}
+
+function reclipBusCategories() {
+  let any = false;
+  for (const state of Object.values(BUS_CATEGORY_STATE)) {
+    if (!state.loaded || !state.rawGeojson) continue;
+    state.geojson = clipRoutesToPlayArea(state.rawGeojson);
+    any = true;
+  }
+  if (any) rebuildVisibleBusLayer();
+}
+
+async function toggleBusCategory(category, key, btn) {
+  const state = BUS_CATEGORY_STATE[category];
+  const def = NT_ROUTE_CATALOGUE[category];
+  if (!state || !def || state.loading) return;
+
+  if (state.loaded) {
+    state.visible = !state.visible;
+    rebuildVisibleBusLayer();
+    renderSourceRows();
+    return;
+  }
+
+  state.loading = true;
+  if (btn) btn.classList.add('is-busy');
+  setMapLoadingTask(`route:${key}`, `${def.name} routes`, true);
+  renderSourceRows();
+  setStatus(`Loading ${def.name.toLowerCase()} routes…`);
+
+  try {
+    const result = await fetchBusCategoryRoutes(category);
+    state.rawGeojson = result.raw;
+    state.geojson = result.gj;
+    state.supplements = result.supplements || [];
+    state.loaded = true;
+    state.visible = true;
+    state.note = result.note || '';
+
+    rebuildVisibleBusLayer();
+    const summary = routeSummary(state.geojson);
+    if (summary.count) {
+      const supplement = state.supplements.length ? `; supplemented ${state.supplements.join(', ')}` : '';
+      setStatus(`${def.name}: ${summary.count} routes intersect the play area${supplement}. ` +
+        `Only the portions inside the four-zone play area are drawn.`);
+    } else {
+      setStatus(`${def.name}: no loaded timetable routes intersect the current play area.`);
+    }
+  } catch (err) {
+    setStatus(`${def.name} failed — ${err.message}.`, true);
+  } finally {
+    state.loading = false;
+    setMapLoadingTask(`route:${key}`, null, false);
+    if (btn) btn.classList.remove('is-busy');
+    renderSourceRows();
+  }
+}
+
 async function fetchOverpass(filter) {
   const json = await overpassJson(overpassQuery(filter), { timeoutMs: 30000 });
   const gj = parseOverpassRoutes(json);
@@ -4887,6 +5195,8 @@ async function loadOfficialZone2PlayArea() {
 
 async function toggleRoute(key, btn) {
   const r = ROUTE_SOURCES[key];
+  if (!r) return;
+  if (r.kind === 'bus-category') return toggleBusCategory(r.category, key, btn);
   const ex = layerByKey('route:' + key);
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
 
@@ -5717,6 +6027,19 @@ function renderSourceRows() {
   const rbox = $('#routeSources');
   rbox.innerHTML = '';
   Object.entries(ROUTE_SOURCES).forEach(([key, r]) => {
+    if (r.kind === 'bus-category') {
+      const bs = BUS_CATEGORY_STATE[r.category];
+      const loading = !!(bs && bs.loading) || mapLoadTasks.has(`route:${key}`);
+      const state = loading ? 'loading' : !bs || !bs.loaded ? 'idle' : bs.visible ? 'on' : 'off';
+      const summary = bs && bs.geojson ? routeSummary(bs.geojson) : { count: 0 };
+      const meta = loading ? `Loading ${r.name.toLowerCase()} geometry…`
+        : bs && bs.loaded
+          ? `${summary.count} routes inside play area${state === 'on' ? '' : ' · hidden'}`
+          : (r.meta || '');
+      rbox.appendChild(sourceRow(r.name, meta, state, (btn) => toggleRoute(key, btn), null));
+      return;
+    }
+
     const rec = layerByKey('route:' + key);
     const loading = mapLoadTasks.has(`route:${key}`);
     const state = loading ? 'loading' : !rec ? 'idle' : rec.visible ? 'on' : 'off';
@@ -6271,6 +6594,8 @@ window.HS = {
   parseOverpassRoutes, overpassQuery, fetchOverpass, fetchNtBusRoutes,
   extractRouteRefs, routeTokens, routeColor, routeStyle, annotateRouteGeoJson,
   prepareRouteDisplayGeoJson, routeLabelPoints, routeSummary, NT_BUS_TABLES, ROUTE_SOURCES,
+  NT_ROUTE_CATALOGUE, BUS_CATEGORY_STATE, fetchBusCategoryRoutes, clipRoutesToPlayArea,
+  overpassBusRefsQuery, rebuildVisibleBusLayer, reclipBusCategories,
   NT_ROUTE_WFS, ntBusLayerDefs, discoverNtBusTables, hasRouteRef,
   REQUIRED_BUS_ROUTE_SUPPLEMENTS, normaliseStopName, parseOverpassStops,
   matchSupplementStops, addMissingBusRouteSupplements, overpassBusStopQuery,
