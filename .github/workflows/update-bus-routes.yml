@@ -39,6 +39,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool
 
+      - name: Snapshot official Aalborg game zones
+        if: github.event_name != 'push'
+        run: python scripts/update_zones.py
+
       - name: Download current Rejseplanen GTFS
         if: github.event_name != 'push'
         run: |
@@ -86,19 +90,34 @@ jobs:
         if: github.event_name != 'push'
         run: python scripts/update_pois.py poi-source.geojson
 
+      - name: Extract Aalborg coastline and body-of-water geometry
+        if: github.event_name != 'push'
+        run: |
+          osmium tags-filter \
+            --expressions=scripts/hydro-filter-expressions.txt \
+            aalborg-source.osm.pbf \
+            --output=hydro-source.osm.pbf --overwrite
+          osmium export hydro-source.osm.pbf \
+            --attributes=type,id \
+            --output=hydro-source.geojson --output-format=geojson --overwrite
+
+      - name: Regenerate Aalborg coastline and water geometry
+        if: github.event_name != 'push'
+        run: python scripts/update_hydro.py hydro-source.geojson
+
       - name: Show map-data changes
         if: github.event_name != 'push'
         id: data_changes
         shell: bash
         run: |
-          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md; then
+          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md hydro-data.js HYDRO_AUDIT.md zone-data.js ZONE_AUDIT.md scripts/play_area.geojson; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No route, transit-stop, or POI changes."
+            echo "No route, transit, POI, water, or zone changes."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Generated map data changed:"
-            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md
-            git diff -- BUS_ROUTE_AUDIT.md TRANSIT_AUDIT.md POI_AUDIT.md || true
+            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md hydro-data.js HYDRO_AUDIT.md zone-data.js ZONE_AUDIT.md scripts/play_area.geojson
+            git diff -- BUS_ROUTE_AUDIT.md TRANSIT_AUDIT.md POI_AUDIT.md HYDRO_AUDIT.md ZONE_AUDIT.md || true
           fi
 
       - name: Commit updated map-data bundles
@@ -106,7 +125,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md
+          git add bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md hydro-data.js HYDRO_AUDIT.md zone-data.js ZONE_AUDIT.md scripts/play_area.geojson
           git commit -m "Update Aalborg map data"
           git push
 
@@ -125,6 +144,7 @@ jobs:
             --exclude 'GTFS.zip' \
             --exclude '*.pbf' \
             --exclude 'poi-source.geojson' \
+            --exclude 'hydro-source.geojson' \
             --exclude '*.test.mjs' \
             --exclude '*.patch' \
             --exclude '*.zip'

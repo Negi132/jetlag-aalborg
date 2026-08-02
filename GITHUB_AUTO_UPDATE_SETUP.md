@@ -1,10 +1,12 @@
 # GitHub automatic Aalborg map-data updates
 
-This version automatically refreshes three local data bundles:
+This version automatically refreshes five local data bundles:
 
 - `bus-routes.js` — NT bus-route geometry from Rejseplanen GTFS;
 - `transit-data.js` — scheduled passenger train services plus NT bus stops and rail stations from Rejseplanen GTFS; and
-- `poi-data.js` — question POIs from the current Geofabrik Denmark OpenStreetMap extract plus the project's authoritative Aalborg fallbacks.
+- `poi-data.js` — question POIs from the current Geofabrik Denmark OpenStreetMap extract plus the project's authoritative Aalborg fallbacks;
+- `hydro-data.js` — Limfjord shorelines and body-of-water geometry for Measuring; and
+- `zone-data.js` — cached official Aalborg KortInfo Zone 1–4 polygons.
 
 The large source downloads happen only on GitHub's runner. Phones loading the game receive only the small generated JavaScript bundles.
 
@@ -29,10 +31,11 @@ The manual run is important because `poi-data.js` is shipped as a safe placehold
 4. Downloads `denmark-latest.osm.pbf` from Geofabrik.
 5. Uses `osmium` to extract/filter the Aalborg POI source objects.
 6. Generates `poi-data.js`, applying the project's curated/authoritative rules.
-7. Keeps Aalborg Airport as an intentional exception even though its representative point sits just outside the four Zone-2 game polygons; the airport is still required by the Commercial airport Matching/Measuring card.
-8. Runs sanity checks. Suspiciously incomplete results make the workflow fail instead of replacing known-good data.
-9. Commits changed generated bundles/audits.
-10. Deploys the validated static site to GitHub Pages.
+7. Adds Aalborg Airport using the passenger-terminal point at Ny Lufthavnsvej 100, which lies inside the game area.
+8. Generates coastline/body-of-water geometry and snapshots official Zone 1–4 polygons.
+9. Runs sanity checks. Suspiciously incomplete results make the workflow fail instead of replacing known-good data.
+10. Commits changed generated bundles/audits.
+11. Deploys the validated static site to GitHub Pages.
 
 ## Current GTFS baseline
 
@@ -56,7 +59,7 @@ The browser applies the current live Zone-2 union again before displaying stops/
 
 The same generated POI catalogue is used by both **Matching** and POI-based **Measuring** cards. Measuring displays the candidates as tappable cyan markers; selecting one makes it the target of the normal closer/further geometry rule. A category with only one candidate, such as Commercial airport, is selected automatically. The Measuring **Rail station** card uses the scheduled passenger-station points already bundled in `transit-data.js`, not a separate live OSM query.
 
-Commercial airport is deliberately allowed outside Zone 2. Other normal POI categories are still filtered to the game area.
+Commercial airport uses the passenger-terminal point inside Zone 2. Normal POI categories are filtered to the game area.
 
 ## Audits
 
@@ -65,6 +68,8 @@ After a successful run the repository contains:
 - `BUS_ROUTE_AUDIT.md`
 - `TRANSIT_AUDIT.md`
 - `POI_AUDIT.md`
+- `HYDRO_AUDIT.md`
+- `ZONE_AUDIT.md`
 
 These show exactly what the current generated bundles contain.
 
@@ -79,3 +84,9 @@ Normal play uses the generated local files. The older OSM/Overpass train and sto
 ## Source/licensing note
 
 The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is © OpenStreetMap contributors and used under ODbL 1.0. Rejseplanen GTFS supplies the timetable/transit geometry.
+
+## Additional generated geometry
+
+The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. The zone updater retains complete official polygons near the game area rather than clipping polygon edges, because artificial clip edges must never become fake Measuring borders.
+
+After a successful manual/scheduled run you should also see `HYDRO_AUDIT.md` and `ZONE_AUDIT.md`. If either source looks suspiciously incomplete, the workflow exits non-zero before committing/deploying the new generated bundle.

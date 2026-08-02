@@ -1,0 +1,6 @@
+# Water/coast geometry used by automatic Measuring questions.
+w/natural=coastline
+nwr/natural=water
+nwr/water
+nwr/landuse=reservoir,basin
+nwr/waterway=riverbank,river,canal

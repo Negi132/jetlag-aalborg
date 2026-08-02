@@ -420,13 +420,7 @@ returned HTTP 404, so the current version uses the NT timetable's route-number c
 smaller OpenStreetMap requests for Bybus, Regionalbus, Expresbus and Lokalbus separately. Lines
 11, 14 and 38 retain supplement logic; line 11 additionally has bundled fallback geometry.
 
-The train-route layer remains based on OSM train route relations because it gives a cleaner passenger
-corridor than drawing every physical rail track. A successful train response is cached locally for
-seven days so subsequent loads on the same device are immediate.
-
-The transit-stop layer deliberately hides Limfjordsbanen's heritage-only railway halts at
-Østerådalen, Gug, Hadsundvej and Limfjorden. This affects only rail markers: identically named bus
-stops remain visible.
+Train lines and normal passenger stops are now bundled from Rejseplanen GTFS in `transit-data.js`; the older OSM relation/stop loaders remain only as emergency fallbacks. Because the bundled rail markers come from scheduled passenger service, Limfjordsbanen heritage-only halts such as Østerådalen, Gug, Hadsundvej and Limfjorden are not presented as normal train stations. Identically named bus stops remain unaffected.
 
 ---
 
@@ -443,7 +437,7 @@ The bus overlays are generated from Rejseplanen's static GTFS feed and stored in
 3. Open **Settings → Pages → Build and deployment → Source** and choose
    **GitHub Actions**.
 4. Open the repository's **Actions** tab, choose
-   **Update Aalborg bus routes and deploy Pages**, and click **Run workflow**.
+   **Update Aalborg map data and deploy Pages**, and click **Run workflow**.
 5. Open that run and check the `Regenerate Aalborg bus routes` step. A healthy
    run currently reports 14 Bybus, 15 Regionalbus, 8 Expresbus and 2 Lokalbus
    routes (39 total). The exact counts may legitimately change when NT changes
@@ -496,3 +490,19 @@ recorded explicitly. If the generated snapshot is missing, unvalidated, or a sch
 fails, `app.js` falls back to the previous live/curated loader instead of silently removing POIs.
 
 OpenStreetMap-derived POI data is © OpenStreetMap contributors and is used under ODbL 1.0.
+
+## Automated local map-data snapshots
+
+The weekly GitHub Actions updater now builds all slow-changing game geometry into local JavaScript bundles before deployment:
+
+- `bus-routes.js` — NT bus route shapes from Rejseplanen GTFS.
+- `transit-data.js` — scheduled train lines plus bus/train stops from GTFS.
+- `poi-data.js` — Matching/Measuring POIs from Geofabrik OSM plus curated authoritative fallbacks.
+- `hydro-data.js` — Limfjord north/south coastline geometry and body-of-water targets for automatic Measuring.
+- `zone-data.js` — snapshots of Aalborg Kommune's official KortInfo Zone 1–4 WFS layers.
+
+The browser prefers these local bundles, so normal play does not wait on Overpass or KortInfo. Live network loaders remain fallbacks where appropriate. The generated audit files (`BUS_ROUTE_AUDIT.md`, `TRANSIT_AUDIT.md`, `POI_AUDIT.md`, `HYDRO_AUDIT.md`, `ZONE_AUDIT.md`) document each refresh.
+
+### Measuring automation
+
+POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring automatically selects the nearest bundled water feature. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.

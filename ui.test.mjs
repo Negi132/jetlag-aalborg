@@ -55,9 +55,11 @@ run(fs.readFileSync(bundle('leaflet/dist/leaflet-src.js'), 'utf8'), 'leaflet');
 run(fs.readFileSync(bundle('@turf/turf/turf.min.js'), 'utf8'), 'turf');
 run(fs.readFileSync(bundle('proj4/dist/proj4.js'), 'utf8'), 'proj4');
 run(fs.readFileSync(dir + 'data.js', 'utf8'), 'data.js');
+run(fs.readFileSync(dir + 'zone-data.js', 'utf8'), 'zone-data.js');
 run(fs.readFileSync(dir + 'bus-routes.js', 'utf8'), 'bus-routes.js');
 run(fs.readFileSync(dir + 'transit-data.js', 'utf8'), 'transit-data.js');
 run(fs.readFileSync(dir + 'poi-data.js', 'utf8'), 'poi-data.js');
+run(fs.readFileSync(dir + 'hydro-data.js', 'utf8'), 'hydro-data.js');
 run(fs.readFileSync(dir + 'app.js', 'utf8'), 'app.js');
 
 const doc = window.document;
@@ -189,8 +191,8 @@ click(doc.querySelector('[data-question-type="measuring"][data-card="Commercial 
 await new Promise(r => setTimeout(r, 20));
 check('Measuring recognises the same automatic POI catalogue as Matching',
       window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().key === 'airport'"));
-check('Commercial airport remains available despite sitting just outside Zone 2',
-      window.eval("HS.draft.poiCount === 1 && /Aalborg Airport/.test(HS.draft.targetName || '')"),
+check('Commercial airport uses the passenger-terminal point inside the game area',
+      window.eval("HS.draft.poiCount === 1 && /Aalborg Airport terminal/.test(HS.draft.targetName || '') && HS.matchingPoiInsidePlayArea(turf.point(HS.draft.target))"),
       window.eval("JSON.stringify({count:HS.draft.poiCount,target:HS.draft.targetName})"));
 check('single-candidate Measuring POI auto-selects its target',
       window.eval("Array.isArray(HS.draft.target) && HS.draft.target.length === 2"));
@@ -200,6 +202,36 @@ await new Promise(r => setTimeout(r, 20));
 check('Rail-station Measuring uses scheduled GTFS passenger stations',
       window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().key === 'railStation' && HS.draft.poiCount >= 4"),
       window.eval("JSON.stringify({count:HS.draft.poiCount,mode:HS.measuringPoiMode() && HS.measuringPoiMode().key})"));
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
+check('Rail-station Measuring auto-selects the station nearest the movable seeker point',
+      window.eval("Array.isArray(HS.draft.seeker) && Array.isArray(HS.draft.target) && /station|Aalborg/i.test(HS.draft.targetName || '')"),
+      window.eval("JSON.stringify({seeker:HS.draft.seeker,target:HS.draft.targetName})"));
+click($('#toolForm .question-back'));
+
+console.log('\n== automatic coastline / water Measuring ==');
+window.AALBORG_HYDRO_DATA = {
+  version: 1, ready: true,
+  coastlines: {
+    north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.056],[10.05,57.056]]}}]},
+    south: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.82,57.050],[10.05,57.050]]}}]}
+  },
+  waterBodies: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Test Lake'},geometry:{type:'Polygon',coordinates:[[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]]}}]}
+};
+click(doc.querySelector('[data-question-type="measuring"][data-card="Coastline"]'));
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.060, 9.922) })");
+check('Coastline Measuring uses the northern Limfjord shore in Nørresundby',
+      window.eval("HS.draft.autoFeatureSide === 'north' && /northern/.test(HS.draft.autoFeatureName || '')"),
+      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName})"));
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.044, 9.922) })");
+check('Coastline Measuring switches to the southern shore elsewhere',
+      window.eval("HS.draft.autoFeatureSide === 'south' && /southern/.test(HS.draft.autoFeatureName || '')"),
+      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName})"));
+click($('#toolForm .question-back'));
+click(doc.querySelector('[data-question-type="measuring"][data-card="Body of water"]'));
+window.eval("HS.map.fire('click', { latlng: L.latLng(57.035, 9.940) })");
+check('Body-of-water Measuring automatically selects the nearest water geometry',
+      window.eval("HS.draft.autoFeatureName === 'Test Lake' && HS.draft.borderBandGeometry"),
+      window.eval("JSON.stringify({name:HS.draft.autoFeatureName,distance:HS.draft.borderDistanceM})"));
 click($('#toolForm .question-back'));
 
 console.log('\n== radar flow ==');

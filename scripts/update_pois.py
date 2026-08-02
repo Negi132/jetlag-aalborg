@@ -79,7 +79,7 @@ AALBORG_HOSPITAL_FALLBACK = [
 
 AUTHORITATIVE_ONLY = {
     'airport': [
-        {'name': 'Aalborg Airport (AAL)', 'coordinates': [9.849243, 57.092759], 'authoritative': True},
+        {'name': 'Aalborg Airport terminal (AAL)', 'coordinates': [9.87222767, 57.08619727], 'authoritative': True},
     ],
     'zoo': [
         {'name': 'Aalborg Zoo', 'coordinates': [9.89970, 57.03804], 'authoritative': True},
@@ -394,15 +394,14 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
         if category not in {'park', 'hospital'} and category not in AUTHORITATIVE_ONLY:
             by_category[category] = dedupe_features(by_category[category])
 
-    # Most cards use candidate points inside the game area. Commercial airport
-    # is the intentional exception: Aalborg Airport sits just outside the four
-    # Zone-2 polygons but is still the relevant airport for every player inside
-    # the game. Keep it in the bundle for both Matching and Measuring.
+    # Candidate points must lie inside the game area. The airport fallback uses
+    # the passenger-terminal/address point rather than the aerodrome centroid,
+    # so it participates normally without an outside-area exception.
     for category in CATEGORY_ORDER:
         kept = []
         for ft in by_category[category]:
             try:
-                if category == 'airport' or play.covers(Point(ft['geometry']['coordinates'])):
+                if play.covers(Point(ft['geometry']['coordinates'])):
                     kept.append(ft)
             except Exception:
                 pass
@@ -472,7 +471,7 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
         f'- Generated: `{bundle["generatedAt"]}`',
         '- Source: OpenStreetMap Denmark extract from Geofabrik + the project\'s authoritative local fallbacks',
         '- License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0',
-        '- Scope: representative points inside the Hide + Seek play-area snapshot; commercial airport is retained just outside the boundary as an explicit game-rule exception', '',
+        '- Scope: representative points inside the Hide + Seek play-area snapshot; the commercial-airport point is the passenger terminal rather than the aerodrome centroid', '',
         '| Category | Count |', '|---|---:|',
     ]
     for k in CATEGORY_ORDER:
