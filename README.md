@@ -385,3 +385,20 @@ Bus line 11 is also bundled with a local fallback geometry. The earlier route-11
 depended on successfully downloading named stops, which meant it disappeared during the same
 Overpass failures it was intended to protect against. The bundled line is used only when NT and OSM
 both fail to provide a real line-11 feature.
+
+---
+
+## 2026-08 transport-source correction
+
+NT's public Vidi map is still online, but the old internal GC2 SQL/WFS table URLs used by earlier
+versions now return HTTP 404. The functional **All bus routes** layer therefore uses OpenStreetMap
+route relations as its primary browser-safe source. Lines 11, 14 and 38 have local supplement logic
+when a public map export omits them; line 11 additionally has bundled fallback geometry.
+
+The train-route layer remains based on OSM train route relations because it gives a cleaner passenger
+corridor than drawing every physical rail track. A successful train response is cached locally for
+seven days so subsequent loads on the same device are immediate.
+
+The transit-stop layer deliberately hides Limfjordsbanen's heritage-only railway halts at
+Østerådalen, Gug, Hadsundvej and Limfjorden. This affects only rail markers: identically named bus
+stops remain visible.

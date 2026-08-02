@@ -219,6 +219,21 @@ const REQUIRED_BUS_ROUTE_SUPPLEMENTS = [
     ]
   },
   {
+    // Line 14 has also historically been absent from some public map exports.
+    // Prefer OSM; if it is missing, rebuild the Aalborg portion from named stops.
+    ref: '14',
+    name: 'Skelagervej – Aalborg St. – Storvorde',
+    anchors: [
+      ['Skelagervej', 'Skelagergårdene'],
+      ['Bykrogen'], ['Sandtuevej'], ['Lindenborgvej'], ['Skalborgstien'],
+      ['Rungsvej'], ['Follingsvej'], ['Gøteborgvej'], ['Malurtvej'],
+      ['Aalborg St', 'Aalborg Station', 'Aalborg Busterminal'],
+      ['Jyllandsgade'], ['Karolinelund'], ['Eternitten'],
+      ['Sohngårdsholmsparken', 'Sohngaardsholmsparken'],
+      ['Hadsundvej'], ['Ullavej'], ['Elisevej']
+    ]
+  },
+  {
     ref: '38',
     name: 'Aalborg St. – Klitgård via Hasseris',
     anchors: [
@@ -245,8 +260,8 @@ const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
 
 const ROUTE_SOURCES = {
   bus:   { name: 'All bus routes',
-           meta: 'NT official · main and branch routes, plus missing-route fallback',
-           kind: 'nt-all', tables: NT_BUS_TABLES, fallbackFilter: '["route"="bus"]' },
+           meta: 'OpenStreetMap routes · verified local supplements for missing lines',
+           kind: 'osm-bus', filter: '["route"="bus"]' },
   train: { name: 'Train lines', meta: 'OpenStreetMap train route relations · tappable', kind: 'overpass',
            filter: '["route"~"^(train|light_rail)$"]' }
 };
@@ -4249,6 +4264,21 @@ async function fetchTransitStopsReliable(onProgress) {
   }
 }
 
+// These are real OpenStreetMap railway objects, but they are heritage/veteran
+// railway halts on Limfjordsbanen rather than ordinary public-transport train
+// stations. Keep identically named BUS stops; only rail-classified markers are
+// suppressed.
+const EXCLUDED_REGULAR_TRAIN_STOP_NAMES = new Set([
+  // Limfjordsbanen veteran/heritage stops. Aalborg Station itself is omitted
+  // from this exclusion list because it is also a normal passenger station.
+  normaliseStopName('Østerådalen'),
+  normaliseStopName('Østeraadalen'),
+  normaliseStopName('Gug'),
+  normaliseStopName('Hadsundvej'),
+  normaliseStopName('Limfjorden'),
+  normaliseStopName('Train - Limfjorden')
+]);
+
 function parseTransitStops(json) {
   const features = [];
   const seen = new Set();
@@ -4269,6 +4299,7 @@ function parseTransitStops(json) {
     // Unnamed platforms/stop positions add visual clutter and are useless for
     // Matching by station/stop identity, so do not expose them at all.
     if (!name || !String(name).trim()) continue;
+    if (isTrain && EXCLUDED_REGULAR_TRAIN_STOP_NAMES.has(normaliseStopName(name))) continue;
     const key = `${kind}:${Math.round(lon * 1e6)}:${Math.round(lat * 1e6)}:${normaliseStopName(name)}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -4457,6 +4488,52 @@ async function addMissingBusRouteSupplements(gj) {
     added.push(def.ref);
   }
   return added;
+}
+
+const ROUTE_CACHE_VERSION = '20260802b';
+const ROUTE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function readRouteCache(kind) {
+  try {
+    const raw = localStorage.getItem(`hs:${ROUTE_CACHE_VERSION}:route:${kind}`);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !obj.savedAt || Date.now() - obj.savedAt > ROUTE_CACHE_MAX_AGE_MS) return null;
+    if (!obj.geojson || obj.geojson.type !== 'FeatureCollection' || !Array.isArray(obj.geojson.features)) return null;
+    return obj.geojson;
+  } catch (_) { return null; }
+}
+
+function writeRouteCache(kind, gj) {
+  try {
+    if (gj && Array.isArray(gj.features) && gj.features.length) {
+      localStorage.setItem(`hs:${ROUTE_CACHE_VERSION}:route:${kind}`, JSON.stringify({ savedAt: Date.now(), geojson: gj }));
+    }
+  } catch (_) { /* cache is only an optimisation */ }
+}
+
+async function fetchOsmBusRoutes() {
+  let gj = readRouteCache('bus');
+  let note = gj ? 'cached OpenStreetMap' : 'OpenStreetMap';
+  let networkError = null;
+  if (!gj) {
+    try {
+      gj = await fetchOverpass('["route"="bus"]');
+      annotateRouteGeoJson(gj, 'osm');
+    } catch (err) {
+      networkError = err;
+      gj = { type: 'FeatureCollection', features: [] };
+      note = 'local supplements';
+    }
+  }
+  // Crucially, run supplements even when the network returned nothing. The old
+  // NT loader threw before reaching this point, which is why bundled line 11
+  // disappeared whenever NT returned 404 and Overpass was temporarily slow.
+  const supplements = await addMissingBusRouteSupplements(gj);
+  gj.features = dedupeRouteFeatures(gj.features || []);
+  if (!gj.features.length) throw (networkError || new Error('no bus route geometry returned'));
+  writeRouteCache('bus', gj);
+  return { gj, supplements, summary: routeSummary(gj), note };
 }
 
 async function fetchNtBusRoutes() {
@@ -4724,7 +4801,13 @@ async function toggleRoute(key, btn) {
   setStatus(`Loading ${r.name}…`);
   try {
     let gj, note = '', routeInfo = null;
-    if (r.kind === 'nt-all') {
+    if (r.kind === 'osm-bus') {
+      routeInfo = await fetchOsmBusRoutes();
+      gj = routeInfo.gj;
+      note = routeInfo.note + (routeInfo.supplements.length ? `; supplemented ${routeInfo.supplements.join(', ')}` : '');
+    } else if (r.kind === 'nt-all') {
+      // Kept for backwards compatibility with old shared state, but the shipped
+      // default no longer relies on NT's stale internal GC2 table URLs.
       routeInfo = await fetchNtBusRoutes();
       gj = routeInfo.gj;
       const missing = routeInfo.failed.length ? `; ${routeInfo.failed.join(', ')} supplemented where possible` : '';
@@ -4734,9 +4817,15 @@ async function toggleRoute(key, btn) {
       note = 'physical railway geometry from OpenStreetMap';
     } else if (r.kind === 'overpass') {
       try {
-        gj = await fetchOverpass(r.filter);
-        ({ note } = normaliseCoords(gj));
-        annotateRouteGeoJson(gj, key);
+        gj = key === 'train' ? readRouteCache('train') : null;
+        if (gj) {
+          note = 'cached OpenStreetMap train routes';
+        } else {
+          gj = await fetchOverpass(r.filter);
+          ({ note } = normaliseCoords(gj));
+          annotateRouteGeoJson(gj, key);
+          if (key === 'train') writeRouteCache('train', gj);
+        }
       } catch (routeErr) {
         if (key !== 'train') throw routeErr;
         gj = await fetchRailwayLines();
