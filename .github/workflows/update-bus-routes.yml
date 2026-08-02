@@ -1,0 +1,111 @@
+name: Update Aalborg bus routes and deploy Pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 0"
+      timezone: "Europe/Copenhagen"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: aalborg-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        if: github.event_name != 'push'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install GTFS generator dependency
+        if: github.event_name != 'push'
+        run: python -m pip install --disable-pip-version-check "shapely==2.1.2"
+
+      - name: Download current Rejseplanen GTFS
+        if: github.event_name != 'push'
+        run: |
+          curl --fail --location --retry 3 --retry-delay 5 \
+            https://www.rejseplanen.info/labs/GTFS.zip \
+            --output GTFS.zip
+          unzip -t GTFS.zip >/dev/null
+
+      - name: Regenerate Aalborg bus routes
+        if: github.event_name != 'push'
+        run: python scripts/update_bus_routes.py GTFS.zip
+
+      - name: Show route changes
+        if: github.event_name != 'push'
+        id: route_changes
+        shell: bash
+        run: |
+          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No GTFS route changes."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "GTFS route data changed:"
+            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md
+            git diff -- BUS_ROUTE_AUDIT.md || true
+          fi
+
+      - name: Commit updated route bundle
+        if: github.event_name != 'push' && steps.route_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bus-routes.js BUS_ROUTE_AUDIT.md
+          git commit -m "Update Aalborg GTFS bus routes"
+          git push
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Prepare static site artifact
+        run: |
+          rm -rf _site
+          mkdir _site
+          rsync -a ./ _site/ \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'scripts/' \
+            --exclude '_site/' \
+            --exclude 'GTFS.zip' \
+            --exclude '*.test.mjs' \
+            --exclude '*.patch' \
+            --exclude '*.zip'
+          touch _site/.nojekyll
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
