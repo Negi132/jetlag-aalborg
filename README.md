@@ -121,25 +121,12 @@ Two things worth knowing:
 
 ---
 
-### Automatic Matching places
 
-Matching cards for airports, parks, amusement parks, zoos, aquariums, golf courses, museums,
-cinemas, hospitals, libraries and consulates can load candidate places automatically. The nearest-place
-territories are calculated with geodesic perpendicular bisectors rather than a flat latitude/longitude
-Voronoi diagram, so the displayed cut now uses the same real-world distance model as the automatic
-nearest-place selection. This matters noticeably around pairs of nearby museums/cinemas in Aalborg.
+### Matching POIs: game-area filtering and park-like nature areas
 
-**Parks are deliberately strict.** OpenStreetMap's `leisure=park` tag is broader than the Jet Lag card
-is useful for, so results are cross-checked against Aalborg Kommune's published *Parker og grønne
-områder* list. Small incidental green patches and loosely tagged spaces are therefore not treated as
-parks merely because OSM calls them one.
+Nearest-place Matching now considers **only candidates whose representative point lies inside the current play area**. The OpenStreetMap query still uses a larger Aalborg bounding box for reliability, but outside candidates are removed before markers, nearest-place selection, and territory construction.
 
-**Libraries are similarly cross-checked** against Aalborg Bibliotekerne's current branch list. Network
-queries first try greater Aalborg in one request, then automatically retry as four smaller requests if
-an Overpass server returns a gateway timeout. Aalborg Airport and the two principal Aalborg-area golf
-clubs also have local fallback points so those cards remain usable during an Overpass outage. A failed
-request is shown as an error; an actually successful query with zero candidates is shown as *none found*,
-so a 504 is no longer confused with an empty category.
+The Park card uses Aalborg Kommune's official park list as its strict base. It also deliberately treats **Østerådalen Nord and Østerådalen Syd** as park-equivalent for this game: Aalborg Kommune lists them separately under *Naturområder og skove* and describes them as nearby recreational nature areas. This is a curated exception, not a return to accepting arbitrary `leisure=park`/green polygons, so gardens and back yards stay excluded.
 
 ## Zones and routes
 

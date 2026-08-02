@@ -1150,6 +1150,27 @@ check('nearest-place cell can be clipped to the play area', window.eval(`(() => 
   return !!cell && turf.area(cell) > 0 && turf.area(cell) <= turf.area(HS.S.playArea) + 1;
 })()`));
 
+check('park query also searches official recreational nature-area tags', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['park'];
+  const q = HS.matchingPoiOverpassQuery(mode);
+  return q.includes('leisure"="park') && q.includes('leisure"="nature_reserve') && q.includes('boundary"="protected_area');
+})()`));
+check('Østerådalen is accepted as a curated park-equivalent without admitting its dog park', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['park'];
+  return HS.matchingPoiNameAllowed('Østerådalen', mode) &&
+         HS.matchingPoiNameAllowed('Østerådalen Nord', mode) &&
+         HS.matchingPoiNameAllowed('Østerådalen Syd', mode) &&
+         !HS.matchingPoiNameAllowed('Østerådalen Hundeskov', mode);
+})()`));
+check('automatic Matching removes candidates outside the current game area', window.eval(`(() => {
+  const inside = turf.center(HS.S.playArea).geometry.coordinates;
+  const outside = [11.5, 58.0];
+  const gj = HS.filterMatchingPoisToPlayArea(turf.featureCollection([
+    turf.point(inside, {name:'Inside'}), turf.point(outside, {name:'Outside'})
+  ]));
+  return gj.features.length === 1 && gj.features[0].properties.name === 'Inside';
+})()`));
+
 console.log('\n== bus and train stops ==');
 check('stop query requests both bus and railway features', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();

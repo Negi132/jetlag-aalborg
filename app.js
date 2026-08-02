@@ -242,6 +242,22 @@ const OFFICIAL_AALBORG_PARKS = [
   'Vestre Fjordpark', 'Østre Anlæg'
 ];
 
+/* The Jet Lag card says "park", but Aalborg Kommune keeps some very park-like,
+   publicly accessible recreational green areas on its separate "Naturområder og
+   skove" page. Keep this list deliberately curated instead of accepting every
+   OSM grass/nature polygon: that avoids bringing gardens/back yards back while
+   still treating Østerådalen the way a local player reasonably would. */
+const AALBORG_PARK_ADJACENT_EXACT = [
+  'Østerådalen', 'Østerådalen Nord', 'Østerådalen Syd'
+];
+const AALBORG_PARK_ADJACENT_FALLBACK = [
+  // Representative points only; Matching currently models all places as points.
+  // Nord: around the Infohuset/Over Kæret part of the valley.
+  { name: 'Østerådalen Nord', coordinates: [9.91342, 57.02087] },
+  // Syd: representative midpoint between Indkildevej and Dall Møllevej.
+  { name: 'Østerådalen Syd', coordinates: [9.8890, 56.9915] }
+];
+
 const OFFICIAL_AALBORG_LIBRARIES = [
   'Hovedbiblioteket i Aalborg', 'Aalborg Hovedbibliotek', 'Haraldslund', 'Haraldslund Bibliotek',
   'Hasseris Bibliotek', 'Nørresundby Bibliotek', 'Trekanten - Bibliotek og Kulturhus', 'Trekanten',
@@ -258,8 +274,11 @@ const MATCHING_POI_DEFS = {
     fallback: [{ name: 'Aalborg Airport (AAL)', coordinates: [9.849243, 57.092759] }]
   },
   'park': {
-    key: 'park', singular: 'park', plural: 'parks', filters: ['["leisure"="park"]'],
-    officialNames: OFFICIAL_AALBORG_PARKS
+    key: 'park', singular: 'park', plural: 'parks',
+    filters: ['["leisure"="park"]', '["leisure"="nature_reserve"]', '["boundary"="protected_area"]["name"]'],
+    officialNames: OFFICIAL_AALBORG_PARKS,
+    officialExactNames: AALBORG_PARK_ADJACENT_EXACT,
+    fallback: AALBORG_PARK_ADJACENT_FALLBACK
   },
   'amusement park': {
     key: 'amusement', singular: 'amusement park', plural: 'amusement parks',
@@ -1125,13 +1144,31 @@ function matchingPoiOverpassQuery(mode) {
 }
 
 function matchingPoiNameAllowed(name, mode) {
-  if (!mode || !mode.officialNames || !mode.officialNames.length) return true;
+  if (!mode) return true;
   const n = normaliseStopName(name);
   if (!n) return false;
+
+  // Some curated park-adjacent areas need exact matching so a feature such as
+  // "Østerådalen Hundeskov" does not become a second, unintended park simply
+  // because it contains the word Østerådalen.
+  if ((mode.officialExactNames || []).some((official) => n === normaliseStopName(official))) return true;
+
+  if (!mode.officialNames || !mode.officialNames.length) return !(mode.officialExactNames || []).length;
   return mode.officialNames.some((official) => {
     const o = normaliseStopName(official);
     return n === o || n.includes(o) || o.includes(n);
   });
+}
+
+function matchingPoiInsidePlayArea(ft) {
+  if (!S.playArea || !ft || !ft.geometry || ft.geometry.type !== 'Point') return !!ft;
+  try { return pointInsideFeature(ft.geometry.coordinates, S.playArea); }
+  catch (_) { return false; }
+}
+
+function filterMatchingPoisToPlayArea(gj) {
+  const features = ((gj && gj.features) || []).filter(matchingPoiInsidePlayArea);
+  return { type: 'FeatureCollection', features };
 }
 
 function appendFallbackPois(gj, mode) {
@@ -1262,12 +1299,16 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
       gj = appendFallbackPois(gj, mode);
       matchingPoiCache.set(mode.key, gj);
     }
-    if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return gj;
+    // The card rules use places *inside the game area*. The Overpass search box
+    // is intentionally larger so edge features can be found reliably, but none
+    // of those outside points may participate in nearest-place Matching.
+    const inPlay = filterMatchingPoisToPlayArea(gj);
+    if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return inPlay;
     if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
-    questionPoi.geojson = gj;
-    questionPoi.layer = buildMatchingPoiLayer(gj, mode);
+    questionPoi.geojson = inPlay;
+    questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
     questionPoi.layer.addTo(map);
-    return gj;
+    return inPlay;
   } finally {
     if (session === questionPoi.session) {
       questionPoi.loading = false;
@@ -1289,7 +1330,7 @@ function setMatchingPoiFromCoord(coord) {
   }
   const feats = matchingPoiFeatures();
   if (!feats.length) {
-    toast(questionPoi.loading ? `${mode.plural} are still loading.` : `No ${mode.plural} were found in the Aalborg search area.`, !questionPoi.loading);
+    toast(questionPoi.loading ? `${mode.plural} are still loading.` : `No ${mode.plural} were found inside the current game area.`, !questionPoi.loading);
     return false;
   }
   const seeker = turf.point(coord);
@@ -5645,6 +5686,7 @@ window.HS = {
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
   matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode,
   matchingPoiOverpassQuery, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
+  matchingPoiNameAllowed, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
