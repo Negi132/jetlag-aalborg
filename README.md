@@ -508,3 +508,8 @@ The browser prefers these local bundles, so normal play does not wait on Overpas
 POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring automatically selects the nearest bundled water feature. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
 
 > **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.
+
+### Automated zone-cache resilience
+
+The scheduled map-data workflow treats Aalborg KortInfo as an optional refresh source rather than a dependency for the whole build. Zone requests use a padded game-area WFS BBOX and native/projected GML first, Zone 2 is refreshed before the other levels, and Zone 1/3/4 are refreshed independently. Existing valid snapshots are retained per layer when the municipality is temporarily unavailable. The GitHub Actions zone step also has a hard two-minute ceiling and is non-blocking, so bus, train, stop, POI and hydro updates still deploy even during a KortInfo outage.
+

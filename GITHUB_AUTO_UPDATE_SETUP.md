@@ -92,3 +92,17 @@ The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data
 After a successful manual/scheduled run you should also see `HYDRO_AUDIT.md` and `ZONE_AUDIT.md`. If either source looks suspiciously incomplete, the workflow exits non-zero before committing/deploying the new generated bundle.
 
 > **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.
+
+## Zone refresh resilience (v4.2)
+
+The Aalborg KortInfo service can be slow from GitHub-hosted runners. The zone snapshot step therefore:
+
+- requests only features intersecting a padded Aalborg game-area BBOX;
+- prefers native/projected GML to avoid expensive server-side conversion;
+- has short bounded network timeouts and a two-minute workflow ceiling;
+- refreshes Zone 2 first, then Zone 1/3/4 independently;
+- retains any previous valid per-layer snapshots when a refresh fails; and
+- never blocks GTFS/OSM/Pages deployment merely because KortInfo is temporarily unavailable.
+
+On the very first run, if KortInfo is completely unreachable, `zone-data.js` remains the safe placeholder and `scripts/play_area.geojson` remains the committed fallback. The browser still uses its live KortInfo/traced fallback. A later successful scheduled/manual run will populate the zone cache automatically.
+

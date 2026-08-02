@@ -16,6 +16,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shapely.geometry import shape, mapping
 from shapely.ops import unary_union
@@ -166,38 +167,76 @@ def parse_gml(raw: bytes):
     return {'type': 'FeatureCollection', 'features': features}
 
 
-def fetch_json(type_name: str):
-    params = urllib.parse.urlencode({
+def _request_feature_collection(type_name: str, params: dict, timeout: int):
+    query = {
         'service': 'WFS', 'version': '1.0.0', 'request': 'GetFeature',
-        'typeName': type_name, 'outputFormat': 'application/json', 'srsName': 'EPSG:4326',
+        'typeName': type_name, **params,
+    }
+    url = ENDPOINT + '&' + urllib.parse.urlencode(query)
+    req = urllib.request.Request(url, headers={
+        'User-Agent': 'Mozilla/5.0 (compatible; jetlag-aalborg-map-updater/1.2)',
+        'Accept': 'application/gml+xml, application/xml, text/xml, application/json, */*',
     })
-    url = ENDPOINT + '&' + params
-    last = None
-    for attempt in range(4):
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        raw = response.read()
+        content_type = response.headers.get('Content-Type', '')
+
+    try:
+        data = json.loads(raw.decode('utf-8-sig'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        data = parse_gml(raw)
+
+    if data.get('type') != 'FeatureCollection' or not isinstance(data.get('features'), list):
+        raise RuntimeError(f'KortInfo did not return a feature collection (Content-Type: {content_type})')
+    if not data['features']:
+        raise RuntimeError('KortInfo answered with zero features')
+    return data
+
+
+def _query_bounds():
+    # Use the committed play-area fallback/cache to ask KortInfo only for
+    # features that intersect the Aalborg game vicinity. WFS BBOX filtering
+    # returns the complete matching features; it does not geometrically clip
+    # them, so this cannot create fake administrative borders.
+    west, south, east, north = 9.70, 56.94, 10.25, 57.18
+    try:
+        if PLAY_OUTPUT.exists():
+            fc = json.loads(PLAY_OUTPUT.read_text(encoding='utf-8'))
+            geoms = [shape(ft['geometry']) for ft in fc.get('features', []) if ft.get('geometry')]
+            if geoms:
+                minx, miny, maxx, maxy = unary_union(geoms).bounds
+                west, south, east, north = minx - .06, miny - .05, maxx + .06, maxy + .05
+    except Exception:
+        pass
+    to_utm = Transformer.from_crs('EPSG:4326', 'EPSG:25832', always_xy=True)
+    x1, y1 = to_utm.transform(west, south)
+    x2, y2 = to_utm.transform(east, north)
+    return (west, south, east, north), (min(x1,x2), min(y1,y2), max(x1,x2), max(y1,y2))
+
+
+def fetch_json(type_name: str):
+    bbox_wgs, bbox_utm = _query_bounds()
+    # First ask for native/projected GML. KortInfo commonly serves GML/UTM32
+    # anyway, and avoiding server-side GeoJSON conversion/reprojection makes
+    # the large Zone 1/4 layers substantially cheaper. Then try the browser-
+    # style WGS84/GeoJSON request once as a compatibility fallback.
+    strategies = [
+        ({
+            'srsName': 'EPSG:25832',
+            'bbox': ','.join(f'{v:.3f}' for v in bbox_utm) + ',EPSG:25832',
+        }, 18),
+        ({
+            'outputFormat': 'application/json', 'srsName': 'EPSG:4326',
+            'bbox': ','.join(f'{v:.7f}' for v in bbox_wgs) + ',EPSG:4326',
+        }, 12),
+    ]
+    errors = []
+    for params, timeout in strategies:
         try:
-            req = urllib.request.Request(url, headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; jetlag-aalborg-map-updater/1.1)',
-                'Accept': 'application/json, application/gml+xml, application/xml, text/xml, */*',
-            })
-            with urllib.request.urlopen(req, timeout=120) as response:
-                raw = response.read()
-                content_type = response.headers.get('Content-Type', '')
-
-            try:
-                data = json.loads(raw.decode('utf-8-sig'))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                data = parse_gml(raw)
-
-            if data.get('type') != 'FeatureCollection' or not isinstance(data.get('features'), list):
-                raise RuntimeError(f'KortInfo did not return a feature collection (Content-Type: {content_type})')
-            if not data['features']:
-                raise RuntimeError('KortInfo answered with zero features')
-            return data
+            return _request_feature_collection(type_name, params, timeout)
         except Exception as exc:
-            last = exc
-            if attempt < 3:
-                time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f'Could not download {type_name}: {last}')
+            errors.append(str(exc))
+    raise RuntimeError(f'Could not download {type_name}: ' + ' | '.join(errors[-2:]))
 
 
 def first_coord(obj):
@@ -301,38 +340,66 @@ def nearby_features(features, clip_geom):
     return out
 
 
-def previous_counts():
+def previous_bundle():
     if not OUTPUT.exists():
-        return {}
+        return None
     text = OUTPUT.read_text(encoding='utf-8')
     marker = 'window.AALBORG_ZONE_DATA = '
     if marker not in text:
-        return {}
+        return None
     try:
         data = json.loads(text.split(marker, 1)[1].rstrip().rstrip(';'))
-        if not data.get('ready'):
-            return {}
-        return {k: len((v or {}).get('features', [])) for k, v in (data.get('zones') or {}).items()}
+        return data if data.get('ready') and isinstance(data.get('zones'), dict) else None
     except Exception:
-        return {}
+        return None
+
+
+def previous_counts():
+    data = previous_bundle()
+    return {k: len((v or {}).get('features', [])) for k, v in (data.get('zones') or {}).items()} if data else {}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.parse_args()
 
+    previous = previous_bundle()
+    downloaded = {}
+    errors = {}
+
+    # Zone 2 is the only essential layer because it defines the play area.
+    # Try it first; if KortInfo is unreachable, retain the last cache when one
+    # exists. On the first run, leave the shipped fallback in place and return
+    # successfully so unrelated GTFS/OSM refreshes are never blocked.
     try:
-        downloaded = {k: normalise_axis_order(fetch_json(t)) for k, t in LAYERS.items()}
+        downloaded['zone2'] = normalise_axis_order(fetch_json(LAYERS['zone2']))
     except Exception as exc:
-        # A municipal WFS can be temporarily unavailable. Once we have a valid
-        # snapshot, stale official geometry is much safer than breaking every
-        # unrelated GTFS/OSM refresh. On the first-ever snapshot, still fail so
-        # a placeholder can never masquerade as a successful zone cache.
-        old_counts = previous_counts()
-        if old_counts and PLAY_OUTPUT.exists():
-            print(f'WARNING: KortInfo refresh failed; retaining previous valid zone snapshot: {exc}')
+        errors['zone2'] = str(exc)
+        old_zone2 = previous and (previous.get('zones') or {}).get('zone2')
+        if old_zone2 and PLAY_OUTPUT.exists():
+            print(f'WARNING: KortInfo Zone 2 refresh failed; retaining previous snapshot: {exc}')
+            downloaded['zone2'] = old_zone2
+        else:
+            print(f'WARNING: KortInfo Zone 2 is unavailable; keeping the committed fallback play area and continuing: {exc}')
             return
-        raise
+
+    # The other three layers are independent and can be fetched concurrently.
+    # A failed layer can reuse its previous snapshot while successful siblings
+    # still refresh.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(fetch_json, LAYERS[key]): key for key in ('zone1','zone3','zone4')}
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                downloaded[key] = normalise_axis_order(future.result())
+            except Exception as exc:
+                errors[key] = str(exc)
+                old = previous and (previous.get('zones') or {}).get(key)
+                if old:
+                    downloaded[key] = old
+                    print(f'WARNING: {key} refresh failed; retaining previous snapshot: {exc}')
+                else:
+                    print(f'WARNING: {key} refresh failed; this layer will remain live-only for now: {exc}')
 
     cleaned = {k: valid_polygon_features(v) for k, v in downloaded.items()}
     cleaned['zone2'] = annotate_zone2(cleaned['zone2'])
@@ -358,17 +425,28 @@ def main():
         'zone2': {'type': 'FeatureCollection', 'features': cleaned['zone2']},
     }
     for key in ('zone1', 'zone3', 'zone4'):
-        zones[key] = {'type': 'FeatureCollection', 'features': nearby_features(cleaned[key], clip)}
+        if key in cleaned:
+            features = nearby_features(cleaned[key], clip)
+            if len(features) >= MIN_COUNTS[key]:
+                zones[key] = {'type': 'FeatureCollection', 'features': features}
+            else:
+                print(f'WARNING: {key} snapshot suspiciously small ({len(features)}); leaving it live-only/previous instead.')
+                old = previous and (previous.get('zones') or {}).get(key)
+                if old:
+                    zones[key] = old
 
     counts = {k: len(v['features']) for k, v in zones.items()}
-    for key, minimum in MIN_COUNTS.items():
-        if counts.get(key, 0) < minimum:
-            raise RuntimeError(f'{key} suspiciously small: {counts.get(key, 0)} features')
+    if counts.get('zone2', 0) < MIN_COUNTS['zone2']:
+        raise RuntimeError(f'zone2 suspiciously small: {counts.get("zone2", 0)} features')
 
     old = previous_counts()
     for key, old_count in old.items():
-        if old_count >= 10 and counts.get(key, 0) < max(MIN_COUNTS.get(key, 1), int(old_count * 0.45)):
-            raise RuntimeError(f'{key} collapsed from {old_count} to {counts.get(key, 0)} features; keeping prior bundle')
+        if key in counts and old_count >= 10 and counts[key] < max(MIN_COUNTS.get(key, 1), int(old_count * 0.45)):
+            prior = previous and (previous.get('zones') or {}).get(key)
+            if prior:
+                zones[key] = prior
+                counts[key] = len(prior.get('features', []))
+                print(f'WARNING: {key} collapsed from {old_count}; retaining previous snapshot.')
 
     play_fc = {'type': 'FeatureCollection', 'features': cleaned['zone2']}
     play_tmp = PLAY_OUTPUT.with_suffix('.geojson.tmp')
@@ -393,11 +471,12 @@ def main():
         f'- Generated: `{now}`',
         f'- Source: `{ENDPOINT}`',
         '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary; Zone 1/3/4 retain complete polygons that intersect the game vicinity.', '',
-        '| Layer | WFS type | Cached polygon features |',
-        '|---|---|---:|',
+        '| Layer | WFS type | Cached polygon features | Status |',
+        '|---|---|---:|---|',
     ]
     for key in ('zone1', 'zone2', 'zone3', 'zone4'):
-        lines.append(f'| {key.title()} | `{LAYERS[key]}` | {counts[key]} |')
+        status = 'fresh/retained cache' if key in zones else 'unavailable (live WFS fallback)'
+        lines.append(f'| {key.title()} | `{LAYERS[key]}` | {counts.get(key, 0)} | {status} |')
     AUDIT.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print('Zone cache:', ', '.join(f'{k}={counts[k]}' for k in counts))
 

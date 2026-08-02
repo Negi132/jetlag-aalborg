@@ -40,8 +40,15 @@ jobs:
           sudo apt-get install -y -qq osmium-tool
 
       - name: Snapshot official Aalborg game zones
+        id: zone_snapshot
         if: github.event_name != 'push'
+        continue-on-error: true
+        timeout-minutes: 2
         run: python scripts/update_zones.py
+
+      - name: Warn if the municipal zone refresh was unavailable
+        if: github.event_name != 'push' && steps.zone_snapshot.outcome == 'failure'
+        run: echo "::warning::KortInfo zone refresh failed or timed out. Continuing with the last committed zone/play-area snapshot; the browser still has its live WFS/traced fallback."
 
       - name: Download current Rejseplanen GTFS
         if: github.event_name != 'push'
