@@ -239,13 +239,17 @@ window.AALBORG_HYDRO_DATA = {
 };
 click(doc.querySelector('[data-question-type="measuring"][data-card="Coastline"]'));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.060, 9.922) })");
-check('Coastline Measuring uses the northern Limfjord shore in Nørresundby',
-      window.eval("HS.draft.autoFeatureSide === 'north' && /northern/.test(HS.draft.autoFeatureName || '')"),
-      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName})"));
+check('Coastline Measuring uses both Limfjord banks regardless of asker side',
+      window.eval("HS.draft.autoFeatureSide === 'all' && HS.draft.autoFeatureName === 'Limfjord coastline' && HS.hydroCoastFeatures('all', true).length === 2"),
+      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName,count:HS.hydroCoastFeatures('all', true).length})"));
+check('Coastline threshold is buffered around the opposite bank too', window.eval(`(() => {
+  if (!HS.draft.borderBandGeometry) return false;
+  return turf.booleanPointInPolygon(turf.point([9.922,57.050]), turf.feature(HS.draft.borderBandGeometry));
+})()`));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.044, 9.922) })");
-check('Coastline Measuring switches to the southern shore elsewhere',
-      window.eval("HS.draft.autoFeatureSide === 'south' && /southern/.test(HS.draft.autoFeatureName || '')"),
-      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,name:HS.draft.autoFeatureName})"));
+check('Repositioning Coastline Measuring still keeps both banks active',
+      window.eval("HS.draft.autoFeatureSide === 'all' && HS.hydroCoastFeatures('all', true).length === 2"),
+      window.eval("JSON.stringify({side:HS.draft.autoFeatureSide,distance:HS.draft.borderDistanceM})"));
 click($('#toolForm .question-back'));
 click(doc.querySelector('[data-question-type="measuring"][data-card="Body of water"]'));
 check('Body-of-water Measuring draws reference markers before the first tap',

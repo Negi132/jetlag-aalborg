@@ -2012,11 +2012,15 @@ function clipHydroFeatureToPlayArea(ft) {
   return null;
 }
 
-function hydroCoastFeatures(side, forDistance = false) {
+function hydroCoastFeatures(side = 'all', forDistance = false) {
   const b = bundledHydroData();
   const group = forDistance && b && b.coastlineDistance ? b.coastlineDistance : (b && b.coastlines);
-  const gj = group && group[side];
-  const features = gj && Array.isArray(gj.features) ? gj.features : [];
+  if (!group) return [];
+  const sides = !side || side === 'all' ? ['north', 'south'] : [side];
+  const features = sides.flatMap((key) => {
+    const gj = group[key];
+    return gj && Array.isArray(gj.features) ? gj.features : [];
+  });
   // Distance geometry may extend a little beyond the game boundary invisibly
   // so edge distances stay correct. Anything drawn on the map is clipped.
   return forDistance ? features : features.map(clipHydroFeatureToPlayArea).filter(Boolean);
@@ -2059,10 +2063,11 @@ function updateMeasuringHydroFromCoord(coord) {
 
   let features = [], distanceM = null, name = mode.label, side = null;
   if (mode.kind === 'coastline') {
-    const regions = landmassRegions();
-    if (!regions) return false;
-    side = pointInsideFeature(coord, regions.north) ? 'north' : 'south';
-    const distanceFeatures = hydroCoastFeatures(side, true);
+    // The question says "a coastline", not "the coastline on my side of
+    // the fjord". Your position therefore establishes its reference distance
+    // to the nearest Limfjord shore on EITHER bank, and that same threshold is
+    // applied around ALL valid shoreline segments.
+    const distanceFeatures = hydroCoastFeatures('all', true);
     features = distanceFeatures;
     let best = Infinity;
     for (const ft of features) {
@@ -2071,7 +2076,8 @@ function updateMeasuringHydroFromCoord(coord) {
     }
     if (!Number.isFinite(best)) return false;
     distanceM = best;
-    name = `${side === 'north' ? 'northern' : 'southern'} Limfjord coastline`;
+    name = 'Limfjord coastline';
+    side = 'all';
     draft.autoFeatureIndex = null;
   } else {
     const hit = nearestWaterFeature(coord);
@@ -2887,8 +2893,11 @@ function renderPreviewShapes() {
         }).addTo(previewShapeLayer);
       });
     }
-    if (hydroMode.kind === 'coastline' && draft.autoFeatureSide) {
-      const coast = hydroCoastFeatures(draft.autoFeatureSide, false);
+    if (hydroMode.kind === 'coastline') {
+      // Show both banks: either one can be the nearest coastline for any
+      // candidate hider position. The user's own nearest bank is only what sets
+      // the reference distance.
+      const coast = hydroCoastFeatures('all', false);
       if (coast.length) L.geoJSON({type:'FeatureCollection', features: coast}, {
         pane: 'previewPane', interactive: false,
         style: { color: P, weight: 3.2, opacity: .96 }
@@ -3435,10 +3444,10 @@ function measuringForm(box) {
       info.innerHTML = `Detected nearest <strong>${escapeHtml(draft.autoFeatureName)}</strong> · <strong>${escapeHtml(fmtDist(draft.borderDistanceM))}</strong> away.<br>` +
         (hydroMode.kind === 'water'
           ? `The cyan area is every playable location closer to any body of water than your current position.`
-          : `The cyan area is every playable location closer to that coastline than your current position.`);
+          : `The cyan area is every playable location closer to any Limfjord coastline than your current position.`);
     } else {
       info.textContent = bundledHydroData()
-        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'correct north/south Limfjord shore' : 'nearest body of water'} is selected automatically.`
+        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'nearest Limfjord shoreline on either bank' : 'nearest body of water'} is selected automatically.`
         : 'The local coastline/water bundle is not ready yet. Run the GitHub map-data workflow.';
     }
     box.appendChild(info);

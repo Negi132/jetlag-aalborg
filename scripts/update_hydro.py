@@ -36,6 +36,8 @@ AUDIT = ROOT / 'HYDRO_AUDIT.md'
 LAND_EDGE_TOL_DEG = 0.0010
 FORMAL_COAST_NEAR_DEG = 0.010
 MOUTH_MATCH_TOL_DEG = 0.00020
+CURATED_PROXY_NEAR_DEG = 0.012
+CURATED_SHORE_PROXY_NAMES = {'vestre havnepromenade', 'lufthavnsstien'}
 
 
 def norm(value):
@@ -150,6 +152,7 @@ def main():
 
     formal_coast = []
     shoreline_supplements = []
+    curated_shore_proxies = []
     harbour_areas = []
     raw_water = []
     quarry_fallbacks = []
@@ -190,15 +193,27 @@ def main():
         # their boundary; quays are already line-like. We prune these later so
         # the line across a marina mouth is not mistaken for shoreline.
         is_harbour_support = (
-            leisure == 'marina' or waterway == 'dock' or man_made == 'quay' or
+            leisure == 'marina' or waterway == 'dock' or
+            man_made in ('quay', 'embankment') or
+            str(props.get('barrier') or '') == 'retaining_wall' or
             water == 'harbour' or bool(harbour)
         )
         if is_harbour_support:
             ln = lineish(g)
             if ln and not ln.is_empty:
                 shoreline_supplements.extend(iter_lines(ln))
-            if g.geom_type in ('Polygon', 'MultiPolygon'):
+            if g.geom_type in ('Polygon', 'MultiPolygon') and (leisure == 'marina' or waterway == 'dock' or water == 'harbour' or bool(harbour)):
                 harbour_areas.append(g)
+
+        # Two named waterfront routes west of Limfjordsbroen are mapped more
+        # consistently than the formal coastline/quay edge in OSM. They are
+        # accepted only as local shoreline proxies and are clipped back to a
+        # narrow corridor around the formal fjord, so unrelated inland parts of
+        # the same named route can never become coastline.
+        if norm(name) in CURATED_SHORE_PROXY_NAMES:
+            ln = lineish(g)
+            if ln and not ln.is_empty:
+                curated_shore_proxies.extend(iter_lines(ln))
 
         is_water = (
             natural == 'water' or landuse in ('reservoir', 'basin') or
@@ -248,7 +263,23 @@ def main():
             if part.length > 1e-6:
                 accepted_supplements.append(part)
 
-    shore_lines = list(iter_lines(cleaned_formal)) + accepted_supplements
+    # Named promenade/path proxies get a somewhat wider search corridor because
+    # the exact problem they solve is a GAP in the formal coastline. They still
+    # have to sit beside playable land and within roughly a kilometre of known
+    # Limfjord coastline, so they cannot turn arbitrary road/path geometry into
+    # shoreline.
+    proxy_near = formal_union.buffer(CURATED_PROXY_NEAR_DEG)
+    accepted_proxies = []
+    for ln in curated_shore_proxies:
+        try:
+            clipped = ln.intersection(proxy_near).intersection(land_near)
+        except Exception:
+            continue
+        for part in iter_lines(clipped):
+            if part.length > 1e-6:
+                accepted_proxies.append(part)
+
+    shore_lines = list(iter_lines(cleaned_formal)) + accepted_supplements + accepted_proxies
     # unary_union removes duplicated coincident stretches where a quay and a
     # marina/dock boundary describe the same physical water edge.
     shore_union = unary_union(shore_lines)
@@ -348,7 +379,7 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 3, 'ready': True, 'generatedAt': now,
+        'version': 4, 'ready': True, 'generatedAt': now,
         'coastlines': {'north': fc(visible_north_parts), 'south': fc(visible_south_parts)},
         'coastlineDistance': {'north': fc(distance_north_parts), 'south': fc(distance_south_parts)},
         'waterBodies': fc(water_features),
@@ -367,7 +398,8 @@ def main():
         '# Aalborg hydro snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Formal OSM coastline pieces before harbour supplementation: **{len(formal_coast)}**',
-        f'- Accepted marina/dock/quay shoreline supplements: **{len(accepted_supplements)}**',
+        f'- Accepted marina/dock/quay/embankment shoreline supplements: **{len(accepted_supplements)}**',
+        f'- Accepted named waterfront shoreline proxies: **{len(accepted_proxies)}**',
         f'- Visible northern Limfjord coastline pieces inside play area: **{len(visible_north_parts)}**',
         f'- Visible southern Limfjord coastline pieces inside play area: **{len(visible_south_parts)}**',
         f'- Hidden northern distance-cache pieces: **{len(distance_north_parts)}**',
@@ -378,7 +410,7 @@ def main():
         '## Named body-of-water targets', '', ', '.join(named_labels) or '_None_', ''
     ]), encoding='utf-8')
     print(
-        f'Hydro cache: formal coast={len(formal_coast)}, harbour supplements={len(accepted_supplements)}, '
+        f'Hydro cache: formal coast={len(formal_coast)}, harbour supplements={len(accepted_supplements)}, named proxies={len(accepted_proxies)}, '
         f'visible north coast={len(visible_north_parts)}, visible south coast={len(visible_south_parts)}, '
         f'water bodies={len(water_features)} (unnamed={unnamed_count}, quarry fallback={quarry_count})'
     )

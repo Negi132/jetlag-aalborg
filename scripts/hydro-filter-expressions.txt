@@ -10,6 +10,13 @@ nwr/waterway=dock
 nwr/man_made=quay
 nwr/water=harbour
 nwr/harbour
+
+# Urban shore structures and named waterfront paths used only as constrained
+# shoreline supplements when formal OSM coastline geometry has a gap.
+nwr/man_made=embankment
+nwr/barrier=retaining_wall
+nwr/name=Vestre Havnepromenade
+nwr/name=Lufthavnsstien
 # Some water-filled chalk pits are mapped primarily as quarries. The generator
 # only accepts chalk/limestone-named quarry polygons as a fallback when there is
 # no better mapped water polygon inside them.

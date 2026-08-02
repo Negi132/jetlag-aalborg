@@ -498,14 +498,14 @@ The weekly GitHub Actions updater now builds all slow-changing game geometry int
 - `bus-routes.js` — NT bus route shapes from Rejseplanen GTFS.
 - `transit-data.js` — scheduled train lines plus bus/train stops from GTFS.
 - `poi-data.js` — Matching/Measuring POIs from Geofabrik OSM plus curated authoritative fallbacks.
-- `hydro-data.js` — Limfjord north/south coastline geometry and body-of-water targets for automatic Measuring.
+- `hydro-data.js` — Limfjord shoreline geometry on both banks plus body-of-water targets for automatic Measuring.
 - `zone-data.js` — snapshots of Aalborg Kommune's official KortInfo Zone 1–4 WFS layers.
 
 The browser prefers these local bundles, so normal play does not wait on Overpass or KortInfo. Live network loaders remain fallbacks where appropriate. The generated audit files (`BUS_ROUTE_AUDIT.md`, `TRANSIT_AUDIT.md`, `POI_AUDIT.md`, `HYDRO_AUDIT.md`, `ZONE_AUDIT.md`) document each refresh.
 
 ### Measuring automation
 
-POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. The hydro updater supplements formal OSM coastline ways with adjacent marina/dock/quay geometry so urban harbour basins and waterfront quays count as shoreline too. Body-of-water Measuring shows markers for every cached water target, automatically selects the nearest geometry, and preserves distinct unnamed lakes/ponds instead of merging them by generic water type. Named chalk/limestone quarries can be used as a boundary fallback when OSM has no separate water polygon. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
+POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring now treats both Limfjord banks as one category: the asker's nearest shoreline on either bank establishes the reference distance, then the same threshold is applied around every valid shoreline segment on both banks. The hydro updater supplements formal OSM coastline ways with adjacent marina/dock/quay/embankment geometry and constrained waterfront-path proxies for Vestre Havnepromenade and Lufthavnsstien, covering urban shoreline gaps west of Limfjordsbroen without turning unrelated inland paths into coast. Body-of-water Measuring shows markers for every cached water target, automatically selects the nearest geometry, and preserves distinct unnamed lakes/ponds instead of merging them by generic water type. Named chalk/limestone quarries can be used as a boundary fallback when OSM has no separate water polygon. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
 
 > **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.
 
@@ -520,8 +520,3 @@ The scheduled zone refresh now filters Zone 2 to the four recognised game areas 
 ### Hydro completeness and harbour shoreline (v4.5)
 
 The weekly hydro snapshot now treats `natural=coastline` as the backbone rather than the only possible shoreline source. Marina/dock polygons and quay lines close to Limfjorden are used to fill urban harbour gaps, but only the portions adjacent to playable land are retained so a polygon edge across a harbour entrance cannot become a fake coastline. Unnamed OSM water features keep stable per-object identities, and named chalk/limestone quarry polygons are only used when no better mapped water geometry exists inside them.
-
-### Strict play-area display clipping (v4.6)
-
-Hydro collection still uses a padded source area so distance calculations near the edge remain correct, but the generated `coastlines` and `waterBodies` shown to the player are clipped to the exact Zone-2 play area. A separate hidden `coastlineDistance` cache may extend slightly beyond the game and is used only for distance calculation. The browser repeats the clipping defensively, so an old bundle cannot draw water markers or coastline outside the current play area. Zone 1/3/4 display polygons are likewise clipped again in the browser, while their genuine unclipped/cached border geometry remains hidden for Measuring. Zone 2 is additionally filtered to the four recognised game polygons even when the live WFS returns extra features.
-

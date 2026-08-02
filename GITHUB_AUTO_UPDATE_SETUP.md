@@ -87,7 +87,7 @@ The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is
 
 ## Additional generated geometry
 
-The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. Player-visible hydro and zone polygons are clipped to the exact play area. Geometry needed for distance calculations is cached separately and never drawn, so clipping cannot manufacture fake Measuring borders.
+The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. The zone updater retains complete official polygons near the game area rather than clipping polygon edges, because artificial clip edges must never become fake Measuring borders.
 
 After a successful manual/scheduled run you should also see `HYDRO_AUDIT.md` and `ZONE_AUDIT.md`. If either source looks suspiciously incomplete, the workflow exits non-zero before committing/deploying the new generated bundle.
 
