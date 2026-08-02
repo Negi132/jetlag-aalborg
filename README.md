@@ -8,6 +8,13 @@ Everything runs in the browser. No build step, no server, no API keys.
 
 ---
 
+### Temporary zone layers and movable question previews
+
+Zone layers that are opened automatically by a Matching or Measuring card are temporary: closing, cancelling, switching, or logging that question hides the layer again unless you had already enabled it yourself in **Layers**. This keeps the map clear between questions.
+
+Radar centres, both Thermometer endpoints, and the point used by zone-border Measuring are movable while the question remains open. Radar and border-distance points can still be repositioned by tapping the map; all three workflows also expose draggable handles, so a mistaken placement never requires closing and reopening the card.
+
+
 ## Put it on GitHub Pages
 
 1. Create a repo and drop `index.html`, `styles.css`, `app.js` and `data.js` into the root.

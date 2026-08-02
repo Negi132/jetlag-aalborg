@@ -1162,31 +1162,74 @@ function setMatchingAreaFromCoord(coord) {
   return true;
 }
 
-async function ensureZoneSourceVisible(sourceKey) {
+/* Zone layers opened by a question are temporary UI context, not a player
+   layer choice. Track only layers that the question itself made visible. If a
+   layer was already on, leave it alone when the question closes. */
+const questionAutoZoneSources = new Set();
+let questionZoneSession = 0;
+
+function releaseQuestionZoneLayers() {
+  questionZoneSession += 1; // invalidates any slow in-flight question load
+  for (const sourceKey of Array.from(questionAutoZoneSources)) {
+    const rec = layerByKey('src:' + sourceKey);
+    if (rec && rec.visible) setLayerVisible(rec, false);
+  }
+  questionAutoZoneSources.clear();
+}
+
+function claimZoneLayerManually(sourceKey) {
+  // A tap in Layers means the player now owns this visibility choice. Do not
+  // automatically hide it when the question that originally opened it ends.
+  questionAutoZoneSources.delete(sourceKey);
+}
+
+async function ensureZoneSourceVisible(sourceKey, session = questionZoneSession) {
   let rec = layerByKey('src:' + sourceKey);
   if (rec) {
-    if (!rec.visible) setLayerVisible(rec, true);
+    if (!rec.visible) {
+      if (session !== questionZoneSession) return rec;
+      questionAutoZoneSources.add(sourceKey);
+      setLayerVisible(rec, true);
+    }
     return rec;
   }
 
   // Zone 2 may already be fetching in the background for the play-area union,
   // or the player may have started the same layer from Layers. Wait for that
   // request instead of accidentally treating "already loading" as failure.
+  let startedByQuestion = false;
   for (let i = 0; i < 300 && zoneLoads.has(sourceKey) && !rec; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     rec = layerByKey('src:' + sourceKey);
   }
-  if (!rec) {
+  if (!rec && session === questionZoneSession) {
+    startedByQuestion = true;
     await toggleSource(sourceKey, null);
     rec = layerByKey('src:' + sourceKey);
   }
-  if (rec && !rec.visible) setLayerVisible(rec, true);
-  return rec || null;
+
+  if (!rec) return null;
+
+  // If the player closed/switched the question while this request was in
+  // flight, do not let the completed request leave a surprise layer behind.
+  if (session !== questionZoneSession) {
+    if (startedByQuestion && rec.visible && !questionAutoZoneSources.has(sourceKey)) {
+      setLayerVisible(rec, false);
+    }
+    return rec;
+  }
+
+  if (startedByQuestion) questionAutoZoneSources.add(sourceKey);
+  if (!rec.visible) {
+    questionAutoZoneSources.add(sourceKey);
+    setLayerVisible(rec, true);
+  }
+  return rec;
 }
 
-async function ensureMatchingAreaSource(mode = matchingAreaMode()) {
+async function ensureMatchingAreaSource(mode = matchingAreaMode(), session = questionZoneSession) {
   if (!mode || mode.kind !== 'zone') return null;
-  return ensureZoneSourceVisible(mode.sourceKey);
+  return ensureZoneSourceVisible(mode.sourceKey, session);
 }
 
 function parsePositiveDecimal(value) {
@@ -1262,6 +1305,8 @@ function renderQuestionDeck() {
 }
 
 function chooseQuestion(type, card) {
+  releaseQuestionZoneLayers();
+  const zoneSession = questionZoneSession;
   deactivateQuestionPreview();
   activeTool = type.tool;
   selectedQuestion = { typeKey: type.key, title: type.title, meta: type.meta, ...card };
@@ -1288,7 +1333,7 @@ function chooseQuestion(type, card) {
   const areaMode = matchingAreaMode();
   if (areaMode && areaMode.kind === 'zone') {
     draft.matchLoading = true;
-    ensureMatchingAreaSource(areaMode).then(() => {
+    ensureMatchingAreaSource(areaMode, zoneSession).then(() => {
       if (matchingAreaMode() && matchingAreaMode().sourceKey === areaMode.sourceKey) {
         draft.matchLoading = false;
         renderToolForm();
@@ -1303,7 +1348,7 @@ function chooseQuestion(type, card) {
   const borderMode = measuringBorderMode();
   if (borderMode) {
     draft.borderLoading = true;
-    ensureZoneSourceVisible(borderMode.sourceKey).then(() => {
+    ensureZoneSourceVisible(borderMode.sourceKey, zoneSession).then(() => {
       const current = measuringBorderMode();
       if (current && current.sourceKey === borderMode.sourceKey) {
         draft.borderLoading = false;
@@ -1328,6 +1373,7 @@ function chooseQuestion(type, card) {
 }
 
 function closeQuestionForm() {
+  releaseQuestionZoneLayers();
   deactivateQuestionPreview();
   activeTool = null;
   selectedQuestion = null;
@@ -1339,6 +1385,7 @@ function closeQuestionForm() {
 /* Kept for internal tools and geometry tests; the small-game UI enters through chooseQuestion. */
 function selectTool(key) {
   if (activeTool === key) { closeQuestionForm(); return; }
+  releaseQuestionZoneLayers();
   deactivateQuestionPreview();
   activeTool = key;
   selectedQuestion = null;
@@ -1562,13 +1609,13 @@ function thermometerPreviewRadius() {
 function previewInstruction() {
   if (!questionPreview.active) return '';
   if (activeTool === 'radar') {
-    if (!draft.center) return 'Tap the map to place the radar. Tap again to move it.';
-    if (!draft.answer) return 'The radius is live. Choose Yes or No to preview the resulting cut.';
+    if (!draft.center) return 'Tap the map to place the radar. Tap again, or drag its handle, to move it.';
+    if (!draft.answer) return 'The radius is live. Tap elsewhere or drag the centre to reposition it; choose Yes or No to preview the resulting cut.';
   }
   if (activeTool === 'thermometer') {
     if (!draft.a) return 'Tap the map to set the starting point.';
     if (!draft.b) return 'Drag the circular handle to choose a possible end point.';
-    if (!draft.answer) return 'The cyan line is the split. Choose Hotter or Colder to preview which side remains.';
+    if (!draft.answer) return 'Drag either thermometer handle to reposition it. The cyan line is the split; choose Hotter or Colder to preview which side remains.';
     return '';
   }
   if (activeTool === 'nearest' && matchingAreaMode()) {
@@ -1583,7 +1630,7 @@ function previewInstruction() {
     const mode = measuringBorderMode();
     if (draft.borderLoading) return `Loading ${mode.label} boundaries…`;
     if (!draft.seeker || !draft.borderBandGeometry) return `Tap your position. The map will show the distance band around every ${mode.label}.`;
-    if (!draft.answer) return `Cyan shows everywhere closer to a ${mode.label} than you are (${fmtDist(draft.borderDistanceM)}). Choose Closer or Further to preview the cut.`;
+    if (!draft.answer) return `Drag the point or tap elsewhere to reposition it. Cyan shows everywhere closer to a ${mode.label} than you are (${fmtDist(draft.borderDistanceM)}). Choose Closer or Further to preview the cut.`;
   }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
@@ -1705,9 +1752,48 @@ function renderPreviewShapes() {
   updatePreviewImpactText();
 }
 
+function previewDragHandle(coord, title, handlers = {}) {
+  if (!coord) return null;
+  const marker = L.marker([coord[1], coord[0]], {
+    pane: 'previewHandlePane', draggable: true, keyboard: true, title,
+    icon: L.divIcon({ className: 'question-preview-handle-icon',
+      html: '<span class="question-preview-handle" aria-hidden="true"></span>',
+      iconSize: [28, 28], iconAnchor: [14, 14] })
+  }).addTo(previewHandleLayer);
+  for (const [event, handler] of Object.entries(handlers)) marker.on(event, handler);
+  return marker;
+}
+
 function renderPreviewHandles() {
   previewHandleLayer.clearLayers();
-  if (!questionPreview.active || questionPreview.type !== activeTool || activeTool !== 'thermometer') return;
+  if (!questionPreview.active || questionPreview.type !== activeTool) return;
+
+  if (activeTool === 'radar' && draft.center && draft.radiusM) {
+    previewDragHandle(draft.center, 'Drag to move the radar', {
+      drag: (e) => {
+        const ll = e.target.getLatLng();
+        draft.center = [ll.lng, ll.lat];
+        renderPreviewShapes();
+      },
+      dragend: () => renderToolForm()
+    });
+    return;
+  }
+
+  if (activeTool === 'measuring' && measuringBorderMode() && draft.seeker) {
+    previewDragHandle(draft.seeker, 'Drag to move the border-distance point', {
+      dragend: (e) => {
+        const ll = e.target.getLatLng();
+        if (!updateMeasuringBorderFromCoord([ll.lng, ll.lat])) {
+          toast('Could not measure the border distance at that position.', true);
+        }
+        renderToolForm();
+      }
+    });
+    return;
+  }
+
+  if (activeTool !== 'thermometer') return;
   const radiusM = thermometerPreviewRadius();
   if (!draft.a || !(radiusM > 0)) return;
   if (!draft.b) draft.b = turf.destination(turf.point(draft.a), radiusM / 1000, 90,
@@ -1715,20 +1801,30 @@ function renderPreviewHandles() {
   draft.b = constrainToRadius(draft.a, draft.b, radiusM);
   renderPreviewShapes();
 
-  const handle = L.marker([draft.b[1], draft.b[0]], {
-    pane: 'previewHandlePane', draggable: true, keyboard: true,
-    title: 'Drag to preview a possible end point',
-    icon: L.divIcon({ className: 'question-preview-handle-icon',
-      html: '<span class="question-preview-handle" aria-hidden="true"></span>',
-      iconSize: [28, 28], iconAnchor: [14, 14] })
-  }).addTo(previewHandleLayer);
-  handle.on('drag', (e) => {
-    const ll = e.target.getLatLng();
-    draft.b = constrainToRadius(draft.a, [ll.lng, ll.lat], radiusM);
-    e.target.setLatLng([draft.b[1], draft.b[0]]);
-    renderPreviewShapes();
+  let endHandle = null;
+  previewDragHandle(draft.a, 'Drag to move the thermometer start point', {
+    drag: (e) => {
+      let bearing = 90;
+      try { bearing = turf.bearing(turf.point(draft.a), turf.point(draft.b)); } catch (_) {}
+      const ll = e.target.getLatLng();
+      draft.a = [ll.lng, ll.lat];
+      draft.b = turf.destination(turf.point(draft.a), radiusM / 1000, bearing,
+        { units: 'kilometers' }).geometry.coordinates;
+      if (endHandle) endHandle.setLatLng([draft.b[1], draft.b[0]]);
+      renderPreviewShapes();
+    },
+    dragend: () => renderToolForm()
   });
-  handle.on('dragend', () => renderToolForm());
+
+  endHandle = previewDragHandle(draft.b, 'Drag to move the thermometer end point', {
+    drag: (e) => {
+      const ll = e.target.getLatLng();
+      draft.b = constrainToRadius(draft.a, [ll.lng, ll.lat], radiusM);
+      e.target.setLatLng([draft.b[1], draft.b[0]]);
+      renderPreviewShapes();
+    },
+    dragend: () => renderToolForm()
+  });
 }
 
 function syncQuestionPreview() {
@@ -1786,6 +1882,7 @@ function addPreviewControls(box) {
 }
 
 function commit(c) {
+  releaseQuestionZoneLayers();
   deactivateQuestionPreview();
   c.id = uid();
   c.active = true;
@@ -4529,7 +4626,8 @@ function renderSourceRows() {
       : rec ? `${rec.geojson.features.length} zones${state === 'on' ? '' : ' · hidden'}`
       : (src.url ? (src.typeName || src.url) : 'not configured — tap ⚙');
     const row = sourceRow(src.name, meta, state,
-      (btn) => toggleSource(key, btn), () => openSourceEditor(key));
+      (btn) => { claimZoneLayerManually(key); return toggleSource(key, btn); },
+      () => openSourceEditor(key));
     zbox.appendChild(row);
   });
 
@@ -5097,9 +5195,10 @@ window.HS = {
   inferNameField, rankedNameFields, prepareSourceLabels,
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
-  previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, solveCurrentArea,
+  previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
   matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
-  ensureZoneSourceVisible, zoneLoads,
+  ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
+  questionAutoZoneSources, zoneLoads,
   fmtDist, fmtArea, wfsUrl, gc2Url
 };
