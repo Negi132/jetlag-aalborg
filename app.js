@@ -160,6 +160,7 @@ const GC2 = 'https://nt.vidi.gc2.io';
    for trains. The bus layer below prefers NT's own separated route families. */
 const OVERPASS = [
   'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter'
 ];
 const OVERPASS_BBOX = [56.94, 9.70, 57.18, 10.25];   // S, W, N, E — greater Aalborg
@@ -232,13 +233,33 @@ const TRANSIT_STOP_SOURCE = {
    place (node coordinate or Overpass' centre for an area/relation). This keeps
    the existing nearest-point/Voronoi rules deterministic while still letting
    parks, zoos, airports, golf courses, etc. be mapped as areas in OSM. */
+const OFFICIAL_AALBORG_PARKS = [
+  'Budolfihaven', 'Bundgårdsparken', 'Den Gamle Golfbane', 'Jomfru Ane Parken',
+  'Karolinelund', 'Kildeparken', 'Lindholm Fjordpark', 'Lindholm Strandpark',
+  'Mulighedernes Park', 'Mølleparken', 'Nordens Kridtgrav', 'Skanseparken',
+  'Sofiendal Enge klimapark', 'Sohngårdsholmparken', 'Stigsparken',
+  'Svanemølleparken i Svenstrup', 'Urtehaven i Nørresundby',
+  'Vestre Fjordpark', 'Østre Anlæg'
+];
+
+const OFFICIAL_AALBORG_LIBRARIES = [
+  'Hovedbiblioteket i Aalborg', 'Aalborg Hovedbibliotek', 'Haraldslund', 'Haraldslund Bibliotek',
+  'Hasseris Bibliotek', 'Nørresundby Bibliotek', 'Trekanten - Bibliotek og Kulturhus', 'Trekanten',
+  'Vejgaard Bibliotek', 'Svenstrup Bibliotek', 'Vodskov Bibliotek',
+  'Storvorde Bibliotek', 'Nibe Bibliotek', 'Hals Bibliotek'
+];
+
 const MATCHING_POI_DEFS = {
   'commercial airport': {
     key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
-    filters: ['["aeroway"="aerodrome"]["iata"]']
+    filters: ['["aeroway"="aerodrome"]["iata"]'],
+    // Aalborg Airport (AAL). Kept as a fallback because Overpass occasionally
+    // times out even for this tiny category.
+    fallback: [{ name: 'Aalborg Airport (AAL)', coordinates: [9.849243, 57.092759] }]
   },
   'park': {
-    key: 'park', singular: 'park', plural: 'parks', filters: ['["leisure"="park"]']
+    key: 'park', singular: 'park', plural: 'parks', filters: ['["leisure"="park"]'],
+    officialNames: OFFICIAL_AALBORG_PARKS
   },
   'amusement park': {
     key: 'amusement', singular: 'amusement park', plural: 'amusement parks',
@@ -251,7 +272,11 @@ const MATCHING_POI_DEFS = {
     key: 'aquarium', singular: 'aquarium', plural: 'aquariums', filters: ['["tourism"="aquarium"]']
   },
   'golf course': {
-    key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]']
+    key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]'],
+    fallback: [
+      { name: 'Aalborg Golf Klub', coordinates: [9.782950, 57.026760] },
+      { name: 'Ørnehøj Golfklub', coordinates: [9.968050, 56.987570] }
+    ]
   },
   'museum': {
     key: 'museum', singular: 'museum', plural: 'museums', filters: ['["tourism"="museum"]']
@@ -264,7 +289,8 @@ const MATCHING_POI_DEFS = {
     filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]']
   },
   'library': {
-    key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]']
+    key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]'],
+    officialNames: OFFICIAL_AALBORG_LIBRARIES
   },
   'foreign consulate': {
     key: 'consulate', singular: 'foreign consulate', plural: 'foreign consulates',
@@ -447,15 +473,31 @@ function thermometerBisectorLine(a, b) {
 }
 
 function voronoiCell(points, i) {
-  if (!points || points.length === 0) return null;
+  if (!points || points.length === 0 || i == null || !points[i] || !S.playArea) return null;
   if (points.length === 1) return turf.clone(S.playArea);
-  const pad = turf.buffer(S.playArea, Math.max(5, playSpanKm() * 0.5), { units: 'kilometers' });
-  const bbox = turf.bbox(pad || S.playArea);
-  const fcPts = turf.featureCollection(points.map((p) => turf.point(p)));
-  let cells;
-  try { cells = turf.voronoi(fcPts, { bbox }); } catch (_) { return null; }
-  const cell = cells && cells.features && cells.features[i];
-  return cell && cell.geometry ? cell : null;
+
+  // IMPORTANT: do not use turf.voronoi here. d3-voronoi treats raw lng/lat
+  // degrees as Cartesian coordinates, while nearest-place selection uses
+  // geodesic distance. At Aalborg's latitude that makes east/west distances
+  // substantially distorted and can put the displayed boundary on the wrong
+  // side of two close candidates. Build the selected cell from spherical
+  // perpendicular bisectors instead so selection and shading use the same
+  // distance model.
+  let cell = turf.clone(S.playArea);
+  const chosen = points[i];
+  for (let j = 0; j < points.length; j++) {
+    if (j === i || !points[j]) continue;
+    let separation = 0;
+    try { separation = turf.distance(turf.point(chosen), turf.point(points[j]), { units: 'meters' }); }
+    catch (_) { continue; }
+    // Duplicate/near-duplicate OSM representations should not create a
+    // numerically tiny wedge.
+    if (separation < 2) continue;
+    const nearerChosen = halfPlane(points[j], chosen, true);
+    cell = gIntersect(cell, nearerChosen);
+    if (!cell) return null;
+  }
+  return cell;
 }
 
 /* ---------- constraint → polygon of possible hider locations ------- */
@@ -1082,6 +1124,74 @@ function matchingPoiOverpassQuery(mode) {
   return `[out:json][timeout:75];(${body});out center tags;`;
 }
 
+function matchingPoiNameAllowed(name, mode) {
+  if (!mode || !mode.officialNames || !mode.officialNames.length) return true;
+  const n = normaliseStopName(name);
+  if (!n) return false;
+  return mode.officialNames.some((official) => {
+    const o = normaliseStopName(official);
+    return n === o || n.includes(o) || o.includes(n);
+  });
+}
+
+function appendFallbackPois(gj, mode) {
+  const out = gj && Array.isArray(gj.features) ? gj.features.slice() : [];
+  for (const f of (mode && mode.fallback) || []) {
+    const coord = f.coordinates;
+    if (!coord || coord.length < 2) continue;
+    const norm = normaliseStopName(f.name);
+    let duplicate = false;
+    for (const ft of out) {
+      const p = ft.properties || {};
+      let d = Infinity;
+      try { d = turf.distance(ft, turf.point(coord), { units: 'meters' }); } catch (_) {}
+      if (d < 300 || (norm && p.__norm === norm)) { duplicate = true; break; }
+    }
+    if (!duplicate) out.push(turf.point(coord.slice(), {
+      name: f.name, __displayName: f.name, __poiKind: mode.key, __norm: norm,
+      fallback: true
+    }));
+  }
+  return { type: 'FeatureCollection', features: out };
+}
+
+function mergeMatchingPoiCollections(collections, mode) {
+  const elements = [];
+  for (const json of collections || []) {
+    if (json && Array.isArray(json.elements)) elements.push(...json.elements);
+  }
+  return parseMatchingPois({ elements }, mode);
+}
+
+async function fetchMatchingPoiJson(mode) {
+  // Try the normal whole-area request first. A gateway timeout is not the
+  // same thing as "zero places", so on failure split greater Aalborg into
+  // four smaller requests. This materially reduces Overpass work for the
+  // categories that were intermittently returning HTTP 504 on phones.
+  try {
+    return [await overpassJson(matchingPoiOverpassQuery(mode))];
+  } catch (wholeErr) {
+    const [south, west, north, east] = OVERPASS_BBOX;
+    const midLat = (south + north) / 2;
+    const midLng = (west + east) / 2;
+    const boxes = [
+      [south, west, midLat, midLng], [south, midLng, midLat, east],
+      [midLat, west, north, midLng], [midLat, midLng, north, east]
+    ];
+    const results = [];
+    const failures = [];
+    for (const box of boxes) {
+      const body = (mode.filters || []).map((filter) =>
+        `nwr(${box[0]},${box[1]},${box[2]},${box[3]})${filter};`).join('');
+      const q = `[out:json][timeout:35];(${body});out center tags;`;
+      try { results.push(await overpassJson(q)); }
+      catch (e) { failures.push(e && e.message ? e.message : String(e)); }
+    }
+    if (!results.length) throw wholeErr;
+    return results;
+  }
+}
+
 function parseMatchingPois(json, mode) {
   const features = [];
   for (const el of (json && json.elements) || []) {
@@ -1091,6 +1201,7 @@ function parseMatchingPois(json, mode) {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     const name = tags.name || tags['name:da'] || tags.official_name || tags.brand ||
       `Unnamed ${mode.singular}`;
+    if (!matchingPoiNameAllowed(name, mode)) continue;
     const norm = normaliseStopName(name);
     let duplicate = false;
     for (const ft of features) {
@@ -1100,8 +1211,8 @@ function parseMatchingPois(json, mode) {
       // One OSM place is often mapped both as an area and as a labelled node.
       // Collapse exact co-locations even when their names differ, and collapse
       // same-named representations across the footprint of a larger facility.
-      if (distanceM < 5 || (norm && p.__norm === norm && distanceM < 250)) {
-        if (distanceM < 5 && p.name && p.name !== name && !String(p.name).includes(name)) {
+      if (distanceM < 12 || (norm && p.__norm === norm && distanceM < 300)) {
+        if (distanceM < 12 && p.name && p.name !== name && !String(p.name).includes(name)) {
           p.name = `${p.name} / ${name}`;
           p.__displayName = p.name;
         }
@@ -1139,7 +1250,16 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
   try {
     let gj = matchingPoiCache.get(mode.key) || null;
     if (!gj) {
-      gj = parseMatchingPois(await overpassJson(matchingPoiOverpassQuery(mode)), mode);
+      try {
+        gj = mergeMatchingPoiCollections(await fetchMatchingPoiJson(mode), mode);
+      } catch (err) {
+        // Categories with authoritative/local fallbacks remain usable even if
+        // every Overpass mirror is having a bad day. Other categories still
+        // report the network failure rather than pretending there are none.
+        if (!(mode.fallback && mode.fallback.length)) throw err;
+        gj = { type: 'FeatureCollection', features: [] };
+      }
+      gj = appendFallbackPois(gj, mode);
       matchingPoiCache.set(mode.key, gj);
     }
     if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return gj;
@@ -2469,7 +2589,7 @@ function nearestForm(box) {
 
     const key = document.createElement('div');
     key.className = 'poi-key';
-    key.innerHTML = `<span><i></i>${escapeHtml(poiMode.plural)} from OpenStreetMap</span>`;
+    key.innerHTML = `<span><i></i>${escapeHtml(poiMode.plural)}${poiMode.officialNames ? ' · official Aalborg list cross-check' : ' from OpenStreetMap'}</span>`;
     box.appendChild(key);
 
     const hint = document.createElement('p');
