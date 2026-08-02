@@ -1125,6 +1125,31 @@ check('Thermometer preview exposes a bisector without requiring an answer', wind
     HS.questionPreview.metrics === null;
 })()`));
 
+console.log('\n== automatic matching places ==');
+check('POI matching query uses the supplied OSM tag filter', window.eval(`(() => {
+  const q = HS.matchingPoiOverpassQuery({ filters:['["tourism"="museum"]'] });
+  return q.includes('nwr(56.94,9.7,57.18,10.25)') && q.includes('tourism"="museum') && q.includes('out center tags');
+})()`));
+check('POI parser accepts nodes and area centres and removes duplicate representations', window.eval(`(() => {
+  const mode = { key:'museum', singular:'museum' };
+  const gj = HS.parseMatchingPois({elements:[
+    {type:'node',id:1,lat:57.04,lon:9.91,tags:{tourism:'museum',name:'Test Museum'}},
+    {type:'way',id:2,center:{lat:57.04001,lon:9.91001},tags:{tourism:'museum',name:'Test Museum'}},
+    {type:'relation',id:3,center:{lat:57.06,lon:9.95},tags:{tourism:'museum',name:'Other Museum'}}
+  ]}, mode);
+  return gj.features.length === 2 && gj.features.every((f) => f.geometry.type === 'Point') &&
+         gj.features.some((f) => f.properties.name === 'Test Museum') &&
+         gj.features.some((f) => f.properties.name === 'Other Museum');
+})()`));
+check('nearest-place cell can be clipped to the play area', window.eval(`(() => {
+  const oldPoints = HS.draft.points, oldIndex = HS.draft.index;
+  HS.draft.points = [[9.88,57.04],[9.96,57.04],[9.92,57.09]];
+  HS.draft.index = 1;
+  const cell = HS.matchingPoiCell();
+  HS.draft.points = oldPoints; HS.draft.index = oldIndex;
+  return !!cell && turf.area(cell) > 0 && turf.area(cell) <= turf.area(HS.S.playArea) + 1;
+})()`));
+
 console.log('\n== bus and train stops ==');
 check('stop query requests both bus and railway features', window.eval(`(() => {
   const q = HS.overpassTransitStopsQuery();

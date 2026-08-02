@@ -226,6 +226,52 @@ const TRANSIT_STOP_SOURCE = {
   meta: 'OpenStreetMap · bus stops, rail stations and halts'
 };
 
+
+/* Matching cards that can be populated automatically from OpenStreetMap.
+   The geometry used for the game is a representative point for each mapped
+   place (node coordinate or Overpass' centre for an area/relation). This keeps
+   the existing nearest-point/Voronoi rules deterministic while still letting
+   parks, zoos, airports, golf courses, etc. be mapped as areas in OSM. */
+const MATCHING_POI_DEFS = {
+  'commercial airport': {
+    key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
+    filters: ['["aeroway"="aerodrome"]["iata"]']
+  },
+  'park': {
+    key: 'park', singular: 'park', plural: 'parks', filters: ['["leisure"="park"]']
+  },
+  'amusement park': {
+    key: 'amusement', singular: 'amusement park', plural: 'amusement parks',
+    filters: ['["tourism"="theme_park"]']
+  },
+  'zoo': {
+    key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]']
+  },
+  'aquarium': {
+    key: 'aquarium', singular: 'aquarium', plural: 'aquariums', filters: ['["tourism"="aquarium"]']
+  },
+  'golf course': {
+    key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]']
+  },
+  'museum': {
+    key: 'museum', singular: 'museum', plural: 'museums', filters: ['["tourism"="museum"]']
+  },
+  'movie theater': {
+    key: 'cinema', singular: 'movie theater', plural: 'movie theaters', filters: ['["amenity"="cinema"]']
+  },
+  'hospital': {
+    key: 'hospital', singular: 'hospital', plural: 'hospitals',
+    filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]']
+  },
+  'library': {
+    key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]']
+  },
+  'foreign consulate': {
+    key: 'consulate', singular: 'foreign consulate', plural: 'foreign consulates',
+    filters: ['["office"="diplomatic"]["diplomatic"="consulate"]', '["amenity"="consulate"]']
+  }
+};
+
 /* ---------- state -------------------------------------------------- */
 
 const S = {
@@ -255,6 +301,7 @@ const S = {
    Keep loading state separate from the saved game: it is UI-only and lets
    both the Layers tab and map show that something is actually happening. */
 const zoneLoads = new Set();
+let questionMapLoadLabel = null;
 
 /* ---------- helpers ------------------------------------------------ */
 
@@ -271,8 +318,15 @@ function updateZoneLoadProgress() {
   const text = $('#zoneLoadProgressText');
   if (!box || !text) return;
   const keys = Array.from(zoneLoads);
-  box.hidden = !keys.length;
-  if (keys.length) text.textContent = `Loading ${keys.map(zoneLevelName).join(', ')} boundaries…`;
+  const parts = [];
+  if (keys.length) parts.push(`${keys.map(zoneLevelName).join(', ')} boundaries`);
+  if (questionMapLoadLabel) parts.push(questionMapLoadLabel);
+  box.hidden = !parts.length;
+  if (parts.length) text.textContent = `Loading ${parts.join(' + ')}…`;
+}
+function setQuestionMapLoading(label) {
+  questionMapLoadLabel = label || null;
+  updateZoneLoadProgress();
 }
 function setZoneLoading(key, on) {
   if (on) zoneLoads.add(key); else zoneLoads.delete(key);
@@ -518,6 +572,7 @@ map.createPane('routePane');     map.getPane('routePane').style.zIndex = 420;
 map.createPane('fogPane');       map.getPane('fogPane').style.zIndex = 430;
 map.createPane('previewPane');   map.getPane('previewPane').style.zIndex = 442;
 map.createPane('stopPane');      map.getPane('stopPane').style.zIndex = 446;
+map.createPane('poiPane');       map.getPane('poiPane').style.zIndex = 447;
 map.createPane('evidPane');      map.getPane('evidPane').style.zIndex = 450;
 map.createPane('previewHandlePane'); map.getPane('previewHandlePane').style.zIndex = 458;
 map.createPane('routeLabelPane');map.getPane('routeLabelPane').style.zIndex = 465;
@@ -783,6 +838,10 @@ map.on('click', (e) => {
         if (setMatchingAreaFromCoord(coord)) renderToolForm();
         return;
       }
+      if (matchingPoiMode()) {
+        if (setMatchingPoiFromCoord(coord)) renderToolForm();
+        return;
+      }
       draft.points = draft.points || [];
       const duplicate = draft.points.some((p) =>
         turf.distance(turf.point(p), turf.point(coord), { units: 'meters' }) < 3);
@@ -992,6 +1051,149 @@ function cardQuestionSentence(type, phrase) {
   if (type === 'radar') return `Are you within ${phrase} of me?`;
   if (type === 'photos') return `Send a photo of ${phrase}.`;
   return '';
+}
+
+function normaliseMatchingPoiLabel(value) {
+  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function matchingPoiMode() {
+  if (!selectedQuestion || selectedQuestion.typeKey !== 'matching' || draft.poiManual) return null;
+  return MATCHING_POI_DEFS[normaliseMatchingPoiLabel(selectedQuestion.label)] || null;
+}
+
+const matchingPoiCache = new Map();
+const questionPoi = { session: 0, modeKey: null, loading: false, geojson: null, layer: null };
+
+function releaseQuestionPoiLayer() {
+  questionPoi.session += 1;
+  if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
+  questionPoi.modeKey = null;
+  questionPoi.loading = false;
+  questionPoi.geojson = null;
+  questionPoi.layer = null;
+  setQuestionMapLoading(null);
+}
+
+function matchingPoiOverpassQuery(mode) {
+  const [south, west, north, east] = OVERPASS_BBOX;
+  const body = (mode.filters || []).map((filter) =>
+    `nwr(${south},${west},${north},${east})${filter};`).join('');
+  return `[out:json][timeout:75];(${body});out center tags;`;
+}
+
+function parseMatchingPois(json, mode) {
+  const features = [];
+  for (const el of (json && json.elements) || []) {
+    const tags = el.tags || {};
+    const lat = el.lat ?? (el.center && el.center.lat);
+    const lon = el.lon ?? (el.center && el.center.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const name = tags.name || tags['name:da'] || tags.official_name || tags.brand ||
+      `Unnamed ${mode.singular}`;
+    const norm = normaliseStopName(name);
+    let duplicate = false;
+    for (const ft of features) {
+      const p = ft.properties || {};
+      let distanceM = Infinity;
+      try { distanceM = turf.distance(ft, turf.point([lon, lat]), { units: 'meters' }); } catch (_) {}
+      // One OSM place is often mapped both as an area and as a labelled node.
+      // Collapse exact co-locations even when their names differ, and collapse
+      // same-named representations across the footprint of a larger facility.
+      if (distanceM < 5 || (norm && p.__norm === norm && distanceM < 250)) {
+        if (distanceM < 5 && p.name && p.name !== name && !String(p.name).includes(name)) {
+          p.name = `${p.name} / ${name}`;
+          p.__displayName = p.name;
+        }
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+    features.push(turf.point([lon, lat], {
+      name, __displayName: name, __poiKind: mode.key, __norm: norm,
+      osmType: el.type || '', osmId: el.id || null
+    }));
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function buildMatchingPoiLayer(gj, mode) {
+  const group = L.layerGroup([], { pane: 'poiPane' });
+  for (const ft of (gj && gj.features) || []) {
+    if (!ft.geometry || ft.geometry.type !== 'Point') continue;
+    const c = ft.geometry.coordinates;
+    L.circleMarker([c[1], c[0]], {
+      pane: 'poiPane', radius: 5.2, color: '#cffafe', weight: 1.8,
+      fillColor: '#0891b2', fillOpacity: .92, interactive: false
+    }).addTo(group);
+  }
+  return group;
+}
+
+async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
+  if (!mode) return null;
+  questionPoi.modeKey = mode.key;
+  questionPoi.loading = true;
+  setQuestionMapLoading(mode.plural);
+  try {
+    let gj = matchingPoiCache.get(mode.key) || null;
+    if (!gj) {
+      gj = parseMatchingPois(await overpassJson(matchingPoiOverpassQuery(mode)), mode);
+      matchingPoiCache.set(mode.key, gj);
+    }
+    if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return gj;
+    if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
+    questionPoi.geojson = gj;
+    questionPoi.layer = buildMatchingPoiLayer(gj, mode);
+    questionPoi.layer.addTo(map);
+    return gj;
+  } finally {
+    if (session === questionPoi.session) {
+      questionPoi.loading = false;
+      setQuestionMapLoading(null);
+    }
+  }
+}
+
+function matchingPoiFeatures() {
+  return (questionPoi.geojson && questionPoi.geojson.features) || [];
+}
+
+function setMatchingPoiFromCoord(coord) {
+  const mode = matchingPoiMode();
+  if (!mode) return false;
+  if (!S.playArea || !pointInsideFeature(coord, S.playArea)) {
+    toast('That point is outside the current play area.', true);
+    return false;
+  }
+  const feats = matchingPoiFeatures();
+  if (!feats.length) {
+    toast(questionPoi.loading ? `${mode.plural} are still loading.` : `No ${mode.plural} were found in the Aalborg search area.`, !questionPoi.loading);
+    return false;
+  }
+  const seeker = turf.point(coord);
+  let best = Infinity, bestIndex = -1;
+  for (let i = 0; i < feats.length; i++) {
+    try {
+      const d = turf.distance(seeker, feats[i], { units: 'meters' });
+      if (d < best) { best = d; bestIndex = i; }
+    } catch (_) { /* continue */ }
+  }
+  if (bestIndex < 0) return false;
+  draft.matchPoint = coord;
+  draft.points = feats.map((ft) => ft.geometry.coordinates.slice());
+  draft.index = bestIndex;
+  draft.matchName = (feats[bestIndex].properties || {}).name || mode.singular;
+  draft.matchDistanceM = best;
+  draft.categoryName = selectedQuestion ? selectedQuestion.phrase : mode.singular;
+  return true;
+}
+
+function matchingPoiCell() {
+  if (!draft.points || draft.index == null || !S.playArea) return null;
+  const cell = voronoiCell(draft.points, draft.index);
+  return cell ? gIntersect(S.playArea, cell) : null;
 }
 
 /* Some Matching cards describe areas rather than a set of nearest points.
@@ -1306,6 +1508,7 @@ function renderQuestionDeck() {
 
 function chooseQuestion(type, card) {
   releaseQuestionZoneLayers();
+  releaseQuestionPoiLayer();
   const zoneSession = questionZoneSession;
   deactivateQuestionPreview();
   activeTool = type.tool;
@@ -1331,6 +1534,24 @@ function chooseQuestion(type, card) {
     questionPreview.type = activeTool;
   }
   const areaMode = matchingAreaMode();
+  const poiMode = matchingPoiMode();
+  if (poiMode) {
+    draft.poiLoading = true;
+    const poiSession = questionPoi.session;
+    ensureMatchingPoiSource(poiMode, poiSession).then((gj) => {
+      if (matchingPoiMode() && matchingPoiMode().key === poiMode.key) {
+        draft.poiLoading = false;
+        draft.poiCount = (gj && gj.features ? gj.features.length : 0);
+        renderToolForm();
+      }
+    }).catch((err) => {
+      if (matchingPoiMode() && matchingPoiMode().key === poiMode.key) {
+        draft.poiLoading = false;
+        draft.poiError = err && err.message ? err.message : 'Could not load places';
+        renderToolForm();
+      }
+    });
+  }
   if (areaMode && areaMode.kind === 'zone') {
     draft.matchLoading = true;
     ensureMatchingAreaSource(areaMode, zoneSession).then(() => {
@@ -1365,7 +1586,7 @@ function chooseQuestion(type, card) {
   renderToolForm();
   const directMapEntry = (['radar', 'thermometer', 'measuring'].includes(activeTool) &&
     !(activeTool === 'radar' && draft.customRadius && !draft.radiusM)) ||
-    (activeTool === 'nearest' && !!areaMode);
+    (activeTool === 'nearest' && (!!areaMode || !!poiMode));
   if (directMapEntry && window.innerWidth <= 820) closeSheet();
   const pane = document.querySelector('[data-pane="ask"]');
   const panel = document.querySelector(`[data-question-panel="${type.key}"]`);
@@ -1374,6 +1595,7 @@ function chooseQuestion(type, card) {
 
 function closeQuestionForm() {
   releaseQuestionZoneLayers();
+  releaseQuestionPoiLayer();
   deactivateQuestionPreview();
   activeTool = null;
   selectedQuestion = null;
@@ -1386,6 +1608,7 @@ function closeQuestionForm() {
 function selectTool(key) {
   if (activeTool === key) { closeQuestionForm(); return; }
   releaseQuestionZoneLayers();
+  releaseQuestionPoiLayer();
   deactivateQuestionPreview();
   activeTool = key;
   selectedQuestion = null;
@@ -1618,6 +1841,14 @@ function previewInstruction() {
     if (!draft.answer) return 'Drag either thermometer handle to reposition it. The cyan line is the split; choose Hotter or Colder to preview which side remains.';
     return '';
   }
+  if (activeTool === 'nearest' && matchingPoiMode()) {
+    const mode = matchingPoiMode();
+    if (questionPoi.loading || draft.poiLoading) return `Loading ${mode.plural} from OpenStreetMap…`;
+    if (draft.poiError) return `Could not load ${mode.plural}: ${draft.poiError}`;
+    if (!matchingPoiFeatures().length) return `No ${mode.plural} were found in the Aalborg search area.`;
+    if (!draft.matchPoint || draft.index == null) return `${matchingPoiFeatures().length} ${mode.plural} loaded. Tap your position on the map.`;
+    if (!draft.answer) return `Your nearest is ${draft.matchName}. Tap elsewhere to reposition, or choose Match / No match to preview the cut.`;
+  }
   if (activeTool === 'nearest' && matchingAreaMode()) {
     const mode = matchingAreaMode();
     if (!draft.matchGeometry) {
@@ -1675,6 +1906,24 @@ function renderPreviewShapes() {
   }
 
   if (activeTool === 'nearest') {
+    const poiMode = matchingPoiMode();
+    if (poiMode && draft.matchPoint && draft.index != null && draft.points && draft.points[draft.index]) {
+      const nearestPoint = draft.points[draft.index];
+      L.circleMarker([draft.matchPoint[1], draft.matchPoint[0]], markerStyle).addTo(previewShapeLayer);
+      L.circleMarker([nearestPoint[1], nearestPoint[0]], {
+        pane: 'previewPane', radius: 7, color: '#cffafe', weight: 2.4,
+        fillColor: '#0891b2', fillOpacity: 1, interactive: false
+      }).addTo(previewShapeLayer);
+      L.polyline([[draft.matchPoint[1], draft.matchPoint[0]], [nearestPoint[1], nearestPoint[0]]], {
+        pane: 'previewPane', color: P, weight: 1.8, opacity: .8, dashArray: '4 5', interactive: false
+      }).addTo(previewShapeLayer);
+      if (!draft.answer) {
+        const cell = matchingPoiCell();
+        if (cell) L.geoJSON(cell, { pane: 'previewPane', interactive: false,
+          style: { color: P, weight: 2.5, opacity: .95, dashArray: '7 5',
+                   fillColor: P, fillOpacity: .08 } }).addTo(previewShapeLayer);
+      }
+    }
     const mode = matchingAreaMode();
     if (mode && mode.kind === 'landmass') {
       const regions = landmassRegions();
@@ -1793,6 +2042,17 @@ function renderPreviewHandles() {
     return;
   }
 
+  if (activeTool === 'nearest' && matchingPoiMode() && draft.matchPoint) {
+    previewDragHandle(draft.matchPoint, 'Drag to move your matching-question position', {
+      drag: (e) => {
+        const ll = e.target.getLatLng();
+        if (setMatchingPoiFromCoord([ll.lng, ll.lat])) renderPreviewShapes();
+      },
+      dragend: () => renderToolForm()
+    });
+    return;
+  }
+
   if (activeTool !== 'thermometer') return;
   const radiusM = thermometerPreviewRadius();
   if (!draft.a || !(radiusM > 0)) return;
@@ -1847,6 +2107,10 @@ function clearLiveDraftGeometry() {
   } else if (activeTool === 'nearest') {
     if (matchingAreaMode()) {
       delete draft.matchPoint; delete draft.matchGeometry; delete draft.matchName;
+    } else if (matchingPoiMode()) {
+      delete draft.matchPoint; delete draft.matchName; delete draft.matchDistanceM;
+      draft.index = null; delete draft.answer;
+      draft.points = matchingPoiFeatures().map((ft) => ft.geometry.coordinates.slice());
     } else {
       draft.points = []; draft.index = null;
     }
@@ -1883,6 +2147,7 @@ function addPreviewControls(box) {
 
 function commit(c) {
   releaseQuestionZoneLayers();
+  releaseQuestionPoiLayer();
   deactivateQuestionPreview();
   c.id = uid();
   c.active = true;
@@ -2186,6 +2451,68 @@ function nearestForm(box) {
       categoryName: selectedQuestion ? selectedQuestion.label : areaMode.label,
       matching: true, answer: draft.answer
     }));
+    return;
+  }
+
+  const poiMode = matchingPoiMode();
+  if (poiMode) {
+    const feats = matchingPoiFeatures();
+    const info = document.createElement('div');
+    info.className = 'map-point-status matching-poi-status';
+    let state = `Loading ${poiMode.plural}…`;
+    if (draft.poiError) state = `Could not load: ${draft.poiError}`;
+    else if (!questionPoi.loading && !draft.poiLoading && !feats.length) state = `No ${poiMode.plural} found in the Aalborg search area`;
+    else if (draft.matchName) state = `${draft.matchName}${draft.matchDistanceM != null ? ` · ${fmtDist(draft.matchDistanceM)} away` : ''}`;
+    else if (feats.length) state = `${feats.length} ${poiMode.plural} loaded · tap your position`;
+    info.innerHTML = `<div><strong>Your nearest ${escapeHtml(poiMode.singular)}</strong><small>${escapeHtml(state)}</small></div>`;
+    box.appendChild(info);
+
+    const key = document.createElement('div');
+    key.className = 'poi-key';
+    key.innerHTML = `<span><i></i>${escapeHtml(poiMode.plural)} from OpenStreetMap</span>`;
+    box.appendChild(key);
+
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = feats.length
+      ? 'Tap anywhere in the play area. The nearest mapped place is chosen automatically; its nearest-place territory is outlined in cyan. Tap again or drag the handle to reposition.'
+      : (questionPoi.loading || draft.poiLoading
+          ? 'The candidate places will appear on the map as soon as OpenStreetMap responds.'
+          : `If none are mapped nearby, this card cannot be automated for the current search area.`);
+    box.appendChild(hint);
+
+    const mapBtn = document.createElement('button');
+    mapBtn.type = 'button'; mapBtn.className = 'ghost-btn wide';
+    mapBtn.textContent = draft.matchPoint ? 'Change position on map' : 'Open map to choose position';
+    mapBtn.disabled = !feats.length;
+    mapBtn.addEventListener('click', closeSheet);
+    box.appendChild(mapBtn);
+
+    if (!feats.length && !questionPoi.loading && !draft.poiLoading) {
+      const manual = document.createElement('button');
+      manual.type = 'button'; manual.className = 'ghost-btn wide';
+      manual.textContent = 'Use manual candidate points instead';
+      manual.addEventListener('click', () => {
+        releaseQuestionPoiLayer();
+        draft.poiManual = true;
+        draft.points = []; draft.index = null;
+        delete draft.matchPoint; delete draft.matchName; delete draft.matchDistanceM;
+        renderToolForm();
+      });
+      box.appendChild(manual);
+    }
+
+    answerSeg(box, [['yes', 'Match'], ['no', 'No match']]);
+    const ready = !!(draft.matchPoint && draft.index != null && draft.answer && feats.length);
+    actions(box, ready, () => {
+      const cell = matchingPoiCell();
+      if (!cell) { toast('Could not build the nearest-place area.', true); return; }
+      commit({
+        type: 'zone', geometry: cell.geometry, zoneName: draft.matchName || poiMode.singular,
+        categoryName: selectedQuestion ? selectedQuestion.label : poiMode.singular,
+        matching: true, answer: draft.answer
+      });
+    });
     return;
   }
 
@@ -5196,7 +5523,9 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, parsePositiveDecimal,
+  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode,
+  matchingPoiOverpassQuery, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
+  matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads,

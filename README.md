@@ -121,6 +121,12 @@ Two things worth knowing:
 
 ---
 
+## Automatic Matching place categories
+
+Matching cards for **Commercial airport, Park, Amusement park, Zoo, Aquarium, Golf course, Museum, Movie theater, Hospital, Library, and Foreign consulate** now load their candidate places automatically from OpenStreetMap. Selecting one of these cards temporarily shows every mapped candidate in greater Aalborg. Tap your position and the nearest candidate is selected automatically; its nearest-place (Voronoi) territory is previewed, and Match / No match shades the corresponding side before you log anything. Tap again or drag the handle to reposition. Closing, cancelling, switching, or logging the question removes the temporary candidate overlay.
+
+The automatic lookup is deliberately temporary and is not saved into the game link. When a result is logged, only the resulting nearest-place territory is stored, keeping shared links small. If OpenStreetMap has no candidates for a category, the form offers the original manual-candidate workflow instead of inventing a location.
+
 ## Zones and routes
 
 **Every data source in the Layers tab is editable, and every layer is a toggle.** Tap the ⚙ next to
