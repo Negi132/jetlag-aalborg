@@ -506,3 +506,5 @@ The browser prefers these local bundles, so normal play does not wait on Overpas
 ### Measuring automation
 
 POI-based Measuring keeps a movable seeker position. Rail-station Measuring automatically selects the scheduled passenger station nearest that position. Coastline Measuring detects whether the seeker is in Nørresundby and uses the northern Limfjord shore there; everywhere else it uses the southern shore. Body-of-water Measuring automatically selects the nearest bundled water feature. Zone-border, coastline, water, POI, and generic Measuring previews remain drafts until **Log answer** and can be repositioned before logging.
+
+> **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.

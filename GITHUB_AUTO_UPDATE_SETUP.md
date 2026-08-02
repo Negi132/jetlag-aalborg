@@ -90,3 +90,5 @@ The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is
 The same workflow also refreshes `hydro-data.js` and `zone-data.js`. `hydro-data.js` comes from the temporary Geofabrik Aalborg extract and powers automatic Coastline / Body of water Measuring. `zone-data.js` snapshots the four built-in Aalborg KortInfo WFS layers. The zone updater retains complete official polygons near the game area rather than clipping polygon edges, because artificial clip edges must never become fake Measuring borders.
 
 After a successful manual/scheduled run you should also see `HYDRO_AUDIT.md` and `ZONE_AUDIT.md`. If either source looks suspiciously incomplete, the workflow exits non-zero before committing/deploying the new generated bundle.
+
+> **Zone updater compatibility:** Aalborg KortInfo may answer its WFS in GML even when GeoJSON is requested. The updater accepts both GeoJSON and GML, reprojects UTM32 when necessary, and retains the last valid zone snapshot if KortInfo is temporarily unavailable.

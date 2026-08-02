@@ -13,11 +13,13 @@ import json
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
 from shapely.geometry import shape, mapping
 from shapely.ops import unary_union
+from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'zone-data.js'
@@ -74,6 +76,96 @@ def annotate_zone2(features):
     return out
 
 
+def local_name(tag):
+    return str(tag or '').split('}', 1)[-1].split(':')[-1]
+
+
+def _numbers(text):
+    import re
+    out = []
+    for token in re.split(r'[\s,]+', (text or '').strip()):
+        if not token:
+            continue
+        try:
+            out.append(float(token))
+        except ValueError:
+            pass
+    return out
+
+
+def _rings_of(node):
+    """Read Polygon/LinearRing coordinates from either GML2 or GML3."""
+    for wanted in ('posList', 'coordinates'):
+        rings = []
+        for el in node.iter():
+            if local_name(el.tag) != wanted:
+                continue
+            vals = _numbers(el.text)
+            ring = [[vals[i], vals[i + 1]] for i in range(0, len(vals) - 1, 2)]
+            if len(ring) >= 4:
+                if ring[0][:2] != ring[-1][:2]:
+                    ring.append(ring[0][:2])
+                rings.append(ring)
+        if rings:
+            return rings
+    return []
+
+
+def parse_gml(raw: bytes):
+    """Mirror the browser's proven KortInfo GML fallback parser."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        preview = raw[:160].decode('utf-8', errors='replace').replace('\n', ' ')
+        raise RuntimeError(f'KortInfo reply was neither GeoJSON nor parseable GML: {preview!r}') from exc
+
+    for el in root.iter():
+        if local_name(el.tag) == 'ServiceException':
+            raise RuntimeError((''.join(el.itertext()).strip() or 'KortInfo service exception')[:240])
+
+    members = [el for el in root.iter() if local_name(el.tag) in ('featureMember', 'member')]
+    hosts = members or [root]
+    features = []
+    ignored_leaf_names = {'posList', 'coordinates', 'pos', 'lowerCorner', 'upperCorner'}
+
+    for host in hosts:
+        props = {}
+        for el in host.iter():
+            if list(el):
+                continue
+            name = local_name(el.tag)
+            if name in ignored_leaf_names:
+                continue
+            text = (el.text or '').strip()
+            if text and len(text) < 240 and name not in props:
+                props[name] = text
+
+        polygons = [el for el in host.iter() if local_name(el.tag) == 'Polygon']
+        if polygons:
+            for polygon in polygons:
+                rings = _rings_of(polygon)
+                if rings:
+                    features.append({
+                        'type': 'Feature', 'properties': dict(props),
+                        'geometry': {'type': 'Polygon', 'coordinates': rings},
+                    })
+            continue
+
+        # Not expected for the four zone layers, but retain line support so the
+        # parser behaves like the browser fallback if KortInfo changes wrapping.
+        for line in (el for el in host.iter() if local_name(el.tag) == 'LineString'):
+            rings = _rings_of(line)
+            if rings:
+                features.append({
+                    'type': 'Feature', 'properties': dict(props),
+                    'geometry': {'type': 'LineString', 'coordinates': rings[0]},
+                })
+
+    if not features:
+        raise RuntimeError('KortInfo returned GML but no usable feature geometry was found')
+    return {'type': 'FeatureCollection', 'features': features}
+
+
 def fetch_json(type_name: str):
     params = urllib.parse.urlencode({
         'service': 'WFS', 'version': '1.0.0', 'request': 'GetFeature',
@@ -81,18 +173,29 @@ def fetch_json(type_name: str):
     })
     url = ENDPOINT + '&' + params
     last = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'jetlag-aalborg-map-updater/1.0'})
-            with urllib.request.urlopen(req, timeout=90) as response:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; jetlag-aalborg-map-updater/1.1)',
+                'Accept': 'application/json, application/gml+xml, application/xml, text/xml, */*',
+            })
+            with urllib.request.urlopen(req, timeout=120) as response:
                 raw = response.read()
-            data = json.loads(raw.decode('utf-8-sig'))
+                content_type = response.headers.get('Content-Type', '')
+
+            try:
+                data = json.loads(raw.decode('utf-8-sig'))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                data = parse_gml(raw)
+
             if data.get('type') != 'FeatureCollection' or not isinstance(data.get('features'), list):
-                raise RuntimeError('KortInfo did not return a GeoJSON FeatureCollection')
+                raise RuntimeError(f'KortInfo did not return a feature collection (Content-Type: {content_type})')
+            if not data['features']:
+                raise RuntimeError('KortInfo answered with zero features')
             return data
         except Exception as exc:
             last = exc
-            if attempt < 2:
+            if attempt < 3:
                 time.sleep(5 * (attempt + 1))
     raise RuntimeError(f'Could not download {type_name}: {last}')
 
@@ -116,14 +219,44 @@ def swap_coords(obj):
     return obj
 
 
+def _map_coords(obj, fn):
+    if isinstance(obj, (list, tuple)):
+        if len(obj) >= 2 and all(isinstance(v, (int, float)) for v in obj[:2]):
+            x, y = fn(float(obj[0]), float(obj[1]))
+            return [x, y, *obj[2:]]
+        return [_map_coords(x, fn) for x in obj]
+    return obj
+
+
 def normalise_axis_order(gj):
+    """Return all cached zone geometry as GeoJSON longitude/latitude.
+
+    KortInfo can ignore srsName and send EPSG:25832 metres, or send EPSG:4326
+    with latitude/longitude axis order. The browser already copes with both;
+    the build-time snapshot must too because downstream generators consume
+    scripts/play_area.geojson directly.
+    """
     sample = None
     for ft in gj.get('features', []):
         geom = ft.get('geometry') or {}
         sample = first_coord(geom.get('coordinates'))
         if sample:
             break
-    if sample and 50 <= sample[0] <= 60 and 5 <= sample[1] <= 15:
+    if not sample:
+        return gj
+
+    if abs(sample[0]) > 180 or abs(sample[1]) > 90:
+        transformer = Transformer.from_crs('EPSG:25832', 'EPSG:4326', always_xy=True)
+        fn = lambda x, y: transformer.transform(x, y)
+        for ft in gj.get('features', []):
+            geom = ft.get('geometry') or {}
+            if 'coordinates' in geom:
+                geom['coordinates'] = _map_coords(geom['coordinates'], fn)
+        return gj
+
+    # In Denmark lon≈8–13 and lat≈54–58. A first ordinate around 57 means
+    # KortInfo supplied lat,lon rather than GeoJSON's required lon,lat.
+    if 50 <= sample[0] <= 60 and 5 <= sample[1] <= 15:
         for ft in gj.get('features', []):
             geom = ft.get('geometry') or {}
             if 'coordinates' in geom:
@@ -188,7 +321,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.parse_args()
 
-    downloaded = {k: normalise_axis_order(fetch_json(t)) for k, t in LAYERS.items()}
+    try:
+        downloaded = {k: normalise_axis_order(fetch_json(t)) for k, t in LAYERS.items()}
+    except Exception as exc:
+        # A municipal WFS can be temporarily unavailable. Once we have a valid
+        # snapshot, stale official geometry is much safer than breaking every
+        # unrelated GTFS/OSM refresh. On the first-ever snapshot, still fail so
+        # a placeholder can never masquerade as a successful zone cache.
+        old_counts = previous_counts()
+        if old_counts and PLAY_OUTPUT.exists():
+            print(f'WARNING: KortInfo refresh failed; retaining previous valid zone snapshot: {exc}')
+            return
+        raise
+
     cleaned = {k: valid_polygon_features(v) for k, v in downloaded.items()}
     cleaned['zone2'] = annotate_zone2(cleaned['zone2'])
     if len(cleaned['zone2']) < 4:

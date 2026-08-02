@@ -35,7 +35,7 @@ jobs:
       - name: Install map-data generator dependencies
         if: github.event_name != 'push'
         run: |
-          python -m pip install --disable-pip-version-check "shapely==2.1.2"
+          python -m pip install --disable-pip-version-check "shapely==2.1.2" "pyproj==3.7.2"
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool
 
