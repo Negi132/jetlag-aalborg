@@ -1,5 +1,15 @@
 # Hide + Seek — Aalborg seeker map
 
+## Current local-data architecture
+
+The normal game no longer waits for live route/stop/POI discovery. GitHub Actions periodically builds three compact local datasets:
+
+- `bus-routes.js` from Rejseplanen GTFS (39 current NT routes in the game area),
+- `transit-data.js` from Rejseplanen GTFS (scheduled passenger train services plus named bus/train stops), and
+- `poi-data.js` from Geofabrik OSM plus the project's curated Aalborg lists.
+
+Train lines and bus/train stops therefore load locally just like bus routes. OpenStreetMap/Overpass remains only as an emergency fallback for transit data. POI-based **Matching and Measuring** questions share the same bundled catalogue; Measuring markers are tappable targets. The Measuring **Rail station** card reuses the scheduled GTFS rail-station points from `transit-data.js`. Aalborg Airport is intentionally retained even though it sits just outside the Zone-2 play boundary, because it is the relevant Commercial airport for the game.
+
 ## Bus routes: bundled Rejseplanen GTFS
 
 Bus overlays no longer depend on live OpenStreetMap/Overpass discovery during normal use. The project ships `bus-routes.js`, generated from the official Rejseplanen GTFS feed dated 2026-07-27. It contains every timetable shape variant that reaches the Aalborg game area, cropped to a small Aalborg envelope. The browser then clips those local lines against the exact live union of the four Zone 2 play polygons before drawing them.
@@ -24,9 +34,11 @@ Radar centres, both Thermometer endpoints, and the point used by zone-border Mea
 
 ## Put it on GitHub Pages
 
-1. Create a repo and drop `index.html`, `styles.css`, `app.js`, `data.js` and `bus-routes.js` into the root.
-2. **Settings → Pages → Source: Deploy from a branch**, branch `main`, folder `/ (root)`.
-3. Wait a minute. It's live at `https://<you>.github.io/<repo>/`.
+1. Create a repo and upload the complete project, including `bus-routes.js`, `transit-data.js`, `poi-data.js`, `.github/` and `scripts/`.
+2. In **Settings → Actions → General → Workflow permissions**, enable **Read and write permissions**.
+3. In **Settings → Pages → Build and deployment → Source**, choose **GitHub Actions**.
+4. Open **Actions → Update Aalborg map data and deploy Pages** and run it once manually.
+5. After the green deployment finishes, the site is live at `https://<you>.github.io/<repo>/`. See `GITHUB_AUTO_UPDATE_SETUP.md` for the full setup/update notes.
 
 Add it to your phone's home screen before game day — it's built for one-handed use on a bus.
 
@@ -255,7 +267,7 @@ label such as **11, 12, 14**.
 Known public-map holes still have supplements for lines 11, 14 and 38. In particular, line 11 retains
 its bundled last-resort geometry if no network source supplies it.
 
-Train lines remain a separate toggle and continue to use the existing train loader.
+Train lines remain a separate toggle, but now prefer the local Rejseplanen GTFS transit bundle; the older OSM train loader is only an emergency fallback.
 
 ### Also available
 
@@ -350,7 +362,7 @@ bisector for different possible travel directions.
 
 ### Bus and train stops
 
-The Layers tab has a separate **Bus & train stops** toggle. It loads OpenStreetMap bus stops, railway
+The Layers tab has a separate **Bus & train stops** toggle. It normally loads scheduled named stops from the local Rejseplanen GTFS bundle; the old OpenStreetMap loader remains only as a fallback. It distinguishes bus stops from railway
 stations, halts and tram stops. Bus and rail points use different symbols, appear from zoom level 12,
 and can be tapped directly while preparing Matching or Measuring questions. **Unnamed stops are filtered
 out completely**, so anonymous platforms/stop positions no longer clutter the map or Matching candidates.

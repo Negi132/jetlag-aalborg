@@ -1,11 +1,12 @@
-# GitHub automatic map-data updates
+# GitHub automatic Aalborg map-data updates
 
-This version automatically refreshes both:
+This version automatically refreshes three local data bundles:
 
-- `bus-routes.js` from Rejseplanen's GTFS feed; and
-- `poi-data.js` from the current Geofabrik Denmark OpenStreetMap extract plus the project's authoritative Aalborg fallbacks.
+- `bus-routes.js` — NT bus-route geometry from Rejseplanen GTFS;
+- `transit-data.js` — scheduled passenger train services plus NT bus stops and rail stations from Rejseplanen GTFS; and
+- `poi-data.js` — question POIs from the current Geofabrik Denmark OpenStreetMap extract plus the project's authoritative Aalborg fallbacks.
 
-The large source downloads happen only on GitHub's runner. Phones loading the game receive the small generated JavaScript bundles.
+The large source downloads happen only on GitHub's runner. Phones loading the game receive only the small generated JavaScript bundles.
 
 ## One-time setup
 
@@ -18,53 +19,63 @@ The large source downloads happen only on GitHub's runner. Phones loading the ga
 7. Open **Actions → Update Aalborg map data and deploy Pages**.
 8. Click **Run workflow → Run workflow** once.
 
-The manual run is important for this release because the repository initially contains a safe
-`poi-data.js` placeholder. The first successful Action replaces it with the real bundled POI
-snapshot and deploys it.
+The manual run is important because `poi-data.js` is shipped as a safe placeholder. The first successful Action replaces it with the real generated POI snapshot and deploys it. The GTFS bus/train/stop bundles are already included, but the Action refreshes them from the newest feed too.
 
 ## What a scheduled/manual run does
 
 1. Downloads current `GTFS.zip` from Rejseplanen.
-2. Generates and validates the Aalborg bus-route bundle.
-3. Downloads `denmark-latest.osm.pbf` from Geofabrik.
-4. Uses `osmium tags-filter` to keep only POI-relevant OSM objects.
-5. Generates the Aalborg Matching-POI snapshot.
-6. Applies the game's existing curated/authoritative rules and filters representative points to the play area.
-7. Runs sanity checks. Suspiciously incomplete results make the workflow fail instead of replacing known-good data.
-8. Commits changed generated bundles/audits.
-9. Deploys the validated static site to GitHub Pages.
+2. Generates and validates `bus-routes.js`.
+3. Generates and validates `transit-data.js` containing scheduled passenger train geometry plus named bus/train stops.
+4. Downloads `denmark-latest.osm.pbf` from Geofabrik.
+5. Uses `osmium` to extract/filter the Aalborg POI source objects.
+6. Generates `poi-data.js`, applying the project's curated/authoritative rules.
+7. Keeps Aalborg Airport as an intentional exception even though its representative point sits just outside the four Zone-2 game polygons; the airport is still required by the Commercial airport Matching/Measuring card.
+8. Runs sanity checks. Suspiciously incomplete results make the workflow fail instead of replacing known-good data.
+9. Commits changed generated bundles/audits.
+10. Deploys the validated static site to GitHub Pages.
 
-## Normal expected bus result
+## Current GTFS baseline
 
-The August 2026 baseline is:
+With the supplied July–October 2026 GTFS feed the generator finds:
 
+### Buses
 - Bybus: 14
 - Regionalbus: 15
 - Expresbus: 8
 - Lokalbus: 2
-- Total: 39
+- Total bus routes: 39
 
-Future legitimate timetable changes may change those numbers.
+### Trains and stops
+- Scheduled train services intersecting the play area: 5 (`IC`, `ICL`, `RE`, `75`, `76`)
+- Scheduled rail stations/stops in the padded Aalborg bundle: 6
+- Deduplicated NT bus-stop markers in the padded Aalborg bundle: about 480
 
-## POI validation
+The browser applies the current live Zone-2 union again before displaying stops/train geometry, so edge data in the padded bundle cannot leak into the game area.
 
-The POI builder deliberately allows genuinely empty categories, but requires stable categories such
-as airport, parks, zoo, cinema, hospitals, libraries and museums to remain above conservative sanity
-floors. It also compares against the last known-good bundle and rejects unusually large drops.
+## POI behavior
 
-After a successful run, open `POI_AUDIT.md` in the repository to see the exact current counts and
-names in every category.
+The same generated POI catalogue is used by both **Matching** and POI-based **Measuring** cards. Measuring displays the candidates as tappable cyan markers; selecting one makes it the target of the normal closer/further geometry rule. A category with only one candidate, such as Commercial airport, is selected automatically. The Measuring **Rail station** card uses the scheduled passenger-station points already bundled in `transit-data.js`, not a separate live OSM query.
+
+Commercial airport is deliberately allowed outside Zone 2. Other normal POI categories are still filtered to the game area.
+
+## Audits
+
+After a successful run the repository contains:
+
+- `BUS_ROUTE_AUDIT.md`
+- `TRANSIT_AUDIT.md`
+- `POI_AUDIT.md`
+
+These show exactly what the current generated bundles contain.
 
 ## Schedule
 
-The workflow runs every Sunday at 04:17 in `Europe/Copenhagen`, and it can always be run manually
-from the Actions tab.
+The workflow runs every Sunday at 04:17 in `Europe/Copenhagen`, and it can always be run manually from the Actions tab.
+
+## Fallback behavior
+
+Normal play uses the generated local files. The older OSM/Overpass train and stop loaders remain only as emergency fallbacks if `transit-data.js` is missing. Similarly, the older live/curated POI logic remains available if `poi-data.js` is not ready.
 
 ## Source/licensing note
 
-The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is © OpenStreetMap
-contributors and used under ODbL 1.0. The deployed site retains OpenStreetMap attribution.
-
-## Hospital fallback reliability
-
-The POI generator stores coordinates for the five curated Aalborg University Hospital sites directly in `scripts/update_pois.py`. The weekly build does not depend on address geocoding for these known sites; geocoding is only a best-effort compatibility fallback for a future hospital entry that has no stored coordinates.
+The OSM source is Geofabrik's Denmark extract. Generated OSM-derived POI data is © OpenStreetMap contributors and used under ODbL 1.0. Rejseplanen GTFS supplies the timetable/transit geometry.

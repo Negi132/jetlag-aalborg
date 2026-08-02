@@ -56,6 +56,8 @@ run(fs.readFileSync(bundle('@turf/turf/turf.min.js'), 'utf8'), 'turf');
 run(fs.readFileSync(bundle('proj4/dist/proj4.js'), 'utf8'), 'proj4');
 run(fs.readFileSync(dir + 'data.js', 'utf8'), 'data.js');
 run(fs.readFileSync(dir + 'bus-routes.js', 'utf8'), 'bus-routes.js');
+run(fs.readFileSync(dir + 'transit-data.js', 'utf8'), 'transit-data.js');
+run(fs.readFileSync(dir + 'poi-data.js', 'utf8'), 'poi-data.js');
 run(fs.readFileSync(dir + 'app.js', 'utf8'), 'app.js');
 
 const doc = window.document;
@@ -181,6 +183,24 @@ click(doc.querySelector('[data-tab="ask"]'));
 check('ask pane returns', doc.querySelector('[data-pane="ask"]').classList.contains('is-active'));
 check('returning to Ask with no draft keeps every family collapsed',
       [...doc.querySelectorAll('.question-type')].every((e) => !e.open));
+
+console.log('\n== Measuring POI integration ==');
+click(doc.querySelector('[data-question-type="measuring"][data-card="Commercial airport"]'));
+await new Promise(r => setTimeout(r, 20));
+check('Measuring recognises the same automatic POI catalogue as Matching',
+      window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().key === 'airport'"));
+check('Commercial airport remains available despite sitting just outside Zone 2',
+      window.eval("HS.draft.poiCount === 1 && /Aalborg Airport/.test(HS.draft.targetName || '')"),
+      window.eval("JSON.stringify({count:HS.draft.poiCount,target:HS.draft.targetName})"));
+check('single-candidate Measuring POI auto-selects its target',
+      window.eval("Array.isArray(HS.draft.target) && HS.draft.target.length === 2"));
+click($('#toolForm .question-back'));
+click(doc.querySelector('[data-question-type="measuring"][data-card="Rail station"]'));
+await new Promise(r => setTimeout(r, 20));
+check('Rail-station Measuring uses scheduled GTFS passenger stations',
+      window.eval("HS.measuringPoiMode() && HS.measuringPoiMode().key === 'railStation' && HS.draft.poiCount >= 4"),
+      window.eval("JSON.stringify({count:HS.draft.poiCount,mode:HS.measuringPoiMode() && HS.measuringPoiMode().key})"));
+click($('#toolForm .question-back'));
 
 console.log('\n== radar flow ==');
 window.eval("selectTool('radar')");
@@ -1175,6 +1195,13 @@ check('automatic Matching removes candidates outside the current game area', win
   ]));
   return gj.features.length === 1 && gj.features[0].properties.name === 'Inside';
 })()`));
+check('commercial airport is retained as the deliberate outside-play-area exception', window.eval(`(() => {
+  const mode = HS.MATCHING_POI_DEFS['commercial airport'];
+  const gj = HS.filterMatchingPoisToPlayArea(turf.featureCollection([
+    turf.point([9.849243,57.092759], {name:'Aalborg Airport (AAL)'})
+  ]), mode);
+  return mode.allowOutsidePlayArea === true && gj.features.length === 1;
+})()`));
 
 check('generic map loading manager can represent non-zone loads', window.eval(`(() => {
   HS.setMapLoadingTask('test-load', 'test data', true);
@@ -1201,8 +1228,16 @@ check('stop parser classifies named bus/train points and drops unnamed transit s
          gj.features.every((f) => !!f.properties.name && !/^Unnamed/.test(f.properties.name));
 })()`));
 
-check('train layer prefers route relations and keeps physical railway as fallback', window.eval(`(() => {
-  return HS.ROUTE_SOURCES.train.kind === 'overpass' && /train/.test(HS.ROUTE_SOURCES.train.filter) && !!HS.fetchRailwayLines;
+check('train layer prefers bundled GTFS and keeps OSM railway as fallback', window.eval(`(() => {
+  const gj = HS.bundledGtfsTrainRoutes();
+  return HS.ROUTE_SOURCES.train.kind === 'gtfs-train' && !!gj && gj.features.length >= 3 && !!HS.fetchRailwayLines;
+})()`));
+check('bundled transit stops contain scheduled bus and rail stops', window.eval(`(() => {
+  const gj = HS.bundledGtfsTransitStops();
+  if (!gj) return false;
+  const bus = gj.features.filter(f => f.properties.__stopKind === 'bus').length;
+  const rail = gj.features.filter(f => f.properties.__stopKind === 'train').length;
+  return bus >= 250 && rail >= 4;
 })()`));
 
 console.log('\n== runtime errors ==');

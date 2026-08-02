@@ -51,6 +51,10 @@ jobs:
         if: github.event_name != 'push'
         run: python scripts/update_bus_routes.py GTFS.zip
 
+      - name: Regenerate Aalborg train lines and transit stops
+        if: github.event_name != 'push'
+        run: python scripts/update_transit.py GTFS.zip
+
       - name: Download current Denmark OpenStreetMap extract
         if: github.event_name != 'push'
         run: |
@@ -87,14 +91,14 @@ jobs:
         id: data_changes
         shell: bash
         run: |
-          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md; then
+          if git diff --quiet -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No route or POI changes."
+            echo "No route, transit-stop, or POI changes."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Generated map data changed:"
-            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md
-            git diff -- BUS_ROUTE_AUDIT.md POI_AUDIT.md || true
+            git diff --stat -- bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md
+            git diff -- BUS_ROUTE_AUDIT.md TRANSIT_AUDIT.md POI_AUDIT.md || true
           fi
 
       - name: Commit updated map-data bundles
@@ -102,7 +106,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bus-routes.js BUS_ROUTE_AUDIT.md poi-data.js POI_AUDIT.md
+          git add bus-routes.js BUS_ROUTE_AUDIT.md transit-data.js TRANSIT_AUDIT.md poi-data.js POI_AUDIT.md
           git commit -m "Update Aalborg map data"
           git push
 

@@ -394,12 +394,15 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
         if category not in {'park', 'hospital'} and category not in AUTHORITATIVE_ONLY:
             by_category[category] = dedupe_features(by_category[category])
 
-    # The game rule uses only representative points inside the actual play area.
+    # Most cards use candidate points inside the game area. Commercial airport
+    # is the intentional exception: Aalborg Airport sits just outside the four
+    # Zone-2 polygons but is still the relevant airport for every player inside
+    # the game. Keep it in the bundle for both Matching and Measuring.
     for category in CATEGORY_ORDER:
         kept = []
         for ft in by_category[category]:
             try:
-                if play.covers(Point(ft['geometry']['coordinates'])):
+                if category == 'airport' or play.covers(Point(ft['geometry']['coordinates'])):
                     kept.append(ft)
             except Exception:
                 pass
@@ -469,7 +472,7 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
         f'- Generated: `{bundle["generatedAt"]}`',
         '- Source: OpenStreetMap Denmark extract from Geofabrik + the project\'s authoritative local fallbacks',
         '- License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0',
-        '- Scope: representative points inside the Hide + Seek play-area snapshot', '',
+        '- Scope: representative points inside the Hide + Seek play-area snapshot; commercial airport is retained just outside the boundary as an explicit game-rule exception', '',
         '| Category | Count |', '|---|---:|',
     ]
     for k in CATEGORY_ORDER:

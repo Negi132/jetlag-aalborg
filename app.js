@@ -305,15 +305,34 @@ const ROUTE_SOURCES = {
     name: 'Lokalbus', meta: 'NT timetable catalogue · only the part inside the play area',
     kind: 'bus-category', category: 'local'
   },
-  train: { name: 'Train lines', meta: 'OpenStreetMap train route relations · tappable', kind: 'overpass',
+  train: { name: 'Train lines', meta: 'Rejseplanen GTFS · scheduled passenger train services · tappable', kind: 'gtfs-train',
            filter: '["route"~"^(train|light_rail)$"]' }
 };
 
 const TRANSIT_STOP_SOURCE = {
   name: 'Bus & train stops',
-  meta: 'OpenStreetMap · bus stops, rail stations and halts'
+  meta: 'Rejseplanen GTFS · scheduled NT bus stops and passenger rail stations'
 };
 
+
+function bundledGtfsTransitData() {
+  const bundle = window.AALBORG_GTFS_TRANSIT;
+  return bundle && bundle.ready === true ? bundle : null;
+}
+
+function bundledGtfsTrainRoutes() {
+  const bundle = bundledGtfsTransitData();
+  const gj = bundle && bundle.trainRoutes;
+  if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
+  return gj;
+}
+
+function bundledGtfsTransitStops() {
+  const bundle = bundledGtfsTransitData();
+  const gj = bundle && bundle.stops;
+  if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
+  return gj;
+}
 
 /* Matching cards that can be populated automatically from OpenStreetMap.
    The geometry used for the game is a representative point for each mapped
@@ -400,21 +419,30 @@ const AALBORG_LIBRARY_FALLBACK = AALBORG_LIBRARY_LOCATIONS.map((x) => ({
    authoritative; Dataforsyningen resolves their coordinates in parallel and the
    normal game-area filter decides which ones participate in Matching. */
 const AALBORG_HOSPITAL_FALLBACK = [
-  { name: 'Aalborg Universitetshospital, Hospitalsbyen', address: 'Hospitalsbyen 1, 9260 Gistrup', authoritative: true },
-  { name: 'Aalborg Universitetshospital, Syd', address: 'Hobrovej 18-22, 9000 Aalborg', authoritative: true },
-  { name: 'Aalborg Universitetshospital, Nord', address: 'Reberbansgade 15, 9000 Aalborg', authoritative: true },
-  { name: 'Aalborg Universitetshospital, Mølleparkvej', address: 'Mølleparkvej 10, 9000 Aalborg', authoritative: true },
-  { name: 'Aalborg Universitetshospital, Brandevej', address: 'Brandevej 5, 9220 Aalborg Ø', authoritative: true }
+  { name: 'Aalborg Universitetshospital, Hospitalsbyen', address: 'Hospitalsbyen 1, 9260 Gistrup', coordinates: [9.99941003, 57.00966924], authoritative: true },
+  { name: 'Aalborg Universitetshospital, Syd', address: 'Hobrovej 18-22, 9000 Aalborg', coordinates: [9.9082114, 57.0382516], authoritative: true },
+  { name: 'Aalborg Universitetshospital, Nord', address: 'Reberbansgade 15, 9000 Aalborg', coordinates: [9.912635, 57.048857], authoritative: true },
+  { name: 'Aalborg Universitetshospital, Mølleparkvej', address: 'Mølleparkvej 10, 9000 Aalborg', coordinates: [9.90532768, 57.03853921], authoritative: true },
+  { name: 'Aalborg Universitetshospital, Brandevej', address: 'Brandevej 5, 9220 Aalborg Ø', coordinates: [9.97885646, 57.02588105], authoritative: true }
 ];
 
 const MATCHING_POI_DEFS = {
   'commercial airport': {
     key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
     filters: ['["aeroway"="aerodrome"]["iata"]'],
-    // There is one relevant commercial airport for the Aalborg small-game area.
-    // Treat the verified local point as authoritative so this card is instant.
+    // Aalborg Airport is just outside the four Zone-2 polygons, but it is still
+    // the relevant commercial airport for the game. Keep this one category as
+    // an explicit outside-play-area exception for Matching and Measuring.
     fallback: [{ name: 'Aalborg Airport (AAL)', coordinates: [9.849243, 57.092759], authoritative: true }],
-    authoritativeOnly: true
+    authoritativeOnly: true,
+    allowOutsidePlayArea: true
+  },
+  'rail station': {
+    key: 'railStation', singular: 'rail station', plural: 'rail stations',
+    source: 'gtfs-rail-stops',
+    // Used only if the generated GTFS transit bundle is missing. Normal play
+    // gets scheduled passenger stations from transit-data.js.
+    filters: ['["railway"="station"]']
   },
   'park': {
     key: 'park', singular: 'park', plural: 'parks',
@@ -875,6 +903,7 @@ function refreshDerivedLayers() {
   // Bus routes are stored in their source geometry so a play-area change can
   // re-clip them without another network request.
   reclipBusCategories();
+  reclipBundledTransit();
 }
 
 /* ---------- the core ------------------------------------------------ */
@@ -1055,7 +1084,9 @@ map.on('click', (e) => {
           return;
         }
       } else {
+        const poiMode = measuringPoiMode();
         if (!draft.seeker) draft.seeker = coord;
+        else if (poiMode) setMeasuringPoiTargetFromCoord(coord);
         else draft.target = coord;
       }
       renderToolForm();
@@ -1305,10 +1336,14 @@ function normaliseAuthorityPlaceName(value) {
   return normalisePoiName(value);
 }
 
-function matchingPoiMode() {
-  if (!selectedQuestion || selectedQuestion.typeKey !== 'matching' || draft.poiManual) return null;
+function poiModeForQuestion(typeKey) {
+  if (!selectedQuestion || selectedQuestion.typeKey !== typeKey || draft.poiManual) return null;
   return MATCHING_POI_DEFS[normaliseMatchingPoiLabel(selectedQuestion.label)] || null;
 }
+
+function matchingPoiMode() { return poiModeForQuestion('matching'); }
+function measuringPoiMode() { return poiModeForQuestion('measuring'); }
+function activeQuestionPoiMode() { return matchingPoiMode() || measuringPoiMode(); }
 
 const matchingPoiCache = new Map();
 const questionPoi = { session: 0, modeKey: null, loading: false, geojson: null, layer: null };
@@ -1318,8 +1353,19 @@ const questionPoi = { session: 0, modeKey: null, loading: false, geojson: null, 
    live/curated loaders remain an emergency fallback if the file is absent or a
    scheduled refresh fails. */
 function bundledMatchingPoiGeoJson(mode) {
+  if (!mode) return null;
+  if (mode.source === 'gtfs-rail-stops') {
+    const stops = bundledGtfsTransitStops();
+    if (!stops) return null;
+    return { type: 'FeatureCollection', features: (stops.features || [])
+      .filter((ft) => ft && ft.geometry && ft.geometry.type === 'Point' &&
+        (ft.properties || {}).__stopKind === 'train')
+      .map((ft) => turf.point(ft.geometry.coordinates.slice(), {
+        ...(ft.properties || {}), __poiKind: mode.key
+      })) };
+  }
   const bundle = window.AALBORG_POI_DATA;
-  if (!mode || !bundle || bundle.ready !== true || !bundle.categories) return null;
+  if (!bundle || bundle.ready !== true || !bundle.categories) return null;
   const gj = bundle.categories[mode.key];
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
   return gj;
@@ -1424,14 +1470,15 @@ function matchingPoiElementAllowed(el, name, mode) {
   return Number.isFinite(areaM2) && areaM2 >= PARK_AUTO_MIN_AREA_M2;
 }
 
-function matchingPoiInsidePlayArea(ft) {
+function matchingPoiInsidePlayArea(ft, mode = null) {
+  if (mode && mode.allowOutsidePlayArea) return !!(ft && ft.geometry && ft.geometry.type === 'Point');
   if (!S.playArea || !ft || !ft.geometry || ft.geometry.type !== 'Point') return !!ft;
   try { return pointInsideFeature(ft.geometry.coordinates, S.playArea); }
   catch (_) { return false; }
 }
 
-function filterMatchingPoisToPlayArea(gj) {
-  const features = ((gj && gj.features) || []).filter(matchingPoiInsidePlayArea);
+function filterMatchingPoisToPlayArea(gj, mode = null) {
+  const features = ((gj && gj.features) || []).filter((ft) => matchingPoiInsidePlayArea(ft, mode));
   return { type: 'FeatureCollection', features };
 }
 
@@ -1636,20 +1683,34 @@ function collapseNearbyPoiSites(gj, mode) {
 
 function buildMatchingPoiLayer(gj, mode) {
   const group = L.layerGroup([], { pane: 'poiPane' });
+  const measuring = !!measuringPoiMode();
   for (const ft of (gj && gj.features) || []) {
     if (!ft.geometry || ft.geometry.type !== 'Point') continue;
     const c = ft.geometry.coordinates;
-    L.circleMarker([c[1], c[0]], {
-      pane: 'poiPane', radius: 5.2, color: '#cffafe', weight: 1.8,
-      fillColor: '#0891b2', fillOpacity: .92, interactive: false
-    }).addTo(group);
+    const p = ft.properties || {};
+    const marker = L.circleMarker([c[1], c[0]], {
+      pane: 'poiPane', radius: measuring ? 6.2 : 5.2, color: '#cffafe', weight: 1.8,
+      fillColor: '#0891b2', fillOpacity: .92, interactive: measuring
+    });
+    marker.bindTooltip(p.name || p.__displayName || mode.singular, {
+      className: 'stop-tip', direction: 'top', offset: [0, -5], sticky: true
+    });
+    if (measuring) marker.on('click', (e) => {
+      L.DomEvent.stopPropagation(e);
+      draft.target = c.slice();
+      draft.targetName = p.name || p.__displayName || mode.singular;
+      renderToolForm();
+      if (window.innerWidth <= 820) openSheet();
+    });
+    marker.addTo(group);
   }
   return group;
 }
 
 function applyQuestionPoiGeoJson(gj, mode, session) {
-  const inPlay = filterMatchingPoisToPlayArea(gj || { type: 'FeatureCollection', features: [] });
-  if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return inPlay;
+  const inPlay = filterMatchingPoisToPlayArea(gj || { type: 'FeatureCollection', features: [] }, mode);
+  const activeMode = activeQuestionPoiMode();
+  if (session !== questionPoi.session || !activeMode || activeMode.key !== mode.key) return inPlay;
   if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
   questionPoi.geojson = inPlay;
   questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
@@ -1689,8 +1750,9 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
       gj = collapseNearbyPoiSites(gj, mode);
       matchingPoiCache.set(cacheKey, gj);
     }
-    const inPlay = filterMatchingPoisToPlayArea(gj);
-    if (session !== questionPoi.session || !matchingPoiMode() || matchingPoiMode().key !== mode.key) return inPlay;
+    const inPlay = filterMatchingPoisToPlayArea(gj, mode);
+    const activeMode = activeQuestionPoiMode();
+    if (session !== questionPoi.session || !activeMode || activeMode.key !== mode.key) return inPlay;
     if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
     questionPoi.geojson = inPlay;
     questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
@@ -1735,6 +1797,29 @@ function setMatchingPoiFromCoord(coord) {
   draft.matchName = (feats[bestIndex].properties || {}).name || mode.singular;
   draft.matchDistanceM = best;
   draft.categoryName = selectedQuestion ? selectedQuestion.phrase : mode.singular;
+  return true;
+}
+
+function setMeasuringPoiTargetFromCoord(coord) {
+  const mode = measuringPoiMode();
+  if (!mode) return false;
+  const feats = matchingPoiFeatures();
+  if (!feats.length) {
+    toast(questionPoi.loading ? `${mode.plural} are still loading.` : `No ${mode.plural} are available for this question.`, !questionPoi.loading);
+    return false;
+  }
+  const tap = turf.point(coord);
+  let best = Infinity, chosen = null;
+  for (const ft of feats) {
+    try {
+      const d = turf.distance(tap, ft, { units: 'meters' });
+      if (d < best) { best = d; chosen = ft; }
+    } catch (_) { /* continue */ }
+  }
+  if (!chosen) return false;
+  draft.target = chosen.geometry.coordinates.slice();
+  const p = chosen.properties || {};
+  draft.targetName = p.name || p.__displayName || mode.singular;
   return true;
 }
 
@@ -2088,18 +2173,26 @@ function chooseQuestion(type, card) {
     questionPreview.type = activeTool;
   }
   const areaMode = matchingAreaMode();
-  const poiMode = matchingPoiMode();
+  const poiMode = activeQuestionPoiMode();
   if (poiMode) {
     draft.poiLoading = true;
     const poiSession = questionPoi.session;
     ensureMatchingPoiSource(poiMode, poiSession).then((gj) => {
-      if (matchingPoiMode() && matchingPoiMode().key === poiMode.key) {
+      const currentPoiMode = activeQuestionPoiMode();
+      if (currentPoiMode && currentPoiMode.key === poiMode.key) {
         draft.poiLoading = false;
         draft.poiCount = (gj && gj.features ? gj.features.length : 0);
+        if (selectedQuestion && selectedQuestion.typeKey === 'measuring' && draft.poiCount === 1 && !draft.target) {
+          const only = gj.features[0];
+          draft.target = only.geometry.coordinates.slice();
+          const p = only.properties || {};
+          draft.targetName = p.name || p.__displayName || poiMode.singular;
+        }
         renderToolForm();
       }
     }).catch((err) => {
-      if (matchingPoiMode() && matchingPoiMode().key === poiMode.key) {
+      const currentPoiMode = activeQuestionPoiMode();
+      if (currentPoiMode && currentPoiMode.key === poiMode.key) {
         draft.poiLoading = false;
         draft.poiError = err && err.message ? err.message : 'Could not load places';
         renderToolForm();
@@ -2420,6 +2513,18 @@ function previewInstruction() {
     if (!draft.seeker || !draft.borderBandGeometry) return `Tap your position. The map will show the distance band around every ${mode.label}.`;
     if (!draft.answer) return `Drag the point or tap elsewhere to reposition it. Cyan shows everywhere closer to a ${mode.label} than you are (${fmtDist(draft.borderDistanceM)}). Choose Closer or Further to preview the cut.`;
   }
+  if (activeTool === 'measuring' && measuringPoiMode()) {
+    const mode = measuringPoiMode();
+    if (questionPoi.loading || draft.poiLoading) return `Loading ${mode.plural} from the local POI bundle…`;
+    if (draft.poiError) return `Could not load ${mode.plural}: ${draft.poiError}`;
+    if (!matchingPoiFeatures().length) return `No ${mode.plural} are available for this question.`;
+    if (!draft.seeker) return `${matchingPoiFeatures().length} ${mode.plural} loaded. Tap your position on the map.`;
+    if (!draft.target) return `Tap the cyan ${mode.singular} marker you are measuring to, or tap near it.`;
+    if (!draft.answer) {
+      const r = turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
+      return `${draft.targetName || mode.singular} selected. Cyan shows your current distance (${fmtDist(r)}); choose Closer or Further to preview the cut.`;
+    }
+  }
   if (!previewConstraintFromDraft()) return 'Complete the locations and choose an answer to preview the cut.';
   return '';
 }
@@ -2514,6 +2619,31 @@ function renderPreviewShapes() {
     }
   }
 
+  if (activeTool === 'measuring' && measuringPoiMode()) {
+    if (draft.seeker) L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
+    if (draft.target) {
+      L.circleMarker([draft.target[1], draft.target[0]], {
+        pane: 'previewPane', radius: 7, color: '#cffafe', weight: 2.4,
+        fillColor: '#0891b2', fillOpacity: 1, interactive: false
+      }).addTo(previewShapeLayer);
+    }
+    if (draft.seeker && draft.target) {
+      L.polyline([[draft.seeker[1], draft.seeker[0]], [draft.target[1], draft.target[0]]], {
+        pane: 'previewPane', color: P, weight: 1.8, opacity: .8, dashArray: '4 5', interactive: false
+      }).addTo(previewShapeLayer);
+      if (!draft.answer) {
+        const radiusM = turf.distance(turf.point(draft.seeker), turf.point(draft.target), { units: 'kilometers' }) * 1000;
+        if (radiusM > 0) {
+          L.circle([draft.target[1], draft.target[0]], { pane: 'previewPane', radius: radiusM,
+            color: P, weight: 2.2, opacity: .95, dashArray: '7 5', fillColor: P,
+            fillOpacity: .055, interactive: false }).addTo(previewShapeLayer);
+        }
+        updatePreviewImpactText();
+        return;
+      }
+    }
+  }
+
   if (activeTool === 'thermometer' && draft.a) {
     const radiusM = thermometerPreviewRadius();
     if (radiusM > 0) {
@@ -2595,6 +2725,18 @@ function renderPreviewHandles() {
         }
         renderToolForm();
       }
+    });
+    return;
+  }
+
+  if (activeTool === 'measuring' && measuringPoiMode() && draft.seeker) {
+    previewDragHandle(draft.seeker, 'Drag to move your measuring-question position', {
+      drag: (e) => {
+        const ll = e.target.getLatLng();
+        draft.seeker = [ll.lng, ll.lat];
+        renderPreviewShapes();
+      },
+      dragend: () => renderToolForm()
     });
     return;
   }
@@ -2926,6 +3068,40 @@ function measuringForm(box) {
       commit({ type: 'borderDistance', geometry: draft.borderBandGeometry,
                distanceM: draft.borderDistanceM, zoneLevel: borderMode.level,
                borderName: borderMode.label, answer: draft.answer }));
+    return;
+  }
+
+  const poiMode = measuringPoiMode();
+  if (poiMode) {
+    mapPointStatus(box, 'Where you asked from', draft.seeker, {
+      empty: 'First map tap sets your position', gps: true,
+      set: (c) => { draft.seeker = c; }
+    });
+
+    const feats = matchingPoiFeatures();
+    const info = document.createElement('div');
+    info.className = 'map-point-status matching-poi-status';
+    let state = `Loading ${poiMode.plural}…`;
+    if (draft.poiError) state = `Could not load: ${draft.poiError}`;
+    else if (!questionPoi.loading && !draft.poiLoading && !feats.length) state = `No ${poiMode.plural} available for this question`;
+    else if (draft.target) state = `${draft.targetName || poiMode.singular} · selected`;
+    else if (feats.length) state = `${feats.length} ${poiMode.plural} loaded · tap a cyan marker`;
+    info.innerHTML = `<div><strong>The ${escapeHtml(poiMode.singular)} being measured</strong><small>${escapeHtml(state)}</small></div>`;
+    box.appendChild(info);
+
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = feats.length
+      ? 'Set your position, then tap the specific cyan POI marker you measured to. Tapping near a marker also selects the nearest candidate.'
+      : (questionPoi.loading || draft.poiLoading
+          ? 'The candidate places are loading from the local POI bundle.'
+          : `This category currently has no usable ${poiMode.plural}.`);
+    box.appendChild(hint);
+
+    answerSeg(box, [['closer', 'Closer'], ['further', 'Further']]);
+    actions(box, draft.seeker && draft.target && draft.answer, () =>
+      commit({ type: 'measuring', seeker: draft.seeker, target: draft.target,
+               targetName: draft.targetName || poiMode.singular, answer: draft.answer }));
     return;
   }
 
@@ -4512,19 +4688,27 @@ async function toggleTransitStops(btn) {
   renderSourceRows();
   setStatus('Loading bus and train stops…');
   try {
-    const result = await fetchTransitStopsReliable((mode, done, total) => {
-      const label = mode === 'whole' ? 'bus & train stops' : `bus & train stops (${done}/${total} fallback areas)`;
-      setMapLoadingTask('transit-stops', label, true);
-    });
-    let gj = parseTransitStops(result);
+    let gj = bundledGtfsTransitStops();
+    let sourceNote = 'bundled Rejseplanen GTFS';
+    let partial = '';
+    if (gj) {
+      gj = filterMatchingPoisToPlayArea(gj);
+    } else {
+      sourceNote = 'OpenStreetMap fallback';
+      const result = await fetchTransitStopsReliable((mode, done, total) => {
+        const label = mode === 'whole' ? 'bus & train stops' : `bus & train stops (${done}/${total} fallback areas)`;
+        setMapLoadingTask('transit-stops', label, true);
+      });
+      gj = parseTransitStops(result);
+      gj = filterMatchingPoisToPlayArea(gj);
+      partial = result.fallback ? `; recovered from ${result.completed}/${result.total} fallback areas` : '';
+    }
     // Keep the user-requested rule: outside-game stops never participate/show.
-    gj = filterMatchingPoisToPlayArea(gj);
-    if (!gj.features.length) throw new Error('the map service returned no named stops inside the game area');
+    if (!gj.features.length) throw new Error('no named scheduled stops were available inside the game area');
     rec.geojson = gj;
     rec.loaded = true;
     replaceTransitStopLayer(gj);
-    const partial = result.fallback ? `; recovered from ${result.completed}/${result.total} fallback areas` : '';
-    setStatus(`Transit stops: ${rec.busCount} bus · ${rec.trainCount} rail${partial}.`);
+    setStatus(`Transit stops: ${rec.busCount} bus · ${rec.trainCount} rail · ${sourceNote}${partial}.`);
   } catch (err) {
     setStatus(`Bus & train stops failed — ${err.message}.`, true);
   } finally {
@@ -5157,6 +5341,28 @@ async function fetchOverpass(filter) {
   return gj;
 }
 
+function reclipBundledTransit() {
+  const trainRaw = bundledGtfsTrainRoutes();
+  const trainRec = layerByKey('route:train');
+  if (trainRaw && trainRec) {
+    const wasVisible = trainRec.visible;
+    const gj = clipRoutesToPlayArea(trainRaw);
+    const summary = routeSummary(gj);
+    const fresh = addLayer(ROUTE_SOURCES.train.name, gj, {
+      key: 'route:train', kind: 'line', routeLayer: false,
+      routeCount: summary.count, routeRefs: summary.refs, baseGeojson: trainRaw
+    });
+    if (fresh && !wasVisible) setLayerVisible(fresh, false);
+  }
+
+  const stopRaw = bundledGtfsTransitStops();
+  if (stopRaw && S.transitStops.loaded) {
+    const gj = filterMatchingPoisToPlayArea(stopRaw);
+    if (gj.features.length) replaceTransitStopLayer(gj);
+  }
+}
+
+
 /* ---------- toggling sources ----------------------------------------- */
 
 async function toggleSource(key, btn) {
@@ -5275,6 +5481,26 @@ async function toggleRoute(key, btn) {
     } else if (r.kind === 'railways') {
       gj = await fetchRailwayLines();
       note = 'physical railway geometry from OpenStreetMap';
+    } else if (r.kind === 'gtfs-train') {
+      const bundled = bundledGtfsTrainRoutes();
+      if (bundled) {
+        gj = clipRoutesToPlayArea(bundled);
+        note = 'bundled Rejseplanen GTFS passenger services';
+      } else {
+        try {
+          gj = readRouteCache('train');
+          if (gj) note = 'cached OpenStreetMap train routes';
+          else {
+            gj = await fetchOverpass(r.filter);
+            ({ note } = normaliseCoords(gj));
+            annotateRouteGeoJson(gj, key);
+            writeRouteCache('train', gj);
+          }
+        } catch (routeErr) {
+          gj = await fetchRailwayLines();
+          note = 'physical railway fallback from OpenStreetMap';
+        }
+      }
     } else if (r.kind === 'overpass') {
       try {
         gj = key === 'train' ? readRouteCache('train') : null;
@@ -5307,8 +5533,10 @@ async function toggleRoute(key, btn) {
     });
     if (rec) {
       const countText = summary.count ? `${summary.count} numbered routes` : `${gj.features.length} route lines`;
-      setStatus(`${r.name}: ${countText} on${note ? ' (' + note + ')' : ''}. ` +
-                `Labels repeat along the network; shared corridors list every bus using them.`);
+      const detail = key === 'train'
+        ? 'Scheduled passenger-service geometry is loaded locally; OSM is only an emergency fallback.'
+        : 'Labels repeat along the network; shared corridors list every bus using them.';
+      setStatus(`${r.name}: ${countText} on${note ? ' (' + note + ')' : ''}. ${detail}`);
     }
   } catch (err) {
     setStatus(`${r.name} failed — ${err.message}. You can still trace the needed route ` +
@@ -6655,7 +6883,7 @@ window.HS = {
   REQUIRED_BUS_ROUTE_SUPPLEMENTS, normaliseStopName, parseOverpassStops,
   matchSupplementStops, addMissingBusRouteSupplements, overpassBusStopQuery,
   overpassTransitStopsQuery, parseTransitStops, buildTransitStopLayer,
-  toggleTransitStops, syncTransitStops, TRANSIT_STOP_SOURCE,
+  toggleTransitStops, syncTransitStops, TRANSIT_STOP_SOURCE, bundledGtfsTransitData, bundledGtfsTrainRoutes, bundledGtfsTransitStops,
   areaCategory, AREA_STYLE,
   rammeCategory, zonekortCategory, categoryFor, RAMME_STYLE, RAMME_OTHER, RAMME_LEGEND, ZONEKORT_STYLE,
   renderSourceRows, renderLegend, gc2Urls,
@@ -6665,12 +6893,12 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
+  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
   OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
-  matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
+  matchingPoiFeatures, setMatchingPoiFromCoord, setMeasuringPoiTargetFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsReliable, splitBboxGrid, fetchRailwayLines,
