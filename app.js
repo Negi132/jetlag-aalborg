@@ -1214,7 +1214,7 @@ function activeGameBbox(padKm = 1) {
   } catch (_) { return OVERPASS_BBOX.slice(); }
 }
 
-function matchingPoiOverpassQuery(mode, bbox = activeGameBbox(1.5), timeoutSec = 12) {
+function matchingPoiOverpassQuery(mode, bbox = activeGameBbox(1.5), timeoutSec = 30) {
   const [south, west, north, east] = bbox;
   const body = (mode.filters || []).map((filter) =>
     `nwr(${south},${west},${north},${east})${filter};`).join('');
@@ -1315,7 +1315,7 @@ async function geocodePoiFallback(fallback) {
 
   try {
     const url = `${CONFIG.dawa}/adresser?q=${encodeURIComponent(fallback.address)}&struktur=mini&per_side=1`;
-    const res = await fetchWithDeadline(url, {}, 3500);
+    const res = await fetchWithDeadline(url, {}, 8000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
     const hit = Array.isArray(rows) && rows[0];
@@ -1395,12 +1395,12 @@ function mergeMatchingPoiCollections(collections, mode) {
 async function fetchMatchingPoiJson(mode) {
   const bbox = activeGameBbox(1.5);
   // The relevant candidates are inside the game area, so query its much smaller
-  // bounding box instead of all of greater Aalborg. Give the whole request a
-  // short deadline; if it fails, split that small box into four requests and run
-  // them concurrently. Worst-case waiting is bounded instead of multiplying four
-  // server timeouts sequentially.
+  // bounding box instead of all of greater Aalborg. Keep the smaller game-area query, but allow the public Overpass servers enough
+  // time to answer on mobile networks. If the whole request still fails, split the
+  // box into four concurrent requests. Reliability is more important than shaving
+  // a few seconds off a successful request.
   try {
-    return [await overpassJson(matchingPoiOverpassQuery(mode, bbox, 8), { timeoutMs: 4500, noFallback: true })];
+    return [await overpassJson(matchingPoiOverpassQuery(mode, bbox, 30), { timeoutMs: 25000 })];
   } catch (wholeErr) {
     const [south, west, north, east] = bbox;
     const midLat = (south + north) / 2;
@@ -1410,8 +1410,8 @@ async function fetchMatchingPoiJson(mode) {
       [midLat, west, north, midLng], [midLat, midLng, north, east]
     ];
     const settled = await Promise.allSettled(boxes.map((box, i) =>
-      overpassJson(matchingPoiOverpassQuery(mode, box, 8), {
-        timeoutMs: 4000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
+      overpassJson(matchingPoiOverpassQuery(mode, box, 25), {
+        timeoutMs: 18000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
       })
     ));
     const results = settled.filter((x) => x.status === 'fulfilled').map((x) => x.value);
@@ -1523,8 +1523,8 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
   }
 
   // Resolve authoritative address-based locations and query OSM concurrently.
-  // The fallback path updates the visible map as soon as it finishes (normally a
-  // few seconds at most); it never waits behind a slow Overpass request.
+  // The fallback path updates the visible map as soon as it finishes; it never waits
+  // behind the optional OSM enrichment request.
   const fallbackPromise = resolveMatchingPoiFallbacks(mode, { type: 'FeatureCollection', features: [] })
     .then((resolved) => {
       if (resolved && resolved.length) {
@@ -3828,8 +3828,8 @@ function gc2Urls(table) {
 }
 const gc2Url = (table) => gc2Urls(table)[0];
 
-async function fetchGeoJson(url, timeoutMs = 12000) {
-  const res = await fetchWithDeadline(url, {}, timeoutMs);
+async function fetchGeoJson(url, timeoutMs = 45000) {
+  const res = await fetchReliable(url, {}, timeoutMs, 2);
   const text = await res.text();
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   let gj;
@@ -3857,7 +3857,12 @@ async function fetchFirst(urls) {
   if (!list.length) throw new Error('no source URL');
   const problems = [];
   for (const u of list) {
-    try { return await fetchGeoJson(u, list.length > 1 ? 7000 : 12000); }
+    try {
+      const isKortInfo = /drift\.kortinfo\.net/i.test(u);
+      const isGc2 = /vidi\.gc2\.io/i.test(u);
+      const timeout = isKortInfo ? 50000 : (isGc2 ? 25000 : (list.length > 1 ? 25000 : 40000));
+      return await fetchGeoJson(u, timeout);
+    }
     catch (err) { problems.push(err.message || String(err)); }
   }
   throw new Error(problems.join(' / '));
@@ -3883,7 +3888,7 @@ function parseWfsCapabilities(xml) {
 }
 
 async function browseLayers(url) {
-  const res = await fetchWithDeadline(capsUrl(url), {}, 9000);
+  const res = await fetchReliable(capsUrl(url), {}, 30000, 2);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const list = parseWfsCapabilities(await res.text());
   if (!list.length) throw new Error('No layers listed — is that a WFS endpoint?');
@@ -4145,7 +4150,7 @@ function ntBusLayerDefs(layers) {
 }
 
 async function discoverNtBusTables() {
-  const res = await fetchWithDeadline(capsUrl(NT_ROUTE_WFS), {}, 7000);
+  const res = await fetchReliable(capsUrl(NT_ROUTE_WFS), {}, 20000, 2);
   if (!res.ok) throw new Error(`capabilities HTTP ${res.status}`);
   const layers = parseWfsCapabilities(await res.text());
   const defs = ntBusLayerDefs(layers);
@@ -4167,7 +4172,7 @@ function normaliseStopName(value) {
 function overpassBusStopQuery() {
   const [s2, w, n, e] = OVERPASS_BBOX;
   const named = `[~"^(name|name:da|official_name)$"~"."]`;
-  return `[out:json][timeout:12];(` +
+  return `[out:json][timeout:30];(` +
     `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
     `node(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
     `way(${s2},${w},${n},${e})["public_transport"="platform"]["bus"="yes"]${named};` +
@@ -4194,7 +4199,7 @@ function overpassTransitStopsQuery(bbox = activeGameBbox(.6)) {
   // platforms/stop positions and throwing them away afterwards. Accept Danish
   // and official-name-only records too; those are named even without `name=*`.
   const named = `[~"^(name|name:da|official_name)$"~"."]`;
-  return `[out:json][timeout:12];(` +
+  return `[out:json][timeout:30];(` +
     `node(${s2},${w},${n},${e})["highway"="bus_stop"]${named};` +
     `nwr(${s2},${w},${n},${e})["public_transport"="platform"]${named};` +
     `nwr(${s2},${w},${n},${e})["public_transport"="stop_position"]${named};` +
@@ -4206,7 +4211,7 @@ function overpassTransitStopsQuery(bbox = activeGameBbox(.6)) {
 async function fetchTransitStopsJson() {
   const bbox = activeGameBbox(.6);
   try {
-    return await overpassJson(overpassTransitStopsQuery(bbox), { timeoutMs: 4500, noFallback: true });
+    return await overpassJson(overpassTransitStopsQuery(bbox), { timeoutMs: 25000 });
   } catch (wholeErr) {
     const [south, west, north, east] = bbox;
     const midLat = (south + north) / 2;
@@ -4217,7 +4222,7 @@ async function fetchTransitStopsJson() {
     ];
     const settled = await Promise.allSettled(boxes.map((box, i) =>
       overpassJson(overpassTransitStopsQuery(box), {
-        timeoutMs: 4000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
+        timeoutMs: 18000, noFallback: true, urls: [OVERPASS[i % Math.min(2, OVERPASS.length)]]
       })
     ));
     const elements = [];
@@ -4372,7 +4377,7 @@ function matchSupplementStops(stops, definition) {
 }
 
 async function fetchOverpassStops() {
-  const json = await overpassJson(overpassBusStopQuery(), { timeoutMs: 6000 });
+  const json = await overpassJson(overpassBusStopQuery(), { timeoutMs: 22000 });
   const stops = parseOverpassStops(json);
   if (stops.length) return stops;
   throw new Error('no named stops');
@@ -4382,7 +4387,7 @@ async function routeThroughStops(coords) {
   if (!coords || coords.length < 2) return null;
   const points = coords.map((c) => `${c[0].toFixed(6)},${c[1].toFixed(6)}`).join(';');
   const url = `https://router.project-osrm.org/route/v1/driving/${points}?overview=full&geometries=geojson&steps=false`;
-  const res = await fetchWithDeadline(url, {}, 6500);
+  const res = await fetchReliable(url, {}, 15000, 2);
   if (!res.ok) throw new Error(`routing HTTP ${res.status}`);
   const json = await res.json();
   const geometry = json && json.routes && json.routes[0] && json.routes[0].geometry;
@@ -4419,21 +4424,32 @@ async function addMissingBusRouteSupplements(gj) {
 }
 
 async function fetchNtBusRoutes() {
-  let tableDefs = NT_BUS_TABLES.slice();
-  let discovered = false;
-  try {
-    tableDefs = await discoverNtBusTables();
-    discovered = tableDefs.some((d) => d.discovered);
-  } catch (_) { /* fixed main tables remain the fallback */ }
-
-  const results = await Promise.all(tableDefs.map(async (def) => {
+  /* Load the five known NT families immediately. Capability discovery is useful
+     for branch/biforløb layers, but it must never sit in front of the main
+     routes. Run discovery in parallel, then request only newly discovered
+     tables. This is both faster and more reliable on a slow mobile connection. */
+  const loadDef = async (def) => {
     try {
       const gj = await fetchFirst(gc2Urls(def.table));
       normaliseCoords(gj);
       annotateRouteGeoJson(gj, def.key);
       return { def, gj, error: null };
     } catch (error) { return { def, gj: null, error }; }
-  }));
+  };
+
+  const fixedPromise = Promise.all(NT_BUS_TABLES.map(loadDef));
+  const discoveryPromise = discoverNtBusTables().catch(() => NT_BUS_TABLES.slice());
+  // Start OSM at the same time. We only consume it if NT is incomplete, but a
+  // slow NT table no longer has to finish before the fallback even begins.
+  const osmFallbackPromise = fetchOverpass('["route"="bus"]').catch(() => null);
+
+  const fixedResults = await fixedPromise;
+  const discoveredDefs = await discoveryPromise;
+  const fixedTables = new Set(NT_BUS_TABLES.map((d) => d.table));
+  const extraDefs = discoveredDefs.filter((d) => !fixedTables.has(d.table));
+  const extraResults = extraDefs.length ? await Promise.all(extraDefs.map(loadDef)) : [];
+  const results = [...fixedResults, ...extraResults];
+  const discovered = extraDefs.length > 0;
 
   let features = [];
   const loaded = [], failed = [];
@@ -4445,10 +4461,11 @@ async function fetchNtBusRoutes() {
   }
 
   // OSM remains useful when one NT table is unavailable and is the complete
-  // fallback when the GC2 service cannot be reached at all.
+  // fallback when the GC2 service cannot be reached at all. Give it enough time
+  // to succeed rather than treating a slow mirror as a missing route network.
   if (!features.length || failed.length) {
-    try {
-      const osm = await fetchOverpass('["route"="bus"]');
+    const osm = await osmFallbackPromise;
+    if (osm) {
       annotateRouteGeoJson(osm, 'osm');
       const officialRefs = new Set();
       features.forEach((ft) => extractRouteRefs(ft.properties).forEach((r) => officialRefs.add(r)));
@@ -4457,20 +4474,19 @@ async function fetchNtBusRoutes() {
         if (!features.length || refs.some((r) => !officialRefs.has(r))) features.push(ft);
       }
       if (!loaded.length) loaded.push('OpenStreetMap fallback');
-    } catch (_) { /* report the NT errors below if nothing loaded */ }
+    }
   }
 
   features = dedupeRouteFeatures(features);
   if (!features.length) {
     const reasons = results.map((r) => `${r.def.label}: ${r.error ? r.error.message : 'no features'}`).join(' / ');
-    throw new Error(reasons || 'no bus routes were returned');
+    throw new Error(reasons || 'no bus route geometry returned');
   }
+
   const gj = { type: 'FeatureCollection', features };
-  const supplemented = await addMissingBusRouteSupplements(gj);
-  gj.features = dedupeRouteFeatures(gj.features);
-  if (discovered) loaded.push('discovered branch layers');
-  if (supplemented.length) loaded.push(`stop-routed ${supplemented.join(', ')}`);
-  return { gj, loaded: Array.from(new Set(loaded)), failed, supplemented, summary: routeSummary(gj) };
+  const supplements = await addMissingBusRouteSupplements(gj);
+  const summary = routeSummary(gj);
+  return { gj, loaded, failed, supplements, summary, discovered };
 }
 
 /* ---------- OpenStreetMap routes via Overpass -------------------------- */
@@ -4522,7 +4538,7 @@ function parseOverpassRoutes(json) {
 }
 
 async function fetchOverpass(filter) {
-  const json = await overpassJson(overpassQuery(filter), { timeoutMs: 7000 });
+  const json = await overpassJson(overpassQuery(filter), { timeoutMs: 30000 });
   const gj = parseOverpassRoutes(json);
   if (!gj.features.length) throw new Error('no routes in the reply');
   return gj;
@@ -4883,7 +4899,7 @@ function snapRingsToRoads(index, toleranceM) {
   return { mapRing, stats: () => ({ moved, total }) };
 }
 
-function fetchWithDeadline(url, options = {}, timeoutMs = 7000) {
+function fetchWithDeadline(url, options = {}, timeoutMs = 30000) {
   if (typeof AbortController === 'undefined') return fetch(url, options);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -4891,9 +4907,31 @@ function fetchWithDeadline(url, options = {}, timeoutMs = 7000) {
     .finally(() => clearTimeout(timer));
 }
 
+const TRANSIENT_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/* Retry quick gateway/server errors once, but do not turn one full network
+   timeout into two. This catches the common 502/503/504 hiccup without making
+   a genuinely unreachable service take twice as long to fail. */
+async function fetchReliable(url, options = {}, timeoutMs = 30000, attempts = 2) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+    try {
+      const res = await fetchWithDeadline(url, options, timeoutMs);
+      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt + 1 >= attempts) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+      if ((err && err.name === 'AbortError') || attempt + 1 >= attempts) throw err;
+    }
+    await sleep(700 * (attempt + 1));
+  }
+  throw lastErr || new Error('network request failed');
+}
+
 async function overpassJson(query, opts = {}) {
   const body = 'data=' + encodeURIComponent(query);
-  const timeoutMs = Math.max(2500, Number(opts.timeoutMs) || 7000);
+  const timeoutMs = Math.max(5000, Number(opts.timeoutMs) || 25000);
   const primary = (opts.urls || OVERPASS.slice(0, 2)).filter(Boolean);
   const problems = [];
 
@@ -4934,7 +4972,7 @@ async function overpassJson(query, opts = {}) {
     try {
       const res = await fetchWithDeadline(fallbackUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
-      }, Math.min(timeoutMs, 5500));
+      }, Math.min(timeoutMs, 20000));
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return JSON.parse(await res.text());
     } catch (e) { problems.push(e && e.name === 'AbortError' ? 'timeout' : (e.message || String(e))); }
