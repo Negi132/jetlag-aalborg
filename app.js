@@ -247,6 +247,15 @@ const REQUIRED_BUS_ROUTE_SUPPLEMENTS = [
       ['Nældevej'],
       ['Nørholm'],
       ['Klitgård', 'Klitgaard']
+    ],
+    // Route 38 is an Aalborg local route and definitely enters the small-game
+    // area. These known stop positions are a final safety net if OSM has the
+    // timetable stop names but the route relation itself is missing. Prefer a
+    // road-routed line through live stops first; these points are used only if
+    // that lookup fails, so a temporary Overpass problem cannot erase line 38.
+    fallbackWaypoints: [
+      [9.918,57.043],[9.910,57.042],[9.899,57.039],[9.879,57.034],
+      [9.864,57.031],[9.850,57.028],[9.820,57.025],[9.760,57.020],[9.720,57.015]
     ]
   }
 ];
@@ -269,7 +278,7 @@ const NT_ROUTE_CATALOGUE = {
   },
   regional: {
     name: 'Regionalbus',
-    refs: ['36','38','40','42','45','46','50','52','53','54','55','56','57','58','61','64','67','68','70','72','73','77','78','80','81','82','87','90','100','102','103','104','107','111','112','113','118','158','176','200','202','208','209','212','213','230','234','235','237','265','270','274','275','276','278','311','312','313','320','321','322','360','361','362','363','370','371','372','373','380','381','382','383','439','440','442','454','456','457','460','461','462','463','464','468','470','543','701','702','703','704','705','706','707','708','709','790','813','840']
+    refs: ['36','40','42','45','46','50','52','53','54','55','56','57','58','61','64','67','68','70','72','73','77','78','80','81','82','87','90','100','102','103','104','107','111','112','113','118','158','176','200','202','208','209','212','213','230','234','235','237','265','270','274','275','276','278','311','312','313','320','321','322','360','361','362','363','370','371','372','373','380','381','382','383','439','440','442','454','456','457','460','461','462','463','464','468','470','543','701','702','703','704','705','706','707','708','709','790','813','840']
   },
   express: {
     name: 'Expresbus',
@@ -277,8 +286,21 @@ const NT_ROUTE_CATALOGUE = {
   },
   local: {
     name: 'Lokalbus',
-    refs: ['271','273','404','407','409','414','417','419','422','600','605','607','608','609','610','611','615','617','618','621','625']
+    refs: ['38','271','273','404','407','409','414','417','419','422','600','605','607','608','609','610','611','615','617','618','621','625']
   }
+};
+
+/* Routes that NT currently shows as actually reaching the Aalborg game area.
+   This is deliberately narrower than NT_ROUTE_CATALOGUE: the full catalogue tells
+   us what route refs are legal, while this list tells us when a supposedly
+   successful Aalborg download is still incomplete and must trigger the broad
+   fallback.  Old parallel routes 71 and 74 are intentionally absent: NT replaced
+   them with 971X and 974X respectively. */
+const EXPECTED_AALBORG_BUS_REFS = {
+  bybus: ['1','2','3','5','6','11','12','13','14','15','16','17','18','19'],
+  regional: ['36','42','46','50','52','54','55','56','61','72','73','100','176','200'],
+  express: ['60X','950X','951X','954X','958X','970X','971X','973X','974X'],
+  local: ['38','271']
 };
 
 const BUS_CATEGORY_STATE = Object.fromEntries(
@@ -4544,10 +4566,27 @@ function matchSupplementStops(stops, definition) {
 }
 
 async function fetchOverpassStops() {
-  const json = await overpassJson(overpassBusStopQuery(), { timeoutMs: 22000 });
-  const stops = parseOverpassStops(json);
+  // Try the compact named-stop request first. If it fails, fall back to the
+  // same proven full stop loader used by the visible Bus & train stops layer.
+  // This is intentionally patient: route supplements exist for reliability,
+  // so a short timeout here would defeat their purpose.
+  try {
+    const json = await overpassJson(overpassBusStopQuery(), { timeoutMs: 45000 });
+    const stops = parseOverpassStops(json);
+    if (stops.length) return stops;
+  } catch (_) { /* use the full stop loader below */ }
+
+  const reply = await fetchTransitStopsReliable();
+  const gj = parseTransitStops(reply);
+  const stops = (gj.features || [])
+    .filter((ft) => ft.properties && ft.properties.__stopKind === 'bus')
+    .map((ft) => ({
+      name: ft.properties.name,
+      norm: normaliseStopName(ft.properties.name),
+      coordinates: ft.geometry.coordinates.slice()
+    }));
   if (stops.length) return stops;
-  throw new Error('no named stops');
+  throw new Error('no named bus stops');
 }
 
 async function routeThroughStops(coords) {
@@ -4590,6 +4629,11 @@ async function addMissingBusRouteSupplements(gj, allowedRefs = null) {
         routeClass = 'stop-routed supplement';
         try { geometry = await routeThroughStops(coords); }
         catch (_) { geometry = { type: 'LineString', coordinates: coords }; }
+      } else if (Array.isArray(def.fallbackWaypoints) && def.fallbackWaypoints.length >= 2) {
+        routeClass = 'bundled-waypoint supplement';
+        const waypoints = def.fallbackWaypoints.map((c) => c.slice());
+        try { geometry = await routeThroughStops(waypoints); }
+        catch (_) { geometry = { type: 'LineString', coordinates: waypoints }; }
       }
     }
     if (!geometry) continue;
@@ -4605,7 +4649,7 @@ async function addMissingBusRouteSupplements(gj, allowedRefs = null) {
   return added;
 }
 
-const ROUTE_CACHE_VERSION = '20260802d-buscat';
+const ROUTE_CACHE_VERSION = '20260802f-bus-audit';
 const ROUTE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function readRouteCache(kind) {
@@ -4954,22 +4998,68 @@ function clipRoutesToPlayArea(gj) {
   return { type: 'FeatureCollection', features: dedupeRouteFeatures(out) };
 }
 
+const BUS_CATEGORY_MIN_RAW_ROUTES = {
+  // These are not expected final counts; they only decide when a targeted
+  // response is suspiciously small enough to justify the slower broad query.
+  bybus: 5,
+  regional: 3,
+  express: 2,
+  local: 2
+};
+
+let sharedBusNetworkPromise = null;
+
+function missingExpectedBusRefs(category, gj) {
+  const have = new Set(routeSummary(gj).refs.map(String));
+  return (EXPECTED_AALBORG_BUS_REFS[category] || []).filter((ref) => !have.has(String(ref)));
+}
+
+function needsBroadBusFallback(category, gj) {
+  // A route-count threshold alone can accept a partial Overpass response.
+  // If even one route that should enter Aalborg is absent, force the slower
+  // broad relation query before considering the category complete.
+  if (missingExpectedBusRefs(category, gj).length) return true;
+  return routeSummary(gj).count < (BUS_CATEGORY_MIN_RAW_ROUTES[category] || 1);
+}
+
+function mergeRouteCollections(...collections) {
+  const features = [];
+  for (const gj of collections) features.push(...((gj && gj.features) || []));
+  return { type: 'FeatureCollection', features: dedupeRouteFeatures(features) };
+}
+
+async function fetchSharedBusNetwork() {
+  const cached = readRouteCache('bus-network');
+  if (cached && cached.features && cached.features.length) return cached;
+  if (!sharedBusNetworkPromise) {
+    sharedBusNetworkPromise = (async () => {
+      const gj = await fetchBusRelationsSectioned();
+      annotateRouteGeoJson(gj, 'osm-broad');
+      gj.features = dedupeRouteFeatures(gj.features || []);
+      if (gj.features.length) writeRouteCache('bus-network', gj);
+      return gj;
+    })().finally(() => { sharedBusNetworkPromise = null; });
+  }
+  return sharedBusNetworkPromise;
+}
+
 async function fetchBusCategoryRoutes(category) {
   const def = NT_ROUTE_CATALOGUE[category];
   if (!def) throw new Error(`unknown bus category ${category}`);
 
   let raw = readRouteCache(`bus-${category}`);
-  let note = raw ? 'cached route geometry' : 'OpenStreetMap';
+  let note = raw ? 'cached route geometry' : 'OpenStreetMap targeted query';
   let networkError = null;
+  let usedBroadFallback = false;
 
   if (!raw) {
     const chunks = [];
     for (let i = 0; i < def.refs.length; i += 18) chunks.push(def.refs.slice(i, i + 18));
     const replies = [];
 
-    // Keep the requests small and process only two at a time. This is much
-    // lighter than one "all buses in Aalborg" relation query, while still
-    // allowing a slow/failed chunk to leave the other chunks usable.
+    // Keep the requests small and process only two at a time. A fulfilled
+    // Overpass request is NOT automatically considered complete: Overpass can
+    // return a valid-but-partial/empty response when it is under load.
     for (let i = 0; i < chunks.length; i += 2) {
       const batch = await Promise.allSettled(chunks.slice(i, i + 2).map((refs) =>
         overpassJson(overpassBusRefsQuery(refs), { timeoutMs: 65000 })
@@ -4985,15 +5075,26 @@ async function fetchBusCategoryRoutes(category) {
       annotateRouteGeoJson(raw, `osm-${category}`);
       raw = routeCatalogueFilter(raw, category);
     } else {
-      // One final compatibility fallback to the old relation loader. The
-      // authoritative catalogue still filters the result afterwards.
+      raw = { type: 'FeatureCollection', features: [] };
+    }
+
+    // This is the important reliability fix. The previous code only used the
+    // broad loader when *every* targeted request rejected. A HTTP-successful
+    // but empty/partial response therefore looked authoritative, which is how
+    // Bybus could collapse to the bundled line 11 and Regionalbus could falsely
+    // report that nothing intersected Aalborg. If the targeted result is
+    // suspiciously small, merge in the older broad relation loader instead.
+    if (needsBroadBusFallback(category, raw)) {
       try {
-        raw = routeCatalogueFilter(await fetchBusRelationsSectioned(), category);
-        annotateRouteGeoJson(raw, `osm-${category}`);
-        note = 'OpenStreetMap fallback';
+        const broadAll = await fetchSharedBusNetwork();
+        const broadCategory = routeCatalogueFilter(broadAll, category);
+        const before = routeSummary(raw).count;
+        raw = mergeRouteCollections(raw, broadCategory);
+        const after = routeSummary(raw).count;
+        usedBroadFallback = true;
+        note = after > before ? 'OpenStreetMap targeted + broad fallback' : 'OpenStreetMap broad fallback checked';
       } catch (err) {
         networkError = err || networkError;
-        raw = { type: 'FeatureCollection', features: [] };
       }
     }
   } else {
@@ -5007,13 +5108,16 @@ async function fetchBusCategoryRoutes(category) {
   if (raw.features.length) writeRouteCache(`bus-${category}`, raw);
 
   const clipped = clipRoutesToPlayArea(raw);
+  const missingExpected = missingExpectedBusRefs(category, clipped);
   return {
     raw,
     gj: clipped,
     supplements,
     summary: routeSummary(clipped),
+    missingExpected,
     note,
-    networkError
+    networkError,
+    usedBroadFallback
   };
 }
 
@@ -5080,10 +5184,13 @@ async function toggleBusCategory(category, key, btn) {
     const summary = routeSummary(state.geojson);
     if (summary.count) {
       const supplement = state.supplements.length ? `; supplemented ${state.supplements.join(', ')}` : '';
+      const missing = (result.missingExpected || []).length
+        ? ` Missing expected Aalborg routes: ${result.missingExpected.join(', ')}.` : '';
       setStatus(`${def.name}: ${summary.count} routes intersect the play area${supplement}. ` +
-        `Only the portions inside the four-zone play area are drawn.`);
+        `Only the portions inside the four-zone play area are drawn.${missing}`, !!missing);
     } else {
-      setStatus(`${def.name}: no loaded timetable routes intersect the current play area.`);
+      setStatus(`${def.name}: no route geometry could be loaded inside the play area. ` +
+        `This is a source/loading failure, not evidence that the timetable category is absent.`, true);
     }
   } catch (err) {
     setStatus(`${def.name} failed — ${err.message}.`, true);
@@ -6594,8 +6701,8 @@ window.HS = {
   parseOverpassRoutes, overpassQuery, fetchOverpass, fetchNtBusRoutes,
   extractRouteRefs, routeTokens, routeColor, routeStyle, annotateRouteGeoJson,
   prepareRouteDisplayGeoJson, routeLabelPoints, routeSummary, NT_BUS_TABLES, ROUTE_SOURCES,
-  NT_ROUTE_CATALOGUE, BUS_CATEGORY_STATE, fetchBusCategoryRoutes, clipRoutesToPlayArea,
-  overpassBusRefsQuery, rebuildVisibleBusLayer, reclipBusCategories,
+  NT_ROUTE_CATALOGUE, EXPECTED_AALBORG_BUS_REFS, BUS_CATEGORY_STATE, BUS_CATEGORY_MIN_RAW_ROUTES, missingExpectedBusRefs, fetchBusCategoryRoutes, clipRoutesToPlayArea,
+  overpassBusRefsQuery, needsBroadBusFallback, mergeRouteCollections, fetchSharedBusNetwork, rebuildVisibleBusLayer, reclipBusCategories,
   NT_ROUTE_WFS, ntBusLayerDefs, discoverNtBusTables, hasRouteRef,
   REQUIRED_BUS_ROUTE_SUPPLEMENTS, normaliseStopName, parseOverpassStops,
   matchSupplementStops, addMissingBusRouteSupplements, overpassBusStopQuery,
