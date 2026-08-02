@@ -4975,7 +4975,11 @@ async function fetchBusCategoryRoutes(category) {
   // preserves all timetable shape variants, and makes category toggles local.
   const bundled = bundledGtfsBusCategory(category);
   if (bundled) {
-    const raw = routeCatalogueFilter(bundled, category);
+    // The generated GTFS bundle is already category-filtered. Do not run it
+    // through the legacy hard-coded Overpass catalogue here: doing so would
+    // silently discard a genuinely new route discovered by the weekly GTFS
+    // update before the old fallback whitelist was edited.
+    const raw = bundled;
     const clipped = clipRoutesToPlayArea(raw);
     return {
       raw,

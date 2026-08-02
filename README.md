@@ -415,3 +415,52 @@ seven days so subsequent loads on the same device are immediate.
 The transit-stop layer deliberately hides Limfjordsbanen's heritage-only railway halts at
 Østerådalen, Gug, Hadsundvej and Limfjorden. This affects only rail markers: identically named bus
 stops remain visible.
+
+---
+
+## Automatic weekly bus-route updates
+
+The bus overlays are generated from Rejseplanen's static GTFS feed and stored in
+`bus-routes.js`. A GitHub Actions workflow now refreshes that file automatically.
+
+### One-time GitHub setup
+
+1. Push this complete project to the repository's default `main` branch.
+2. Open **Settings → Actions → General → Workflow permissions** and allow
+   **Read and write permissions**.
+3. Open **Settings → Pages → Build and deployment → Source** and choose
+   **GitHub Actions**.
+4. Open the repository's **Actions** tab, choose
+   **Update Aalborg bus routes and deploy Pages**, and click **Run workflow**.
+5. Open that run and check the `Regenerate Aalborg bus routes` step. A healthy
+   run currently reports 14 Bybus, 15 Regionalbus, 8 Expresbus and 2 Lokalbus
+   routes (39 total). The exact counts may legitimately change when NT changes
+   the network.
+
+After that, the workflow runs every Sunday at **04:17 Europe/Copenhagen**. It:
+
+- downloads the newest `GTFS.zip` directly from Rejseplanen;
+- extracts NT's scheduled bus shapes;
+- keeps the routes that intersect the Aalborg game area;
+- preserves distinct scheduled route variants;
+- regenerates and validates `bus-routes.js`;
+- refuses to replace the working map if the source suddenly collapses to an
+  obviously incomplete route set;
+- commits a changed route bundle back to the repository; and
+- deploys the same validated version to GitHub Pages.
+
+Ordinary pushes to `main` skip the GTFS download and simply deploy the current
+repository, so normal site edits do not need to download the national feed.
+
+### Files used by the updater
+
+- `.github/workflows/update-bus-routes.yml` — schedule, update and Pages deploy.
+- `scripts/update_bus_routes.py` — GTFS extraction, spatial filtering and safety checks.
+- `scripts/play_area.geojson` — stable local play-area reference used by the generator.
+- `scripts/bus_route_categories.json` — NT category snapshot used to distinguish
+  Bybus, Regionalbus, Expresbus and Lokalbus.
+- `BUS_ROUTE_AUDIT.md` — human-readable result of the most recent successful generation.
+
+The browser still performs the final route clip against the live official Zone 2
+polygon. The generator's local play-area reference is used to decide what data is
+worth bundling, not as a replacement for the official in-game boundary.
