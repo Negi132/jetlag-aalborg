@@ -248,15 +248,30 @@ const OFFICIAL_AALBORG_PARKS = [
    OSM grass/nature polygon: that avoids bringing gardens/back yards back while
    still treating Østerådalen the way a local player reasonably would. */
 const AALBORG_PARK_ADJACENT_EXACT = [
-  'Østerådalen', 'Østerådalen Nord', 'Østerådalen Syd'
+  'Østerådalen', 'Østerådalen Nord', 'Østerådalen Syd',
+  // Both are mapped as leisure=park in OSM but are absent from the municipality's
+  // short public "parks and green areas" list. Municipal planning/visitor material
+  // nevertheless treats them as significant public green/recreational areas.
+  'Golfparken', 'Vandbakken'
 ];
 const AALBORG_PARK_ADJACENT_FALLBACK = [
   // Representative points only; Matching currently models all places as points.
   // Nord: around the Infohuset/Over Kæret part of the valley.
   { name: 'Østerådalen Nord', coordinates: [9.91342, 57.02087] },
   // Syd: representative midpoint between Indkildevej and Dall Møllevej.
-  { name: 'Østerådalen Syd', coordinates: [9.8890, 56.9915] }
+  { name: 'Østerådalen Syd', coordinates: [9.8890, 56.9915] },
+  // OSM way centres. These fallbacks make the two well-known green areas
+  // available even if Overpass is temporarily unavailable.
+  { name: 'Golfparken', coordinates: [9.95498, 57.02563] },
+  { name: 'Vandbakken', coordinates: [9.93371, 57.03202] }
 ];
+
+/* Beyond the explicit municipal/curated names, accept a named OSM leisure=park
+   automatically when it is a substantial public green space. This captures places
+   similar to Golfparken and Vandbakken without returning to the old "anything green"
+   rule that admitted tiny residential lawns/back yards. Official/curated names are
+   never subject to this size threshold. */
+const PARK_AUTO_MIN_AREA_M2 = 10000; // 1 hectare
 
 const OFFICIAL_AALBORG_LIBRARIES = [
   'Hovedbiblioteket i Aalborg', 'Aalborg Hovedbibliotek', 'Haraldslund', 'Haraldslund Bibliotek',
@@ -1140,7 +1155,7 @@ function matchingPoiOverpassQuery(mode) {
   const [south, west, north, east] = OVERPASS_BBOX;
   const body = (mode.filters || []).map((filter) =>
     `nwr(${south},${west},${north},${east})${filter};`).join('');
-  return `[out:json][timeout:75];(${body});out center tags;`;
+  return `[out:json][timeout:75];(${body});${mode && mode.key === 'park' ? 'out geom;' : 'out center tags;'}`;
 }
 
 function matchingPoiNameAllowed(name, mode) {
@@ -1158,6 +1173,57 @@ function matchingPoiNameAllowed(name, mode) {
     const o = normaliseStopName(official);
     return n === o || n.includes(o) || o.includes(n);
   });
+}
+
+function overpassElementAreaM2(el) {
+  if (!el) return NaN;
+
+  // Ways returned with `out ... geom` contain their actual vertices, which gives
+  // the best area estimate. Relations often only expose member geometries, so fall
+  // back to their bounds/member bounding box below.
+  const geom = Array.isArray(el.geometry) ? el.geometry : null;
+  if (geom && geom.length >= 3) {
+    const ring = geom.filter((p) => Number.isFinite(p && p.lon) && Number.isFinite(p && p.lat))
+      .map((p) => [p.lon, p.lat]);
+    if (ring.length >= 3) {
+      if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push(ring[0].slice());
+      try { return turf.area(turf.polygon([ring])); } catch (_) {}
+    }
+  }
+
+  let b = el.bounds || null;
+  if (!b && Array.isArray(el.members)) {
+    const pts = [];
+    for (const m of el.members) for (const p of (m && m.geometry) || []) {
+      if (Number.isFinite(p && p.lon) && Number.isFinite(p && p.lat)) pts.push([p.lon, p.lat]);
+    }
+    if (pts.length) {
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      b = { minlon: Math.min(...xs), minlat: Math.min(...ys), maxlon: Math.max(...xs), maxlat: Math.max(...ys) };
+    }
+  }
+  if (b && [b.minlon,b.minlat,b.maxlon,b.maxlat].every(Number.isFinite)) {
+    try {
+      return turf.area(turf.polygon([[[b.minlon,b.minlat],[b.maxlon,b.minlat],[b.maxlon,b.maxlat],[b.minlon,b.maxlat],[b.minlon,b.minlat]]]));
+    } catch (_) {}
+  }
+  return NaN;
+}
+
+function matchingPoiElementAllowed(el, name, mode) {
+  if (matchingPoiNameAllowed(name, mode)) return true;
+  if (!mode || mode.key !== 'park') return false;
+
+  const tags = (el && el.tags) || {};
+  // Automatic expansion is deliberately narrow: only actual OSM parks, named,
+  // substantial, and not explicitly private/no-access. Nature reserves and other
+  // green tags still require the curated exact-name list above.
+  if (tags.leisure !== 'park') return false;
+  if (!name || /^unnamed\b/i.test(String(name))) return false;
+  const access = String(tags.access || '').toLowerCase();
+  if (access === 'private' || access === 'no') return false;
+  const areaM2 = overpassElementAreaM2(el);
+  return Number.isFinite(areaM2) && areaM2 >= PARK_AUTO_MIN_AREA_M2;
 }
 
 function matchingPoiInsidePlayArea(ft) {
@@ -1220,7 +1286,7 @@ async function fetchMatchingPoiJson(mode) {
     for (const box of boxes) {
       const body = (mode.filters || []).map((filter) =>
         `nwr(${box[0]},${box[1]},${box[2]},${box[3]})${filter};`).join('');
-      const q = `[out:json][timeout:35];(${body});out center tags;`;
+      const q = `[out:json][timeout:35];(${body});${mode && mode.key === 'park' ? 'out geom;' : 'out center tags;'}`;
       try { results.push(await overpassJson(q)); }
       catch (e) { failures.push(e && e.message ? e.message : String(e)); }
     }
@@ -1229,16 +1295,33 @@ async function fetchMatchingPoiJson(mode) {
   }
 }
 
+function overpassElementRepresentativePoint(el) {
+  if (!el) return null;
+  if (Number.isFinite(el.lon) && Number.isFinite(el.lat)) return [el.lon, el.lat];
+  if (el.center && Number.isFinite(el.center.lon) && Number.isFinite(el.center.lat)) return [el.center.lon, el.center.lat];
+  if (el.bounds && [el.bounds.minlon,el.bounds.minlat,el.bounds.maxlon,el.bounds.maxlat].every(Number.isFinite)) {
+    return [(el.bounds.minlon + el.bounds.maxlon) / 2, (el.bounds.minlat + el.bounds.maxlat) / 2];
+  }
+  const pts = [];
+  for (const p of (el.geometry || [])) if (Number.isFinite(p && p.lon) && Number.isFinite(p && p.lat)) pts.push([p.lon,p.lat]);
+  for (const m of (el.members || [])) for (const p of (m && m.geometry) || []) {
+    if (Number.isFinite(p && p.lon) && Number.isFinite(p && p.lat)) pts.push([p.lon,p.lat]);
+  }
+  if (!pts.length) return null;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
 function parseMatchingPois(json, mode) {
   const features = [];
   for (const el of (json && json.elements) || []) {
     const tags = el.tags || {};
-    const lat = el.lat ?? (el.center && el.center.lat);
-    const lon = el.lon ?? (el.center && el.center.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const representative = overpassElementRepresentativePoint(el);
+    if (!representative) continue;
+    const [lon, lat] = representative;
     const name = tags.name || tags['name:da'] || tags.official_name || tags.brand ||
       `Unnamed ${mode.singular}`;
-    if (!matchingPoiNameAllowed(name, mode)) continue;
+    if (!matchingPoiElementAllowed(el, name, mode)) continue;
     const norm = normaliseStopName(name);
     let duplicate = false;
     for (const ft of features) {
@@ -5686,7 +5769,7 @@ window.HS = {
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
   matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode,
   matchingPoiOverpassQuery, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
-  matchingPoiNameAllowed, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
+  matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,

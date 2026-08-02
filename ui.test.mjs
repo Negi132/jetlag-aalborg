@@ -1162,6 +1162,23 @@ check('Østerådalen is accepted as a curated park-equivalent without admitting 
          HS.matchingPoiNameAllowed('Østerådalen Syd', mode) &&
          !HS.matchingPoiNameAllowed('Østerådalen Hundeskov', mode);
 })()`));
+check('Golfparken and Vandbakken are explicit park-equivalents', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['park'];
+  return HS.matchingPoiNameAllowed('Golfparken', mode) && HS.matchingPoiNameAllowed('Vandbakken', mode);
+})()`));
+check('large named public OSM parks are admitted while small/private ones stay excluded', window.eval(`(() => {
+  const mode = MATCHING_POI_DEFS['park'];
+  const big = {type:'way',tags:{leisure:'park',name:'Example Green'},geometry:[
+    {lat:57.0000,lon:9.9000},{lat:57.0000,lon:9.9030},{lat:57.0020,lon:9.9030},{lat:57.0020,lon:9.9000},{lat:57.0000,lon:9.9000}
+  ]};
+  const tiny = {type:'way',tags:{leisure:'park',name:'Tiny Lawn'},geometry:[
+    {lat:57.0000,lon:9.9000},{lat:57.0000,lon:9.9003},{lat:57.0002,lon:9.9003},{lat:57.0002,lon:9.9000},{lat:57.0000,lon:9.9000}
+  ]};
+  const priv = JSON.parse(JSON.stringify(big)); priv.tags.name='Private Green'; priv.tags.access='private';
+  return HS.matchingPoiElementAllowed(big, big.tags.name, mode) &&
+         !HS.matchingPoiElementAllowed(tiny, tiny.tags.name, mode) &&
+         !HS.matchingPoiElementAllowed(priv, priv.tags.name, mode);
+})()`));
 check('automatic Matching removes candidates outside the current game area', window.eval(`(() => {
   const inside = turf.center(HS.S.playArea).geometry.coordinates;
   const outside = [11.5, 58.0];

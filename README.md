@@ -126,7 +126,9 @@ Two things worth knowing:
 
 Nearest-place Matching now considers **only candidates whose representative point lies inside the current play area**. The OpenStreetMap query still uses a larger Aalborg bounding box for reliability, but outside candidates are removed before markers, nearest-place selection, and territory construction.
 
-The Park card uses Aalborg Kommune's official park list as its strict base. It also deliberately treats **Østerådalen Nord and Østerådalen Syd** as park-equivalent for this game: Aalborg Kommune lists them separately under *Naturområder og skove* and describes them as nearby recreational nature areas. This is a curated exception, not a return to accepting arbitrary `leisure=park`/green polygons, so gardens and back yards stay excluded.
+The Park card uses Aalborg Kommune's official park list as its strict base. It also deliberately treats **Østerådalen Nord/Syd, Golfparken and Vandbakken** as park-equivalent for this game. The municipality describes Østerådalen and Vandbakken as recreational/significant green areas, while Golfparken is a public green recreation area and is mapped as a park.
+
+There is also a controlled automatic rule for similar places: a feature outside the curated lists is accepted only when OpenStreetMap maps it explicitly as a **named `leisure=park` polygon**, it is not marked private/no-access, and its mapped footprint is at least **1 hectare**. This is large enough to admit substantial public green spaces like Golfparken/Vandbakken while continuing to reject the tiny residential lawns/back-yard polygons that made the original rule too loose. Official/curated parks are not subject to the size threshold.
 
 ## Zones and routes
 
