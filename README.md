@@ -1,5 +1,12 @@
 # Hide + Seek — Aalborg seeker map
 
+## Bus routes: bundled Rejseplanen GTFS
+
+Bus overlays no longer depend on live OpenStreetMap/Overpass discovery during normal use. The project ships `bus-routes.js`, generated from the official Rejseplanen GTFS feed dated 2026-07-27. It contains every timetable shape variant that reaches the Aalborg game area, cropped to a small Aalborg envelope. The browser then clips those local lines against the exact live union of the four Zone 2 play polygons before drawing them.
+
+Current bundled routes are **14 Bybus**, **15 Regionalbus**, **8 Expresbus**, and **2 Lokalbus**. Lokalbus includes routes **38 and 271**. Overpass remains only as an emergency fallback if `bus-routes.js` is missing.
+
+
 A seeker's map for the home version of *Jet Lag: The Game*'s Hide + Seek. You log each answer
 the hider gives you; the map shades away everywhere they can't be. The number in the corner is
 how many km² are left.
@@ -17,7 +24,7 @@ Radar centres, both Thermometer endpoints, and the point used by zone-border Mea
 
 ## Put it on GitHub Pages
 
-1. Create a repo and drop `index.html`, `styles.css`, `app.js` and `data.js` into the root.
+1. Create a repo and drop `index.html`, `styles.css`, `app.js`, `data.js` and `bus-routes.js` into the root.
 2. **Settings → Pages → Source: Deploy from a branch**, branch `main`, folder `/ (root)`.
 3. Wait a minute. It's live at `https://<you>.github.io/<repo>/`.
 

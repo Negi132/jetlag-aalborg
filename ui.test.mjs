@@ -55,6 +55,7 @@ run(fs.readFileSync(bundle('leaflet/dist/leaflet-src.js'), 'utf8'), 'leaflet');
 run(fs.readFileSync(bundle('@turf/turf/turf.min.js'), 'utf8'), 'turf');
 run(fs.readFileSync(bundle('proj4/dist/proj4.js'), 'utf8'), 'proj4');
 run(fs.readFileSync(dir + 'data.js', 'utf8'), 'data.js');
+run(fs.readFileSync(dir + 'bus-routes.js', 'utf8'), 'bus-routes.js');
 run(fs.readFileSync(dir + 'app.js', 'utf8'), 'app.js');
 
 const doc = window.document;
@@ -484,17 +485,15 @@ check('four NT timetable bus categories are configured',
       Object.keys(routeCatalogue).sort().join(',') === 'bybus,express,local,regional',
       Object.keys(routeCatalogue).join(','));
 check('Bybus catalogue contains line 11', routeCatalogue.bybus.refs.includes('11'));
-check('Regionalbus catalogue contains Aalborg route 42', routeCatalogue.regional.refs.includes('42'));
-check('route 38 is not misclassified as Regionalbus', !routeCatalogue.regional.refs.includes('38'));
+check('Regionalbus catalogue excludes local route 38', !routeCatalogue.regional.refs.includes('38'));
 check('Expresbus catalogue contains 950X', routeCatalogue.express.refs.includes('950X'));
-check('Lokalbus catalogue contains 271', routeCatalogue.local.refs.includes('271'));
-check('Lokalbus catalogue contains route 38', routeCatalogue.local.refs.includes('38'));
+check('Lokalbus catalogue contains 38 and 271', routeCatalogue.local.refs.includes('38') && routeCatalogue.local.refs.includes('271'));
+check('bundled GTFS Bybus contains all 14 Aalborg lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('bybus')).count") === 14);
+check('bundled GTFS Regionalbus contains 15 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('regional')).count") === 15);
+check('bundled GTFS Expresbus contains 8 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('express')).count") === 8);
+check('bundled GTFS Lokalbus contains 38 and 271', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('local')).refs.join(',')") === '38, 271');
 check('route 11 has a guaranteed bundled fallback geometry', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11' && Array.isArray(x.staticGeometry) && x.staticGeometry.length>10)"));
 check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
-check('route 38 has bundled waypoint fallback', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38' && Array.isArray(x.fallbackWaypoints) && x.fallbackWaypoints.length>=8)"));
-check('sparse Bybus results trigger the reliable broad fallback', window.eval("HS.needsBroadBusFallback('bybus',{type:'FeatureCollection',features:[]})"));
-window.__fiveBybus = {type:'FeatureCollection',features:['1','2','3','5','6'].map((ref,i)=>({type:'Feature',properties:{ref,__routeRefs:[ref]},geometry:{type:'LineString',coordinates:[[9.90+i*.001,57.04],[9.91+i*.001,57.04]]}}))};
-check('a healthy Bybus response does not trigger broad fallback', !window.eval("HS.needsBroadBusFallback('bybus',window.__fiveBybus)"));
 const bybusQ = window.eval("HS.overpassBusRefsQuery(['11','14'])");
 check('category query asks only for requested refs', /ref.*11\\|14/.test(bybusQ), bybusQ.slice(0,130));
 check('category query is geographically bounded', /relation\(/.test(bybusQ));
