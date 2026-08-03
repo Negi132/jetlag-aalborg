@@ -45,7 +45,13 @@ AUDIT = ROOT / 'HYDRO_AUDIT.md'
 # indentations and OSM vertex noise.
 ABSTRACT_BIN_DEG = 0.00055
 ABSTRACT_SAMPLE_STEP_DEG = 0.00025
-ABSTRACT_MAX_GAP_DEG = 0.007
+ABSTRACT_MAX_GAP_DEG = 0.010
+# A valid Limfjord bin needs enough north/south separation that we know both
+# mainland banks are represented. The mainland shores are then simply the
+# OUTERMOST latitude samples in that bin; island shores such as Egholm sit
+# between them and are therefore ignored automatically.
+ABSTRACT_MIN_BANK_SPREAD_DEG = 0.0018
+ABSTRACT_ENVELOPE_NEIGHBOR_BINS = 1
 # Never join one bank to the other merely because their longitude bins are adjacent.
 # At Aalborg, a >~390 m north/south jump between neighbouring envelope points is
 # always a discontinuity, not a legitimate shoreline bend.
@@ -174,22 +180,6 @@ def generic_water_label(props):
     return 'Unnamed body of water'
 
 
-def point_shore_side(coord, north_land, south_land):
-    """Classify ONE sampled coastline point, never an entire OSM way.
-
-    Some formal coastline ways around central Aalborg are long/connected enough
-    that classifying the whole LineString by its aggregate distance can assign a
-    stretch of the south bank to the north bank (or vice versa).  That was the
-    source of the Limfjordsbroen cross-fjord jump.  Point-wise classification
-    keeps the two banks independent even when the source way topology changes at
-    bridges/harbour structures.
-    """
-    p = Point(coord)
-    dn = p.distance(north_land)
-    ds = p.distance(south_land)
-    return ('north', dn, ds) if dn <= ds else ('south', ds, dn)
-
-
 def densified_points(line, step=ABSTRACT_SAMPLE_STEP_DEG):
     if line is None or line.is_empty or line.length <= 0:
         return []
@@ -197,46 +187,8 @@ def densified_points(line, step=ABSTRACT_SAMPLE_STEP_DEG):
     return [line.interpolate(i / (n - 1), normalized=True).coords[0] for i in range(n)]
 
 
-def generalized_bank(formal_lines, side, north_land, south_land, play):
-    """Return a stable medium-detail approximation of one Limfjord bank.
-
-    Only formal ``natural=coastline`` contributes.  Crucially, classification is
-    done for every densified SAMPLE rather than for an entire OSM way.  We then
-    build the fjord-facing longitude envelope for the requested bank, apply only
-    modest smoothing, and refuse to connect neighbouring points across a large
-    north/south jump.  This preserves the v6 level of granularity while making a
-    north-bank -> south-bank bridge impossible.
-    """
-    xmin, ymin, xmax, ymax = play.bounds
-    points = []
-    for ln in formal_lines:
-        for x, y in densified_points(ln):
-            if not (xmin - ABSTRACT_DISTANCE_PAD_DEG <= x <= xmax + ABSTRACT_DISTANCE_PAD_DEG):
-                continue
-            sample_side, own_dist, opposite_dist = point_shore_side((x, y), north_land, south_land)
-            if sample_side != side:
-                continue
-            # Exclude unrelated outer coastline.  This is evaluated per sample,
-            # so a long source way can no longer drag the wrong shore with it.
-            if opposite_dist > ABSTRACT_OPPOSITE_BANK_MAX_DEG:
-                continue
-            points.append((x, y))
-    if len(points) < 4:
-        return []
-
-    buckets = defaultdict(list)
-    x0 = xmin - ABSTRACT_DISTANCE_PAD_DEG
-    for x, y in points:
-        buckets[int(math.floor((x - x0) / ABSTRACT_BIN_DEG))].append((x, y))
-
-    raw = []
-    for idx in sorted(buckets):
-        vals = buckets[idx]
-        x = median([v[0] for v in vals])
-        # Fjord-facing envelope: lower latitude on the north bank, higher on
-        # the south bank. This bridges only small harbour/marina indentations.
-        y = min(v[1] for v in vals) if side == 'north' else max(v[1] for v in vals)
-        raw.append((x, y))
+def _clean_and_segment_bank(raw):
+    """Apply the existing medium-detail smoothing without changing granularity."""
     if len(raw) < 2:
         return []
 
@@ -253,10 +205,6 @@ def generalized_bank(formal_lines, side, north_land, south_land, play):
         hi = min(len(cleaned), i + ABSTRACT_SMOOTH_BINS + 1)
         smooth.append((x, median([cleaned[j][1] for j in range(lo, hi)])))
 
-    # Split on BOTH missing longitude coverage and impossible vertical leaps.
-    # The old implementation checked only x, which allowed the north bank to be
-    # connected diagonally to a perfectly valid south-bank segment at the same
-    # longitude around Limfjordsbroen.
     segments, current = [], [smooth[0]]
     for pt in smooth[1:]:
         prev = current[-1]
@@ -279,21 +227,99 @@ def generalized_bank(formal_lines, side, north_land, south_land, play):
     return out
 
 
-def validate_generalized_bank(lines, side, north_land, south_land):
-    """Reject a generalized bank that has crossed to the opposite landmass."""
-    checked = wrong = 0
-    for ln in lines:
-        for coord in densified_points(ln, step=max(ABSTRACT_SAMPLE_STEP_DEG * 4, 0.0008)):
-            got, _, _ = point_shore_side(coord, north_land, south_land)
-            checked += 1
-            if got != side:
-                wrong += 1
-    if checked and wrong / checked > 0.05:
-        raise RuntimeError(
-            f'Generalized {side} shoreline crossed to opposite bank: {wrong}/{checked} sampled points'
-        )
-    return checked, wrong
+def generalized_banks(formal_lines, play):
+    """Build BOTH mainland Limfjord banks from the outer coastline envelope.
 
+    This deliberately does not classify coastline points by nearest Zone-2
+    polygon.  The municipal polygons extend into the fjord, which allowed
+    Egholm and even the opposite bank to be misclassified in previous builds.
+
+    Instead, each longitude slice looks at *all* formal ``natural=coastline``
+    samples.  The mainland north shore is the northernmost sample and the
+    mainland south shore is the southernmost sample.  Island coastlines such as
+    Egholm are physically between those two and therefore cannot be selected.
+
+    A slice is accepted only when it contains a credible north/south spread.
+    Small source gaps are bridged by looking one neighbouring bin either side;
+    larger gaps remain separate segments rather than causing a cross-fjord jump.
+    """
+    xmin, ymin, xmax, ymax = play.bounds
+    x0 = xmin - ABSTRACT_DISTANCE_PAD_DEG
+    x1 = xmax + ABSTRACT_DISTANCE_PAD_DEG
+    # Keep source samples reasonably close to the game latitude. This excludes
+    # unrelated coastlines should the upstream extract ever be broader than
+    # intended, while leaving ample room around both Limfjord banks.
+    y0 = ymin - ABSTRACT_DISTANCE_PAD_DEG
+    y1 = ymax + ABSTRACT_DISTANCE_PAD_DEG
+
+    buckets = defaultdict(list)
+    for ln in formal_lines:
+        for x, y in densified_points(ln):
+            if not (x0 <= x <= x1 and y0 <= y <= y1):
+                continue
+            idx = int(math.floor((x - x0) / ABSTRACT_BIN_DEG))
+            buckets[idx].append((x, y))
+    if not buckets:
+        return [], [], 0, 0
+
+    north_raw, south_raw = [], []
+    accepted_bins = rejected_bins = 0
+    for idx in range(min(buckets), max(buckets) + 1):
+        own = buckets.get(idx, [])
+        if not own:
+            # We need an x anchored by actual source coverage in this slice;
+            # neighbouring bins only help identify the two banks.
+            continue
+        context = []
+        for j in range(idx - ABSTRACT_ENVELOPE_NEIGHBOR_BINS,
+                       idx + ABSTRACT_ENVELOPE_NEIGHBOR_BINS + 1):
+            context.extend(buckets.get(j, []))
+        if len(context) < 2:
+            rejected_bins += 1
+            continue
+        ys = [p[1] for p in context]
+        lo_y, hi_y = min(ys), max(ys)
+        if hi_y - lo_y < ABSTRACT_MIN_BANK_SPREAD_DEG:
+            # Only one bank (or one island edge) is visible here. Skipping is
+            # safer than guessing and accidentally jumping across the fjord.
+            rejected_bins += 1
+            continue
+        x = median([p[0] for p in own])
+        # OUTER envelope: north mainland is the highest-latitude coastline;
+        # south mainland is the lowest. Egholm always lies between them.
+        north_raw.append((x, hi_y))
+        south_raw.append((x, lo_y))
+        accepted_bins += 1
+
+    return (_clean_and_segment_bank(north_raw),
+            _clean_and_segment_bank(south_raw),
+            accepted_bins, rejected_bins)
+
+
+def validate_generalized_banks(north_lines, south_lines):
+    """Ensure the two generated envelopes never cross or collapse together."""
+    # Sample both banks into longitude buckets and compare wherever they overlap.
+    def samples(lines):
+        out = defaultdict(list)
+        for ln in lines:
+            for x, y in densified_points(ln, step=max(ABSTRACT_SAMPLE_STEP_DEG * 3, 0.0007)):
+                out[int(round(x / ABSTRACT_BIN_DEG))].append(y)
+        return out
+    n = samples(north_lines)
+    s = samples(south_lines)
+    checked = wrong = 0
+    for idx in set(n).intersection(s):
+        ny = median(n[idx]); sy = median(s[idx])
+        checked += 1
+        if ny <= sy or (ny - sy) < ABSTRACT_MIN_BANK_SPREAD_DEG * 0.45:
+            wrong += 1
+    if checked and wrong:
+        raise RuntimeError(
+            f'Generalized Limfjord banks crossed/collapsed in {wrong}/{checked} overlapping longitude samples'
+        )
+    if checked < 8:
+        raise RuntimeError(f'Too little overlapping north/south shoreline coverage to validate ({checked} samples)')
+    return checked, wrong
 
 def simplify_water(g, tolerance=WATER_VISIBLE_SIMPLIFY_DEG):
     try:
@@ -370,14 +396,12 @@ def main():
     # Build a medium-detail two-bank shoreline from ONLY the formal OSM
     # coastline. Urban roads/railways/quays can therefore never leak into the
     # Measuring geometry.
-    generalized_north = generalized_bank(formal_coast, 'north', north_land, south_land, play)
-    generalized_south = generalized_bank(formal_coast, 'south', north_land, south_land, play)
+    generalized_north, generalized_south, envelope_bins, rejected_envelope_bins = generalized_banks(formal_coast, play)
     if not generalized_north or not generalized_south:
         raise RuntimeError(
-            f'Could not construct both generalized Limfjord banks (north={len(generalized_north)}, south={len(generalized_south)})'
+            f'Could not construct both generalized Limfjord mainland banks (north={len(generalized_north)}, south={len(generalized_south)})'
         )
-    north_checked, north_wrong = validate_generalized_bank(generalized_north, 'north', north_land, south_land)
-    south_checked, south_wrong = validate_generalized_bank(generalized_south, 'south', north_land, south_land)
+    bank_checked, bank_wrong = validate_generalized_banks(generalized_north, generalized_south)
 
     visible_north_parts, visible_south_parts = [], []
     distance_north_parts, distance_south_parts = [], []
@@ -506,7 +530,7 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 7, 'ready': True, 'generatedAt': now,
+        'version': 8, 'ready': True, 'generatedAt': now,
         'coastlines': {'north': fc(visible_north_parts), 'south': fc(visible_south_parts)},
         'coastlineDistance': {'north': fc(distance_north_parts), 'south': fc(distance_south_parts)},
         'waterBodies': fc(water_features),
@@ -529,10 +553,10 @@ def main():
         f'- Generalized northern shoreline pieces: **{len(visible_north_parts)}**',
         f'- Generalized southern shoreline pieces: **{len(visible_south_parts)}**',
         f'- Shoreline inference from roads/railways/quays/paths: **disabled**',
-        f'- Shoreline bank classification: **per sampled coastline point (v7)**',
-        f'- Cross-bank joins over ~390 m north/south: **forbidden**',
-        f'- North-bank side validation: **{north_checked - north_wrong}/{north_checked} samples correct**',
-        f'- South-bank side validation: **{south_checked - south_wrong}/{south_checked} samples correct**',
+        f'- Shoreline bank selection: **outer north/south coastline envelope (v8)**',
+        f'- Island coastlines (including Egholm): **ignored automatically as interior envelope samples**',
+        f'- Envelope longitude bins accepted/rejected: **{envelope_bins}/{rejected_envelope_bins}**',
+        f'- Cross-bank validation: **{bank_checked - bank_wrong}/{bank_checked} overlapping samples correct**',
         f'- Hidden northern distance-cache pieces: **{len(distance_north_parts)}**',
         f'- Hidden southern distance-cache pieces: **{len(distance_south_parts)}**',
         f'- Total body-of-water targets: **{len(water_features)}**',

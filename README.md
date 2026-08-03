@@ -527,3 +527,13 @@ The weekly hydro snapshot now deliberately uses **only** `natural=coastline` for
 Coastline Measuring now uses a medium-detail generalized north and south Limfjord bank rather than the very broad v4.8 envelope. Only formal `natural=coastline` contributes, but the shorter smoothing window preserves the fjord's general bends while still suppressing small harbour detail.
 
 Body-of-water bundles now store each target's marker coordinate and bounding box during the weekly build. Valid v6 bundles are already play-area clipped, so the browser no longer re-intersects every water body or runs `pointOnFeature` for every marker when the card opens. The calculation-only combined water geometry is also simplified more aggressively, and nearest-water lookup uses the cached bounds to avoid most expensive exact geometry-distance checks.
+
+
+### Mainland-only Limfjord coastline (v4.11)
+
+Coastline Measuring uses the two **mainland** Limfjord banks. The weekly hydro generator
+selects the outer north/south coastline envelope in each longitude slice, so island shores
+(such as Egholm) are ignored automatically. This also prevents a missing source segment from
+causing the northern bank to jump to the southern bank: a slice is accepted only when both
+mainland banks are present with a credible fjord-width separation. Short source gaps are
+bridged at the same medium-detail granularity used in v4.9/v4.10.
