@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Build static, deliberately simplified Limfjord shoreline + water geometry.
+"""Build static, generalized Limfjord shoreline + water geometry.
 
-Coastline Measuring uses an ABSTRACT shoreline generated only from OSM
+Coastline Measuring uses a MEDIUM-DETAIL generalized shoreline generated only from OSM
 ``natural=coastline``.  We intentionally do not infer shoreline from roads,
 railways, promenades, quays, embankments, or other urban features: that proved
-too easy to contaminate in dense Aalborg mapping.  For each bank we sample the
-formal coast, keep the fjord-facing envelope, smooth it, and simplify it into a
-small number of points.  The result is slightly less cartographically exact,
-but much more stable and much faster for the game rule.
+too easy to contaminate in dense Aalborg mapping.  For each bank we sample the formal coast, keep the fjord-facing envelope, apply only modest
+smoothing to suppress harbour micro-detail, and simplify it. The result follows the
+general bends of both banks while avoiding every tiny quay/basin vertex.
 
 Water targets preserve every distinct mapped water feature (plus cautious
 chalk/limestone-quarry fallbacks).  A separate pre-unioned/simplified distance
@@ -40,20 +39,24 @@ AUDIT = ROOT / 'HYDRO_AUDIT.md'
 # one envelope sample every 80-100 m, then a small smoothing window and a
 # topology-safe simplification. This is plenty for a city-scale question while
 # making the runtime buffer dramatically cheaper.
-ABSTRACT_BIN_DEG = 0.00145
-ABSTRACT_SAMPLE_STEP_DEG = 0.00055
-ABSTRACT_MAX_GAP_DEG = 0.014
-ABSTRACT_SMOOTH_BINS = 10
-ABSTRACT_OUTLIER_BINS = 18
-ABSTRACT_OUTLIER_DEG = 0.00075
-ABSTRACT_SIMPLIFY_DEG = 0.00022
+# Medium-detail bank: roughly 30-35 m longitude bins at Aalborg, with a
+# rolling window of only ~150-200 m. This follows the general shoreline much
+# more closely than v5's ~1-2 km smoothing while still bridging small marina
+# indentations and OSM vertex noise.
+ABSTRACT_BIN_DEG = 0.00055
+ABSTRACT_SAMPLE_STEP_DEG = 0.00025
+ABSTRACT_MAX_GAP_DEG = 0.007
+ABSTRACT_SMOOTH_BINS = 2
+ABSTRACT_OUTLIER_BINS = 5
+ABSTRACT_OUTLIER_DEG = 0.00036
+ABSTRACT_SIMPLIFY_DEG = 0.00008
 ABSTRACT_OPPOSITE_BANK_MAX_DEG = 0.035
 ABSTRACT_DISTANCE_PAD_DEG = 0.012
 
-# Water polygons retain substantially more detail than the abstract coast, but
+# Water polygons retain substantially more detail than the generalized coast, but
 # do not need centimetre-level OSM vertex density for this game.
 WATER_VISIBLE_SIMPLIFY_DEG = 0.000035
-WATER_DISTANCE_SIMPLIFY_DEG = 0.000090
+WATER_DISTANCE_SIMPLIFY_DEG = 0.000180
 
 
 def norm(value):
@@ -128,6 +131,23 @@ def feature(g, props):
     return {'type': 'Feature', 'properties': props, 'geometry': mapping(g)}
 
 
+def water_feature(g, props):
+    """Emit browser-ready water metadata so opening the card does no Turf work."""
+    p = dict(props)
+    try:
+        rp = g.representative_point()
+        p['__markerCoord'] = [round(float(rp.x), 7), round(float(rp.y), 7)]
+    except Exception:
+        pass
+    try:
+        xmin, ymin, xmax, ymax = g.bounds
+        p['__bbox'] = [round(float(xmin), 7), round(float(ymin), 7),
+                       round(float(xmax), 7), round(float(ymax), 7)]
+    except Exception:
+        pass
+    return feature(g, p)
+
+
 def osm_identity(props, geom):
     for key in ('@id', 'id', 'osm_id'):
         if props.get(key) not in (None, ''):
@@ -163,13 +183,13 @@ def densified_points(line, step=ABSTRACT_SAMPLE_STEP_DEG):
     return [line.interpolate(i / (n - 1), normalized=True).coords[0] for i in range(n)]
 
 
-def abstract_bank(formal_lines, side, north_land, south_land, play):
-    """Return a tiny, stable approximation of one Limfjord bank.
+def generalized_bank(formal_lines, side, north_land, south_land, play):
+    """Return a stable medium-detail approximation of one Limfjord bank.
 
-    Only formal ``natural=coastline`` contributes.  Within each longitude bin
-    we keep the point facing the open fjord: the SOUTH-most point for the north
-    bank and the NORTH-most point for the south bank.  Harbour indentations are
-    therefore deliberately bridged rather than followed into every basin.
+    Only formal ``natural=coastline`` contributes. Within each short longitude
+    bin we keep the point facing the open fjord, then apply modest local median
+    smoothing. This follows the broad curves of each bank while bridging only
+    small harbour/marina indentations.
     """
     opposite = south_land if side == 'north' else north_land
     xmin, ymin, xmax, ymax = play.bounds
@@ -204,9 +224,8 @@ def abstract_bank(formal_lines, side, north_land, south_land, play):
     if len(raw) < 2:
         return []
 
-    # First suppress deep harbour/marina excursions: an abstract shoreline is
-    # meant to follow the broad fjord bank, not every basin. A point that moves
-    # far away from the local long-window median is replaced by that median.
+    # Suppress only obvious harbour/marina excursions. The shorter v6 window
+    # deliberately preserves ordinary bends in the general fjord boundary.
     cleaned = []
     for i, (x, y) in enumerate(raw):
         lo = max(0, i - ABSTRACT_OUTLIER_BINS)
@@ -214,7 +233,8 @@ def abstract_bank(formal_lines, side, north_land, south_land, play):
         local = median([raw[j][1] for j in range(lo, hi)])
         cleaned.append((x, local if abs(y - local) > ABSTRACT_OUTLIER_DEG else y))
 
-    # Then a smaller rolling median removes minor OSM vertex noise.
+    # A short rolling median removes minor OSM vertex noise without flattening
+    # the overall bank shape.
     smooth = []
     for i, (x, y) in enumerate(cleaned):
         lo = max(0, i - ABSTRACT_SMOOTH_BINS)
@@ -312,24 +332,24 @@ def main():
     if not formal_coast:
         raise RuntimeError('Could not identify the formal Limfjord coastline')
 
-    # Build a deliberately abstract two-bank shoreline from ONLY the formal OSM
+    # Build a medium-detail two-bank shoreline from ONLY the formal OSM
     # coastline. Urban roads/railways/quays can therefore never leak into the
     # Measuring geometry.
-    abstract_north = abstract_bank(formal_coast, 'north', north_land, south_land, play)
-    abstract_south = abstract_bank(formal_coast, 'south', north_land, south_land, play)
-    if not abstract_north or not abstract_south:
+    generalized_north = generalized_bank(formal_coast, 'north', north_land, south_land, play)
+    generalized_south = generalized_bank(formal_coast, 'south', north_land, south_land, play)
+    if not generalized_north or not generalized_south:
         raise RuntimeError(
-            f'Could not construct both abstract Limfjord banks (north={len(abstract_north)}, south={len(abstract_south)})'
+            f'Could not construct both generalized Limfjord banks (north={len(generalized_north)}, south={len(generalized_south)})'
         )
 
     visible_north_parts, visible_south_parts = [], []
     distance_north_parts, distance_south_parts = [], []
     distance_scope = play.buffer(ABSTRACT_DISTANCE_PAD_DEG)
     for side, lines, visible_out, distance_out in (
-        ('north', abstract_north, visible_north_parts, distance_north_parts),
-        ('south', abstract_south, visible_south_parts, distance_south_parts),
+        ('north', generalized_north, visible_north_parts, distance_north_parts),
+        ('south', generalized_south, visible_south_parts, distance_south_parts),
     ):
-        props = {'name': 'Limfjorden', '__hydroKind': 'coastline', '__shoreSide': side, '__abstract': True}
+        props = {'name': 'Limfjorden', '__hydroKind': 'coastline', '__shoreSide': side, '__generalized': True}
         for ln in lines:
             dclip = ln.intersection(distance_scope)
             for part in iter_lines(dclip):
@@ -390,7 +410,7 @@ def main():
             clipped = clip_feature_geometry(merged, play)
             if clipped and not clipped.is_empty:
                 clipped = simplify_water(clipped)
-                water_features.append(feature(clipped, {
+                water_features.append(water_feature(clipped, {
                     'name': label, '__hydroKind': 'water', '__waterSource': 'osm-named',
                     '__waterId': 'name:' + norm(label)
                 }))
@@ -402,7 +422,7 @@ def main():
         if not clipped or clipped.is_empty:
             continue
         clipped = simplify_water(clipped)
-        water_features.append(feature(clipped, {
+        water_features.append(water_feature(clipped, {
             'name': label, '__hydroKind': 'water', '__waterSource': 'osm-unnamed',
             '__waterId': osm_identity(props, g), '__unnamed': True
         }))
@@ -412,16 +432,16 @@ def main():
         if not clipped or clipped.is_empty:
             continue
         clipped = simplify_water(clipped)
-        water_features.append(feature(clipped, {
+        water_features.append(water_feature(clipped, {
             'name': label, '__hydroKind': 'water', '__waterSource': 'quarry-fallback',
             '__waterId': osm_identity(props, g), '__approximateBoundary': True
         }))
 
-    # The fjord itself is represented by the two abstract in-play shorelines.
+    # The fjord itself is represented by the two generalized in-play shorelines.
     fjord_visible = unary_union([shape(ft['geometry']) for ft in visible_north_parts + visible_south_parts])
-    water_features.append(feature(fjord_visible, {
-        'name': 'Limfjorden', '__hydroKind': 'fjord', '__waterSource': 'abstract-shoreline',
-        '__waterId': 'fjord:limfjorden', '__abstract': True
+    water_features.append(water_feature(fjord_visible, {
+        'name': 'Limfjorden', '__hydroKind': 'fjord', '__waterSource': 'generalized-shoreline',
+        '__waterId': 'fjord:limfjorden', '__generalized': True
     }))
 
     # PRE-UNION the expensive Measuring target geometry. The browser still gets
@@ -449,7 +469,7 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 5, 'ready': True, 'generatedAt': now,
+        'version': 6, 'ready': True, 'generatedAt': now,
         'coastlines': {'north': fc(visible_north_parts), 'south': fc(visible_south_parts)},
         'coastlineDistance': {'north': fc(distance_north_parts), 'south': fc(distance_south_parts)},
         'waterBodies': fc(water_features),
@@ -469,8 +489,8 @@ def main():
         '# Aalborg hydro snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Formal OSM coastline pieces used as source: **{len(formal_coast)}**',
-        f'- Abstract northern shoreline pieces: **{len(visible_north_parts)}**',
-        f'- Abstract southern shoreline pieces: **{len(visible_south_parts)}**',
+        f'- Generalized northern shoreline pieces: **{len(visible_north_parts)}**',
+        f'- Generalized southern shoreline pieces: **{len(visible_south_parts)}**',
         f'- Shoreline inference from roads/railways/quays/paths: **disabled**',
         f'- Hidden northern distance-cache pieces: **{len(distance_north_parts)}**',
         f'- Hidden southern distance-cache pieces: **{len(distance_south_parts)}**',
@@ -481,7 +501,7 @@ def main():
         '## Named body-of-water targets', '', ', '.join(named_labels) or '_None_', ''
     ]), encoding='utf-8')
     print(
-        f'Hydro cache: formal coast source={len(formal_coast)}, abstract north={len(visible_north_parts)}, abstract south={len(visible_south_parts)}, '
+        f'Hydro cache: formal coast source={len(formal_coast)}, generalized north={len(visible_north_parts)}, generalized south={len(visible_south_parts)}, '
         f'water bodies={len(water_features)} (unnamed={unnamed_count}, quarry fallback={quarry_count}), '
         f'pre-unioned water distance geometries={len(water_distance_features)}'
     )

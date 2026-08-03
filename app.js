@@ -1924,6 +1924,21 @@ function bundledHydroData() {
   return b && b.ready === true ? b : null;
 }
 
+// Generated hydro data is immutable for the lifetime of the page. Cache the
+// prepared arrays instead of re-clipping/re-flattening them every preview
+// render. v6+ bundles are already validated and clipped by GitHub Actions.
+const hydroPreparedCache = { bundle: null, values: new Map() };
+function preparedHydro(key, build) {
+  const b = bundledHydroData();
+  if (hydroPreparedCache.bundle !== b) {
+    hydroPreparedCache.bundle = b;
+    hydroPreparedCache.values.clear();
+  }
+  if (!b) return build(null);
+  if (!hydroPreparedCache.values.has(key)) hydroPreparedCache.values.set(key, build(b));
+  return hydroPreparedCache.values.get(key);
+}
+
 function flattenLineFeatures(ft) {
   const out = [];
   if (!ft || !ft.geometry) return out;
@@ -2013,40 +2028,50 @@ function clipHydroFeatureToPlayArea(ft) {
 }
 
 function hydroCoastFeatures(side = 'all', forDistance = false) {
-  const b = bundledHydroData();
-  const group = forDistance && b && b.coastlineDistance ? b.coastlineDistance : (b && b.coastlines);
-  if (!group) return [];
-  const sides = !side || side === 'all' ? ['north', 'south'] : [side];
-  const features = sides.flatMap((key) => {
-    const gj = group[key];
-    return gj && Array.isArray(gj.features) ? gj.features : [];
+  const cacheKey = `coast:${forDistance ? 'distance' : 'visible'}:${side || 'all'}`;
+  return preparedHydro(cacheKey, (b) => {
+    const group = forDistance && b && b.coastlineDistance ? b.coastlineDistance : (b && b.coastlines);
+    if (!group) return [];
+    const sides = !side || side === 'all' ? ['north', 'south'] : [side];
+    const features = sides.flatMap((key) => {
+      const gj = group[key];
+      return gj && Array.isArray(gj.features) ? gj.features : [];
+    });
+    // v6+ visible geometry has already been clipped/validated in the workflow.
+    // Older snapshots keep the runtime guard for compatibility.
+    if (forDistance || (b && Number(b.version) >= 6)) return features;
+    return features.map(clipHydroFeatureToPlayArea).filter(Boolean);
   });
-  // Distance geometry may extend a little beyond the game boundary invisibly
-  // so edge distances stay correct. Anything drawn on the map is clipped.
-  return forDistance ? features : features.map(clipHydroFeatureToPlayArea).filter(Boolean);
 }
 
 function hydroWaterFeatures() {
-  const b = bundledHydroData();
-  const features = b && b.waterBodies && Array.isArray(b.waterBodies.features)
-    ? b.waterBodies.features : [];
-  // v3 bundles are already clipped by the generator. Runtime clipping is kept
-  // as a second guard so an old/stale cache can never show water targets beyond
-  // the current play area.
-  return features.map(clipHydroFeatureToPlayArea).filter(Boolean);
+  return preparedHydro('water:visible', (b) => {
+    const features = b && b.waterBodies && Array.isArray(b.waterBodies.features)
+      ? b.waterBodies.features : [];
+    // v6+ bundles already contain strictly in-play features. Avoid an expensive
+    // Turf intersection for every water body every time the preview redraws.
+    return b && Number(b.version) >= 6
+      ? features
+      : features.map(clipHydroFeatureToPlayArea).filter(Boolean);
+  });
 }
 
 function hydroWaterDistanceFeatures() {
-  const b = bundledHydroData();
-  const compact = b && b.waterDistance && Array.isArray(b.waterDistance.features)
-    ? b.waterDistance.features : [];
-  // v5+ bundles pre-union and simplify the expensive water geometry during the
-  // weekly build. Old bundles transparently fall back to the individual targets.
-  return compact.length ? compact : hydroWaterFeatures();
+  return preparedHydro('water:distance', (b) => {
+    const compact = b && b.waterDistance && Array.isArray(b.waterDistance.features)
+      ? b.waterDistance.features : [];
+    // The workflow pre-unions and aggressively simplifies this calculation-only
+    // geometry. Individual water features remain available for names/markers.
+    return compact.length ? compact : hydroWaterFeatures();
+  });
 }
 
 function hydroFeatureMarkerCoord(ft) {
   if (!ft || !ft.geometry) return null;
+  const cached = ft.properties && ft.properties.__markerCoord;
+  if (Array.isArray(cached) && cached.length >= 2 && Number.isFinite(Number(cached[0])) && Number.isFinite(Number(cached[1]))) {
+    return [Number(cached[0]), Number(cached[1])];
+  }
   try {
     if (ft.geometry.type === 'Point') return ft.geometry.coordinates.slice();
     const p = turf.pointOnFeature(ft);
@@ -2054,11 +2079,45 @@ function hydroFeatureMarkerCoord(ft) {
   } catch (_) { return null; }
 }
 
+function bboxDistanceLowerBoundM(coord, bbox) {
+  if (!coord || !Array.isArray(bbox) || bbox.length < 4) return 0;
+  const x = Number(coord[0]), y = Number(coord[1]);
+  const minX = Number(bbox[0]), minY = Number(bbox[1]), maxX = Number(bbox[2]), maxY = Number(bbox[3]);
+  if (![x,y,minX,minY,maxX,maxY].every(Number.isFinite)) return 0;
+  const cx = Math.max(minX, Math.min(maxX, x));
+  const cy = Math.max(minY, Math.min(maxY, y));
+  const latM = (y - cy) * 111320;
+  const lngM = (x - cx) * 111320 * Math.cos(y * Math.PI / 180);
+  return Math.hypot(latM, lngM);
+}
+
 function nearestWaterFeature(coord) {
   const feats = hydroWaterFeatures();
-  let best = Infinity, chosen = null, chosenIndex = -1;
+  if (!feats.length) return null;
+
+  // Seed the exact search with the nearest precomputed marker. This quickly
+  // establishes a useful upper bound; feature bboxes then skip most expensive
+  // point-to-line/polygon distance calculations.
+  let seed = -1, seedApprox = Infinity;
   for (let i = 0; i < feats.length; i++) {
+    const c = hydroFeatureMarkerCoord(feats[i]);
+    if (!c) continue;
+    const dy = (coord[1] - c[1]) * 111320;
+    const dx = (coord[0] - c[0]) * 111320 * Math.cos(coord[1] * Math.PI / 180);
+    const d = Math.hypot(dx, dy);
+    if (d < seedApprox) { seedApprox = d; seed = i; }
+  }
+
+  let best = Infinity, chosen = null, chosenIndex = -1;
+  if (seed >= 0) {
+    const d = distanceToFeatureM(coord, feats[seed]);
+    if (d != null) { best = d; chosen = feats[seed]; chosenIndex = seed; }
+  }
+  for (let i = 0; i < feats.length; i++) {
+    if (i === seed) continue;
     const ft = feats[i];
+    const bbox = ft.properties && ft.properties.__bbox;
+    if (Number.isFinite(best) && bboxDistanceLowerBoundM(coord, bbox) > best) continue;
     const d = distanceToFeatureM(coord, ft);
     if (d != null && d < best) { best = d; chosen = ft; chosenIndex = i; }
   }
@@ -2094,7 +2153,7 @@ function updateMeasuringHydroFromCoord(coord) {
     const allWater = hydroWaterDistanceFeatures();
     // As with POI Measuring, "a body of water" means distance to the nearest
     // member of the category. The seeker's nearest water establishes the
-    // threshold, but v5+ bundles pre-union/simplify all candidate geometry so
+    // threshold, but v6+ bundles pre-union/simplify all candidate geometry so
     // the browser only has to buffer one or two compact geometries.
     features = allWater.length ? allWater : [hit.feature];
     distanceM = hit.distanceM;
