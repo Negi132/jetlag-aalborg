@@ -813,7 +813,10 @@ function constraintLabel(c) {
 /* ---------- map ---------------------------------------------------- */
 
 const map = L.map('map', {
-  center: CONFIG.center, zoom: CONFIG.zoom, zoomControl: false
+  center: CONFIG.center, zoom: CONFIG.zoom, zoomControl: false,
+  // Large administrative layers (especially Zone 4) are much cheaper to
+  // paint on one canvas than as hundreds/thousands of SVG DOM paths.
+  preferCanvas: true
 });
 L.control.zoom({ position: 'topright' }).addTo(map);
 
@@ -2952,7 +2955,7 @@ function renderPreviewShapes() {
       // asked, and the nearest geometry is selected automatically.
       hydroWaterFeatures().forEach((ft, i) => {
         const c = hydroFeatureMarkerCoord(ft);
-        if (!c) return;
+        if (!c || (S.playArea && !pointInsideFeature(c, S.playArea))) return;
         const selected = draft.autoFeatureIndex === i;
         L.circleMarker([c[1], c[0]], {
           pane: 'previewPane', radius: selected ? 7 : 3.5,
@@ -4315,9 +4318,16 @@ function bundledZoneGeoJson(key) {
   const bundle = window.AALBORG_ZONE_DATA;
   const gj = bundle && bundle.ready === true && bundle.zones ? bundle.zones[key] : null;
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
-  // Zone preparation adds display fields and may normalize coordinates; keep
-  // the immutable static snapshot pristine for later toggles/reloads.
+  // v3+ snapshots are immutable, WGS84, already clipped, and have their Zone
+  // 1/4 catch-all polygons precomputed by GitHub. Avoid JSON-cloning potentially
+  // huge Zone 4 geometry just to toggle a local layer.
+  if (Number(bundle.version) >= 3 && bundle.displayPrepared === true) return gj;
   try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
+}
+
+function bundledZonesAreRenderReady() {
+  const b = window.AALBORG_ZONE_DATA;
+  return !!(b && b.ready === true && Number(b.version) >= 3 && b.displayPrepared === true);
 }
 
 
@@ -4352,7 +4362,68 @@ function bundledZoneBorderGeoJson(key) {
   const bundle = window.AALBORG_ZONE_DATA;
   const gj = bundle && bundle.ready === true && bundle.borders ? bundle.borders[key] : null;
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
+  if (Number(bundle.version) >= 3) return gj;
   try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
+}
+
+const ZONE_DB_NAME = 'hide-seek-aalborg-zone-cache';
+const ZONE_DB_STORE = 'zones';
+const ZONE_DB_VERSION = 1;
+const ZONE_DB_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
+let zoneDbPromise = null;
+
+function openZoneDb() {
+  if (!('indexedDB' in window)) return Promise.resolve(null);
+  if (zoneDbPromise) return zoneDbPromise;
+  zoneDbPromise = new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(ZONE_DB_NAME, ZONE_DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(ZONE_DB_STORE)) db.createObjectStore(ZONE_DB_STORE, { keyPath: 'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (_) { resolve(null); }
+  });
+  return zoneDbPromise;
+}
+
+async function readPersistentZone(key) {
+  const src = S.sources[key], def = DEFAULT_SOURCES[key];
+  if (!src || !def || src.url !== def.url || String(src.typeName || '') !== String(def.typeName || '')) return null;
+  const db = await openZoneDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(ZONE_DB_STORE, 'readonly');
+      const req = tx.objectStore(ZONE_DB_STORE).get(key);
+      req.onsuccess = () => {
+        const rec = req.result;
+        if (!rec || rec.url !== src.url || rec.typeName !== String(src.typeName || '') || !rec.displayGeojson) return resolve(null);
+        if (Date.now() - Number(rec.savedAt || 0) > ZONE_DB_MAX_AGE_MS) return resolve(null);
+        resolve(rec);
+      };
+      req.onerror = () => resolve(null);
+    } catch (_) { resolve(null); }
+  });
+}
+
+async function writePersistentZone(key, rec, displayNameField) {
+  const src = S.sources[key];
+  if (!src || !rec || !rec.geojson) return;
+  const def = DEFAULT_SOURCES[key];
+  if (!def || src.url !== def.url || String(src.typeName || '') !== String(def.typeName || '')) return;
+  const db = await openZoneDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(ZONE_DB_STORE, 'readwrite');
+    tx.objectStore(ZONE_DB_STORE).put({
+      key, url: src.url, typeName: String(src.typeName || ''), savedAt: Date.now(),
+      displayGeojson: rec.geojson, baseGeojson: rec.baseGeojson || rec.geojson,
+      borderGeojson: rec.borderGeojson || null, nameField: displayNameField || rec.nameField || ''
+    });
+  } catch (_) { /* persistence is an optimization only */ }
 }
 
 function officialZone2Data() {
@@ -4420,15 +4491,17 @@ function addLayer(name, geojson, opts = {}) {
   // Zone 1 and Zone 4 are classifications, not complete polygon blankets.
   // Give the unclassified remainder of the play area a real feature so it is
   // coloured, named and selectable just like an official polygon.
-  if ((opts.style === 'zonekort') && kind === 'poly' && S.playArea) {
+  const hasPreparedZone1Rest = feats.some((f) => (f.properties || {}).__zone1Other || (f.properties || {}).__generatedRemainder && String((f.properties || {}).__displayName || '').toLowerCase().includes('landzone'));
+  if ((opts.style === 'zonekort') && kind === 'poly' && S.playArea && !hasPreparedZone1Rest) {
     const covered = unionAll(feats);
     const rest = covered ? gDifference(S.playArea, covered) : turf.clone(S.playArea);
     if (rest) {
-      rest.properties = { navn: 'Landzone', zonestatus: 'Landzone', __displayName: 'Landzone' };
+      rest.properties = { navn: 'Landzone', zonestatus: 'Landzone', __displayName: 'Landzone', __zone1Other: true, __generatedRemainder: true };
       feats.unshift(rest);   // first = drawn first = underneath the byzones
     }
   }
-  if ((opts.style === 'rammer') && kind === 'poly' && S.playArea) {
+  const hasPreparedZone4Rest = feats.some((f) => !!(f.properties || {}).__zone4Other);
+  if ((opts.style === 'rammer') && kind === 'poly' && S.playArea && !hasPreparedZone4Rest) {
     const covered = unionAll(feats);
     const rest = covered ? gDifference(S.playArea, covered) : turf.clone(S.playArea);
     if (rest) {
@@ -5906,28 +5979,48 @@ async function toggleSource(key, btn) {
   setStatus(`Loading ${src.name}…`);
   try {
     const cached = bundledZoneGeoJson(key);
-    const cachedBorders = cached ? bundledZoneBorderGeoJson(key) : null;
-    let gj = (key === 'zone2' && S.zone2Official) ? S.zone2Official
-      : (cached || await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]));
-    let note = cached ? 'cached official snapshot' : '';
-    if (!(key === 'zone2' && gj === S.zone2Official)) {
-      const norm = normaliseCoords(gj);
-      if (!note) note = norm.note || '';
+    const renderReady = !!cached && bundledZonesAreRenderReady();
+    const persistent = cached ? null : await readPersistentZone(key);
+    const cachedBorders = cached ? bundledZoneBorderGeoJson(key) : (persistent && persistent.borderGeojson);
+    let gj, displayGj, baseGj, displayNameField = '';
+    let note = '';
+
+    if (key === 'zone2' && S.zone2Official) {
+      gj = S.zone2Official;
+    } else if (cached) {
+      gj = cached;
+      note = renderReady ? 'render-ready cached official snapshot' : 'cached official snapshot';
+    } else if (persistent) {
+      displayGj = persistent.displayGeojson;
+      baseGj = persistent.baseGeojson || displayGj;
+      displayNameField = persistent.nameField || src.nameField;
+      note = 'persistent on-device official cache';
+    } else {
+      gj = await fetchFirst([src.kind === 'wfs' ? wfsUrl(src) : src.url]);
+    }
+
+    if (!displayGj) {
+      // GitHub v3+ snapshots are already WGS84, clipped, and contain the Zone
+      // 1/4 remainder. Skipping normalization + Turf intersections/unions here
+      // is the main Zone 1/4 performance win.
+      if (!renderReady && !(key === 'zone2' && gj === S.zone2Official)) {
+        const norm = normaliseCoords(gj);
+        if (!note) note = norm.note || '';
+      }
       if (key === 'zone2') {
         gj = prepareOfficialZone2(gj);
         S.zone2Official = gj;
       }
+      displayNameField = prepareSourceLabels(gj, key, src.nameField);
+      displayGj = renderReady ? gj : clipZoneDisplayGeoJsonToPlayArea(gj, key);
+      baseGj = key === 'zone2' ? displayGj : gj;
     }
-    const displayNameField = prepareSourceLabels(gj, key, src.nameField);
-    const displayGj = clipZoneDisplayGeoJsonToPlayArea(gj, key);
-    // For Zone 2, the four displayed polygons ARE the authoritative game-level
-    // geometry. For other levels keep the full source hidden so Measuring can
-    // use real borders without treating play-area clip edges as boundaries.
-    const baseGj = key === 'zone2' ? displayGj : gj;
+
     const rec = addLayer(src.name, displayGj, {
       key: 'src:' + key, nameField: displayNameField || src.nameField, style: src.style,
       sourceKey: key, baseGeojson: baseGj, borderGeojson: cachedBorders
     });
+    if (rec && !cached && !persistent) writePersistentZone(key, rec, displayNameField);
     if (key === 'zone2' && S.playAreaMeta && S.playAreaMeta.type === 'zones') {
       setZonesPlayArea(false);
     }
@@ -5948,13 +6041,14 @@ async function toggleSource(key, btn) {
 async function loadOfficialZone2PlayArea(forceLive = false) {
   const src = S.sources.zone2;
   const cached = forceLive ? null : bundledZoneGeoJson('zone2');
-  if (!cached && (!src || src.kind !== 'wfs' || !src.url || !src.typeName || typeof window.fetch !== 'function')) {
+  const persistent = (!forceLive && !cached) ? await readPersistentZone('zone2') : null;
+  if (!cached && !persistent && (!src || src.kind !== 'wfs' || !src.url || !src.typeName || typeof window.fetch !== 'function')) {
     return false;
   }
   setZoneLoading('zone2', true);
   try {
-    let gj = cached || await fetchFirst([wfsUrl(src)]);
-    normaliseCoords(gj);
+    let gj = cached || (persistent && persistent.baseGeojson) || await fetchFirst([wfsUrl(src)]);
+    if (!(cached && bundledZonesAreRenderReady()) && !persistent) normaliseCoords(gj);
     gj = prepareOfficialZone2(gj);
     if (!officialPlayZoneFeatures(gj).length) {
       throw new Error('could not identify all four Zone 2 play areas');
@@ -5966,6 +6060,7 @@ async function loadOfficialZone2PlayArea(forceLive = false) {
     }
     const status = $('#officialZoneStatus');
     if (status && cached) status.textContent = 'Official Zone 2 loaded instantly from the periodically refreshed local KortInfo snapshot.';
+    else if (status && persistent) status.textContent = 'Official Zone 2 loaded instantly from this device’s persistent KortInfo cache.';
     renderSourceRows();
     renderCal();
     return true;

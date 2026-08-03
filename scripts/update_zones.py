@@ -369,6 +369,50 @@ def clip_zone_features(features, play_geom):
     return out
 
 
+def add_precomputed_remainder(key, features, play_geom):
+    """Add Zone 1/4 catch-all polygons during the scheduled build.
+
+    Older browser builds computed these by Turf-unioning every displayed polygon
+    when the user toggled the layer. That is particularly expensive for Zone 4.
+    Doing the same operation once on GitHub makes the mobile layer render-ready.
+    """
+    if key not in ('zone1', 'zone4'):
+        return features
+    flag = '__zone1Other' if key == 'zone1' else '__zone4Other'
+    # A retained v3 snapshot may already contain the generated remainder. Never
+    # feed that synthetic polygon back into the coverage union or duplicate it.
+    real = [ft for ft in features if not (ft.get('properties') or {}).get(flag)]
+    geoms = []
+    for ft in real:
+        try:
+            g = _polygonal_part(shape(ft['geometry']))
+            if g and not g.is_empty:
+                geoms.append(g)
+        except Exception:
+            pass
+    covered = unary_union(geoms) if geoms else None
+    rest = play_geom.difference(covered) if covered is not None and not covered.is_empty else play_geom
+    rest = _polygonal_part(rest)
+    if rest is None or rest.is_empty:
+        return real
+    if key == 'zone1':
+        props = {
+            'navn': 'Landzone', 'zonestatus': 'Landzone',
+            '__displayName': 'Landzone', '__zone1Other': True,
+            '__generatedRemainder': True,
+        }
+    else:
+        props = {
+            'navn': 'X · Uden kommuneplanramme',
+            '__displayName': 'X · Uden kommuneplanramme',
+            '__zone4Other': True, '__generatedRemainder': True,
+        }
+    return [
+        {'type': 'Feature', 'properties': props, 'geometry': mapping(rest)},
+        *real,
+    ]
+
+
 def zone_border_features(features, vicinity_geom):
     """Cache only REAL official boundary lines near the game area.
 
@@ -530,6 +574,7 @@ def main():
         if not source_features:
             continue
         display_features = clip_zone_features(source_features, play)
+        display_features = add_precomputed_remainder(key, display_features, play)
         if len(display_features) < MIN_COUNTS[key]:
             print(f'WARNING: {key} display snapshot suspiciously small ({len(display_features)}); retaining previous/live fallback where possible.')
             old = previous and (previous.get('zones') or {}).get(key)
@@ -572,8 +617,9 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 2, 'ready': True, 'generatedAt': now,
+        'version': 3, 'ready': True, 'generatedAt': now,
         'source': ENDPOINT,
+        'displayPrepared': True,
         'layers': LAYERS,
         'zones': zones,
         'borders': borders,
@@ -588,7 +634,7 @@ def main():
         '# Aalborg zone snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Source: `{ENDPOINT}`',
-        '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area; genuine border lines are cached separately from the unclipped official geometry for Measuring.', '',
+        '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area and Zone 1/4 catch-all areas are precomputed on GitHub, so the browser does no clipping/union work when toggling them. Genuine border lines are cached separately from the unclipped official geometry for Measuring.', '',
         '| Layer | WFS type | Cached display polygons | Cached real-border features | Status |',
         '|---|---|---:|---:|---|',
     ]

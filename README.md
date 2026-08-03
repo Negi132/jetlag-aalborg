@@ -537,3 +537,23 @@ selects the outer north/south coastline envelope in each longitude slice, so isl
 causing the northern bank to jump to the southern bank: a slice is accepted only when both
 mainland banks are present with a credible fjord-width separation. Short source gaps are
 bridged at the same medium-detail granularity used in v4.9/v4.10.
+
+
+## v4.12 — render-ready zone cache
+
+Zone 1 and Zone 4 no longer perform expensive Turf clipping/union work when a
+validated scheduled zone snapshot is available. The GitHub updater now clips the
+official polygons to the game area and precomputes Zone 1 Landzone / Zone 4
+`X · Uden kommuneplanramme` remainder polygons before writing `zone-data.js`.
+The browser recognizes this v3 bundle and sends it directly to Leaflet, using the
+Canvas renderer for large vector layers.
+
+If KortInfo cannot be reached by GitHub Actions, a successful live zone load in
+the browser is persisted in IndexedDB for up to 45 days. Subsequent visits on
+that device reuse the prepared local copy instead of repeating the slow WFS
+download and geometry processing. The live municipal WFS remains the fallback
+and the explicit Zone 2 reload still bypasses the bundled snapshot.
+
+Body-of-water calculation geometry can still include nearby out-of-play water
+where relevant to nearest-distance semantics, but visual water markers are now
+shown only when their marker point is inside the play area.
