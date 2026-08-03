@@ -225,7 +225,7 @@ click($('#toolForm .question-back'));
 
 console.log('\n== automatic coastline / water Measuring ==');
 window.AALBORG_HYDRO_DATA = {
-  version: 2, ready: true,
+  version: 5, ready: true,
   coastlines: {
     north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.70,57.056],[10.30,57.056]]}}]},
     south: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.70,57.050],[10.30,57.050]]}}]}
@@ -235,6 +235,12 @@ window.AALBORG_HYDRO_DATA = {
     {type:'Feature',properties:{name:'Test Lake',__waterId:'test:lake'},geometry:{type:'Polygon',coordinates:[[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]]}},
     {type:'Feature',properties:{name:'Unnamed pond',__waterId:'test:pond',__unnamed:true},geometry:{type:'Polygon',coordinates:[[[9.970,57.030],[9.974,57.030],[9.974,57.034],[9.970,57.034],[9.970,57.030]]]}},
     {type:'Feature',properties:{name:'Outside Lake',__waterId:'test:outside'},geometry:{type:'Polygon',coordinates:[[[10.25,57.000],[10.26,57.000],[10.26,57.010],[10.25,57.010],[10.25,57.000]]]}}
+  ]},
+  waterDistance: {type:'FeatureCollection',features:[
+    {type:'Feature',properties:{__hydroKind:'water-distance'},geometry:{type:'MultiPolygon',coordinates:[
+      [[[9.935,57.032],[9.945,57.032],[9.945,57.039],[9.935,57.039],[9.935,57.032]]],
+      [[[9.970,57.030],[9.974,57.030],[9.974,57.034],[9.970,57.034],[9.970,57.030]]]
+    ]}}
   ]}
 };
 click(doc.querySelector('[data-question-type="measuring"][data-card="Coastline"]'));
@@ -258,6 +264,9 @@ check('Body-of-water Measuring draws reference markers before the first tap',
 check('Body-of-water runtime filter removes targets outside the play area',
       window.eval("HS.hydroWaterFeatures().length === 2 && !HS.hydroWaterFeatures().some(f => (f.properties||{}).name === 'Outside Lake')"),
       window.eval("JSON.stringify(HS.hydroWaterFeatures().map(f => (f.properties||{}).name))"));
+check('Body-of-water Measuring uses the compact pre-unioned distance cache',
+      window.eval("HS.hydroWaterDistanceFeatures().length === 1"),
+      window.eval("`distanceFeatures=${HS.hydroWaterDistanceFeatures().length}`"));
 check('Visible coastline geometry is clipped to the play area', window.eval(`(() => {
   const feats = HS.hydroCoastFeatures('south');
   return feats.length > 0 && feats.every(ft => {

@@ -1,22 +1,17 @@
-# Water/coast geometry used by automatic Measuring questions.
+# Geometry used by automatic Measuring questions.
+#
+# Coastline is deliberately derived ONLY from formal OSM natural=coastline.
+# Urban roads, railways, promenades, quays, embankments, etc. are intentionally
+# excluded: the weekly generator turns the formal coastline into a simplified
+# two-bank approximation instead of trying to infer every harbour edge.
 w/natural=coastline
+
+# Bodies of water retain their actual mapped geometry.
 nwr/natural=water
 nwr/water
 nwr/landuse=reservoir,basin
 nwr/waterway=riverbank,river,canal
-# Harbour/marina geometry supplements the formal OSM coastline in urban basins.
-nwr/leisure=marina
-nwr/waterway=dock
-nwr/man_made=quay
-nwr/water=harbour
-nwr/harbour
 
-# Urban shore structures and named waterfront paths used only as constrained
-# shoreline supplements when formal OSM coastline geometry has a gap.
-nwr/man_made=embankment
-nwr/barrier=retaining_wall
-nwr/name=Vestre Havnepromenade
-nwr/name=Lufthavnsstien
 # Some water-filled chalk pits are mapped primarily as quarries. The generator
 # only accepts chalk/limestone-named quarry polygons as a fallback when there is
 # no better mapped water polygon inside them.

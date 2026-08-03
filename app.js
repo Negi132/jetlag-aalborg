@@ -1968,13 +1968,13 @@ function distanceToFeatureM(coord, ft) {
   return null;
 }
 
-function bufferFeatureSet(features, distanceM) {
+function bufferFeatureSet(features, distanceM, steps = 10) {
   if (!S.playArea || !features || !features.length || distanceM == null) return null;
   const radiusKm = Math.max(0.5, distanceM) / 1000;
   const buffered = [];
   for (const ft of features) {
     try {
-      const b = turf.buffer(ft, radiusKm, { units: 'kilometers', steps: 10 });
+      const b = turf.buffer(ft, radiusKm, { units: 'kilometers', steps });
       if (b) buffered.push(b);
     } catch (_) { /* continue */ }
   }
@@ -2036,6 +2036,15 @@ function hydroWaterFeatures() {
   return features.map(clipHydroFeatureToPlayArea).filter(Boolean);
 }
 
+function hydroWaterDistanceFeatures() {
+  const b = bundledHydroData();
+  const compact = b && b.waterDistance && Array.isArray(b.waterDistance.features)
+    ? b.waterDistance.features : [];
+  // v5+ bundles pre-union and simplify the expensive water geometry during the
+  // weekly build. Old bundles transparently fall back to the individual targets.
+  return compact.length ? compact : hydroWaterFeatures();
+}
+
 function hydroFeatureMarkerCoord(ft) {
   if (!ft || !ft.geometry) return null;
   try {
@@ -2082,17 +2091,18 @@ function updateMeasuringHydroFromCoord(coord) {
   } else {
     const hit = nearestWaterFeature(coord);
     if (!hit) return false;
-    const allWater = hydroWaterFeatures();
+    const allWater = hydroWaterDistanceFeatures();
     // As with POI Measuring, "a body of water" means distance to the nearest
     // member of the category. The seeker's nearest water establishes the
-    // threshold, then that threshold is buffered around every water body.
+    // threshold, but v5+ bundles pre-union/simplify all candidate geometry so
+    // the browser only has to buffer one or two compact geometries.
     features = allWater.length ? allWater : [hit.feature];
     distanceM = hit.distanceM;
     name = (hit.feature.properties || {}).name || 'body of water';
     draft.autoFeatureIndex = hit.index;
   }
 
-  const band = bufferFeatureSet(features, distanceM);
+  const band = bufferFeatureSet(features, distanceM, mode.kind === 'water' ? 6 : 8);
   if (!band) return false;
   draft.seeker = coord.slice();
   draft.borderDistanceM = distanceM;
@@ -7371,7 +7381,7 @@ window.HS = {
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
   matchingPoiFeatures, setMatchingPoiFromCoord, setMeasuringPoiTargetFromCoord, syncAutomaticMeasuringPoiTarget, matchingPoiCell, parsePositiveDecimal,
-  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, hydroWaterFeatures, clipHydroFeatureToPlayArea, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
+  measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, hydroWaterFeatures, hydroWaterDistanceFeatures, clipHydroFeatureToPlayArea, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsReliable, splitBboxGrid, fetchRailwayLines,
   fmtDist, fmtArea, wfsUrl, gc2Url
