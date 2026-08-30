@@ -1,4 +1,4 @@
-# Aalborg bus route audit — Rejseplanen GTFS 2026-08-10
+# Aalborg bus route audit — Rejseplanen GTFS 2026-08-24
 
 Generated automatically from agency 206 = NT.
 Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled; the browser performs the final exact Zone 2 clip.
@@ -20,7 +20,7 @@ Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled;
 - Removed: none
 
 ## GTFS special/night lines not in the game categories
-18E, 21N, 22N, 23N, 24N, 25N, 26N, 27N, 52N, 53N, 72N, 73N
+18E, 21N, 22N, 23N, 24N, 25N, 26N, 27N, 52N, 53N, 72N, 73N, AIR, BUS75
 
 These are present in GTFS but are not part of the four NT transport-form categories selected for this game.
 
