@@ -1,6 +1,6 @@
 # Aalborg hydro snapshot audit
 
-- Generated: `2026-09-06T07:12:45.465401+00:00`
+- Generated: `2026-09-13T07:31:59.632825+00:00`
 - Formal OSM coastline pieces used as source: **31**
 - Generalized northern shoreline pieces: **3**
 - Generalized southern shoreline pieces: **2**
@@ -11,9 +11,9 @@
 - Cross-bank validation: **502/502 overlapping samples correct**
 - Hidden northern distance-cache pieces: **3**
 - Hidden southern distance-cache pieces: **2**
-- Total body-of-water targets: **883**
+- Total body-of-water targets: **887**
 - Pre-unioned water-distance geometries: **2**
-- Distinct unnamed mapped water targets: **858**
+- Distinct unnamed mapped water targets: **862**
 - Chalk/limestone quarry fallback targets: **1**
 
 ## Named body-of-water targets
