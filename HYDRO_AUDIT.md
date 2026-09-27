@@ -1,6 +1,6 @@
 # Aalborg hydro snapshot audit
 
-- Generated: `2026-09-20T07:48:59.480593+00:00`
+- Generated: `2026-09-27T08:18:20.475177+00:00`
 - Formal OSM coastline pieces used as source: **31**
 - Generalized northern shoreline pieces: **3**
 - Generalized southern shoreline pieces: **2**
@@ -11,11 +11,11 @@
 - Cross-bank validation: **502/502 overlapping samples correct**
 - Hidden northern distance-cache pieces: **3**
 - Hidden southern distance-cache pieces: **2**
-- Total body-of-water targets: **887**
+- Total body-of-water targets: **892**
 - Pre-unioned water-distance geometries: **2**
-- Distinct unnamed mapped water targets: **862**
+- Distinct unnamed mapped water targets: **868**
 - Chalk/limestone quarry fallback targets: **1**
 
 ## Named body-of-water targets
 
-Brillesø, Fuglesøerne, Gadekæret, Hasseris Å, Kjærs Møllesø, Klingenbergsøen, Lergraven, Limfjorden, Lindholm Kridtgrav, Lindholm Å, Nordens Kridtgrav, Nørre Uttrup Lystbådehavn, Nørretranders Gadekær, Obels Kanal, Pilesøen, Poulstrup Kalkgrav, Poulstrup Sø, Romdrup Å, Svanemøllesøen, Tunnelbassinet, Vestermølle Sø, Voerbjerg Sø, Øster Landgrøft, Østerå, Østre Havnebasin
+Brillesø, Gadekæret, Hasseris Å, Kjærs Møllesø, Klingenbergsøen, Lergraven, Limfjorden, Lindholm Kridtgrav, Lindholm Å, Nordens Kridtgrav, Nørre Uttrup Lystbådehavn, Nørretranders Gadekær, Obels Kanal, Pilesøen, Poulstrup Kalkgrav, Poulstrup Sø, Romdrup Å, Svanemøllesøen, Tunnelbassinet, Vestermølle Sø, Voerbjerg Sø, Øster Landgrøft, Østerå, Østre Havnebasin
