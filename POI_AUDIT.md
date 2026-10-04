@@ -1,6 +1,6 @@
 # Aalborg POI bundle audit
 
-- Generated: `2026-09-06T07:12:43Z`
+- Generated: `2026-10-04T08:32:49Z`
 - Source: OpenStreetMap Denmark extract from Geofabrik + the project's authoritative local fallbacks
 - License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0
 - Scope: representative points inside the Hide + Seek play-area snapshot; the commercial-airport point is the passenger terminal rather than the aerodrome centroid
@@ -8,7 +8,7 @@
 | Category | Count |
 |---|---:|
 | Commercial airport | 1 |
-| Park | 34 |
+| Park | 35 |
 | Amusement park | 1 |
 | Zoo | 1 |
 | Aquarium | 0 |
@@ -19,7 +19,7 @@
 | Library | 7 |
 | Foreign consulate | 1 |
 
-**Total: 65 POIs**
+**Total: 66 POIs**
 
 ## Included names
 
@@ -27,9 +27,9 @@
 
 Aalborg Airport terminal (AAL)
 
-### Park (34)
+### Park (35)
 
-5. Maj Parken, Aabos Plads, Ansgar Anlægget, Åparken, Bundgaardsparken, Fjordmarken, Golfparken, Jernbaneparken, Jomfru Ane Parken, Karolinelund, Kildeparken, Kunstens Skulpturpark, Lindholm Fjordpark, Lindholm stations park, Lindholm Strandpark, Mølleparken, Mulighedernes Park, Østerådalen Nord, Østerådalen Syd, Østre Anlæg, Rotunden, Skanseparken, Skanseparken, Skovbakken, Skovdalen, Søheltens Have, Sohngårdsholmsparken, Stigsparken, Svanemølleparken, Tornhøjhave, Urtehaven, Utzon Parken, Vandbakken, Vestre Fjordpark
+5. Maj Parken, Aabos Plads, Ansgar Anlægget, Åparken, Bundgaardsparken, Fjordmarken, Golfparken, Jernbaneparken, Jomfru Ane Parken, Karolinelund, Kildeparken, Kunstens Skulpturpark, Lindholm Fjordpark, Lindholm stations park, Lindholm Strandpark, Mølleparken, Mulighedernes Park, Østerådalen, Østerådalen Nord, Østerådalen Syd, Østre Anlæg, Rotunden, Skanseparken, Skanseparken, Skovbakken, Skovdalen, Søheltens Have, Sohngårdsholmsparken, Stigsparken, Svanemølleparken, Tornhøjhave, Urtehaven, Utzon Parken, Vandbakken, Vestre Fjordpark
 
 ### Amusement park (1)
 
