@@ -1,4 +1,4 @@
-# Aalborg bus route audit — Rejseplanen GTFS 2026-09-21
+# Aalborg bus route audit — Rejseplanen GTFS 2026-10-05
 
 Generated automatically from agency 206 = NT.
 Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled; the browser performs the final exact Zone 2 clip.

@@ -1,7 +1,7 @@
 # Aalborg transit bundle audit
 
-- Generated: `2026-09-27T08:16:44Z`
-- GTFS validity: `2026-09-21` → `2026-12-16`
+- Generated: `2026-10-11T08:59:37Z`
+- GTFS validity: `2026-10-05` → `2026-12-30`
 - Source: Rejseplanen static GTFS
 
 - Train services intersecting the play area: **5**
