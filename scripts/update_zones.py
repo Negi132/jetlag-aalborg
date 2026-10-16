@@ -298,6 +298,28 @@ def _drop_repeated_positions(coords):
     return [_drop_repeated_positions(c) for c in coords]
 
 
+def drop_degenerate_lines(fc):
+    """Strip repeated vertices from border lines; drop lines that collapse to a point."""
+    def clean(line):
+        out = [p for i, p in enumerate(line) if i == 0 or p[:2] != line[i - 1][:2]]
+        return out if len(out) >= 2 else None
+
+    features = []
+    for ft in fc.get('features', []):
+        g = ft.get('geometry') or {}
+        if g.get('type') == 'LineString':
+            line = clean(g['coordinates'])
+            if line:
+                features.append(dict(ft, geometry={'type': 'LineString', 'coordinates': line}))
+        elif g.get('type') == 'MultiLineString':
+            parts = [line for line in map(clean, g['coordinates']) if line]
+            if parts:
+                features.append(dict(ft, geometry={'type': 'MultiLineString', 'coordinates': parts}))
+        else:
+            features.append(ft)
+    return dict(fc, features=features)
+
+
 def round_coords(obj, ndigits=6):
     """Round every coordinate in a GeoJSON object (6 decimals is about 0.1 m)."""
     if isinstance(obj, dict):
@@ -647,7 +669,7 @@ def main():
         'displayPrepared': True,
         'layers': LAYERS,
         'zones': round_coords(zones),
-        'borders': round_coords(borders),
+        'borders': {k: drop_degenerate_lines(v) for k, v in round_coords(borders).items()},
     }
     payload = '/* Generated from Aalborg Kommune KortInfo WFS. Do not edit by hand. */\n' \
               + 'window.AALBORG_ZONE_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'

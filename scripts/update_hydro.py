@@ -475,6 +475,18 @@ def main():
                     '__waterId': 'name:' + norm(label)
                 }))
 
+    # osmium exports a closed water way both as its outline (LineString) and as
+    # an area (Polygon) with the same OSM id. Keep one target per id, preferring
+    # the area, so a pond is not offered twice.
+    by_id = {}
+    for label, g, props in unnamed:
+        key = osm_identity(props, g)
+        kept = by_id.get(key)
+        if kept is None or (kept[1].geom_type not in ('Polygon', 'MultiPolygon')
+                            and g.geom_type in ('Polygon', 'MultiPolygon')):
+            by_id[key] = (label, g, props)
+    unnamed = list(by_id.values())
+
     for label, g, props in unnamed:
         if g.is_empty:
             continue

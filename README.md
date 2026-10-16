@@ -66,7 +66,7 @@ whatever survives stays bright.
 | `hydro-data.js` | Generalized Limfjord banks and bodies of water, from OpenStreetMap. |
 | `zone-data.js` | Snapshot of Aalborg Kommune's four KortInfo zone layers, clipped to the play area (about 1.3 MB gzipped). |
 | `zone2-fallback.js` | Simplified official outlines of the four Zone 2 areas, used only if `zone-data.js` and KortInfo are both unavailable. |
-| `scripts/` | Python generators for the data files above, plus `play_area.geojson` (official Zone 2, written by `update_zones.py`) and filter lists. |
+| `scripts/` | Python generators for the data files above (shared helpers in `common.py`), plus `play_area.geojson` (official Zone 2, written by `update_zones.py`) and filter lists. |
 | `tests/` | Headless test suite (jsdom). |
 | `*_AUDIT.md` | What the latest data refresh produced. |
 
@@ -80,7 +80,7 @@ the device for 45 days), POIs, stops and train lines (Overpass) if a bundle is m
 
 | Trigger | What happens |
 |---|---|
-| Push to `main` | Run tests, then deploy the repo as-is to GitHub Pages. |
+| Push to `main` | Run tests, then deploy to GitHub Pages. If the push changes `scripts/`, the data is regenerated first, as on a scheduled run. |
 | Sunday 04:17 Copenhagen time, or **Run workflow** | Download Rejseplanen GTFS and Geofabrik's Denmark OSM extract, regenerate every data file, run tests, commit changed data as `github-actions[bot]`, deploy. |
 
 The generators refuse to overwrite good data when a source looks incomplete (route or stop counts
@@ -107,9 +107,26 @@ npm install
 npm test
 ```
 
-`tests/geometry.test.mjs` checks the constraint maths against known answers. `tests/ui.test.mjs`
-boots the real `index.html` and scripts in jsdom (via `tests/harness.mjs`) and drives the app: logging
-questions, units, layers, zone parsing, route clipping, POI rules and more.
+`npm test` runs every JavaScript suite and ends with a pass/fail summary per suite:
+
+| Suite | What breaks it |
+|---|---|
+| `tests/geometry.test.mjs` | Constraint maths (radar, thermometer bisector, nearest-place cells) drifting from known answers. |
+| `tests/data.test.mjs` | A generated bundle that is malformed, empty, outside the play area or missing a category, and `index.html` referencing a missing or unversioned file. |
+| `tests/ui.test.mjs` | Detailed app behaviour: parsing, labels, POI rules, previews, URL state. |
+| `tests/features.test.mjs` | Any layer toggle, Game-tab control or question card that stops working. It opens **every** card in the deck, answers it and logs it, and fails if a new card is added without a test. |
+
+The UI suites boot the real `index.html` and scripts in jsdom via `tests/harness.mjs`.
+
+The Python generators have their own tests (shared helpers, validation rules, and the committed
+bundles passing them). They need the generators' dependencies:
+
+```bash
+pip install shapely==2.1.2 pyproj==3.7.2
+npm run test:python
+```
+
+CI runs both before every deploy.
 
 Things to know when changing code:
 

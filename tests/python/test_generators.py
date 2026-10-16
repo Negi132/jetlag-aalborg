@@ -152,6 +152,27 @@ class ZoneSnapshotTest(unittest.TestCase):
             zones.parse_gml(b'<ServiceExceptionReport><ServiceException>Access denied'
                             b'</ServiceException></ServiceExceptionReport>')
 
+    def test_rounding_never_leaves_zero_length_segments(self):
+        # Two vertices 0.04 m apart merge when rounded to 6 decimals.
+        line = {'type': 'LineString', 'coordinates': [[9.9, 57.0], [9.9200001, 57.0], [9.9200002, 57.0], [9.95, 57.01]]}
+        self.assertEqual(zones.round_coords(line)['coordinates'], [[9.9, 57.0], [9.92, 57.0], [9.95, 57.01]])
+        ring = [[9.9, 57.0], [9.91, 57.0], [9.9100001, 57.0], [9.91, 57.01], [9.9, 57.0]]
+        rounded = zones.round_coords({'type': 'Polygon', 'coordinates': [ring]})['coordinates'][0]
+        self.assertEqual(rounded, [[9.9, 57.0], [9.91, 57.0], [9.91, 57.01], [9.9, 57.0]])
+
+    def test_border_lines_that_collapse_are_dropped(self):
+        fc = {'type': 'FeatureCollection', 'features': [
+            {'type': 'Feature', 'properties': {}, 'geometry': {'type': 'LineString', 'coordinates': [[9.9, 57.0], [9.9, 57.0]]}},
+            {'type': 'Feature', 'properties': {}, 'geometry': {'type': 'LineString',
+                                                              'coordinates': [[9.9, 57.0], [9.91, 57.0], [9.91, 57.0], [9.9, 57.0]]}},
+            {'type': 'Feature', 'properties': {}, 'geometry': {'type': 'MultiLineString',
+                                                              'coordinates': [[[9.8, 57.0], [9.8, 57.0]], [[9.8, 57.0], [9.81, 57.0]]]}},
+        ]}
+        out = zones.drop_degenerate_lines(fc)['features']
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]['geometry']['coordinates'], [[9.9, 57.0], [9.91, 57.0], [9.9, 57.0]])
+        self.assertEqual(out[1]['geometry']['coordinates'], [[[9.8, 57.0], [9.81, 57.0]]])
+
     def test_round_coords_rounds_every_coordinate(self):
         gj = {'type': 'Feature', 'properties': {'v': 1.23456789},
               'geometry': {'type': 'Point', 'coordinates': [9.123456789, 57.987654321]}}
