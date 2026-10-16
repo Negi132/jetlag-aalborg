@@ -1,0 +1,16 @@
+# Test dependencies (npm install)
+node_modules/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local backups made before each push
+backups/
+
+# Large sources the workflow downloads while regenerating map data
+GTFS.zip
+*.osm.pbf
+poi-source.geojson
+hydro-source.geojson
+_site/
