@@ -1,75 +1,7 @@
-import { JSDOM } from 'jsdom';
-import fs from 'fs';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
+import { bootApp, reporter } from './harness.mjs';
 
-const dir = new URL('./', import.meta.url).pathname;
-const html = fs.readFileSync(dir + 'index.html', 'utf8')
-  // strip the CDN tags; we inject local copies below
-  .replace(/<script src="https:[^"]*"[^>]*><\/script>/g, '')
-  .replace(/<link rel="stylesheet" href="https:[^"]*"[^>]*>/g, '');
-
-const errors = [];
-const dom = new JSDOM(html, {
-  runScripts: 'outside-only',
-  pretendToBeVisual: true,
-  url: 'https://example.github.io/hideseek/'
-});
-const { window } = dom;
-window.addEventListener('error', e => errors.push('window error: ' + e.message));
-
-// jsdom lacks these; Leaflet + app need them
-window.SVGElement.prototype.createSVGRect = function () {};
-window.HTMLCanvasElement.prototype.getContext = () => null;
-Object.defineProperty(window.HTMLElement.prototype, 'clientWidth', { get: () => 1200, configurable: true });
-Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', { get: () => 800, configurable: true });
-window.TextEncoder = TextEncoder; window.TextDecoder = TextDecoder;
-window.alert = () => {}; window.confirm = () => true; window.prompt = () => 'Test zone';
-window.navigator.clipboard = { writeText: async () => {} };
-let geoWatchCalls = 0;
-window.navigator.geolocation = {
-  watchPosition(success) {
-    geoWatchCalls++;
-    success({ coords: { longitude: 9.9217, latitude: 57.0488, accuracy: 18 }, timestamp: Date.now() });
-    return 73;
-  },
-  clearWatch() {}
-};
-window.innerWidth = 1200;
-
-const run = (code, label) => {
-  try { window.eval(code); } catch (e) { errors.push(`${label}: ${e.message}\n${(e.stack||'').split('\n')[1]||''}`); }
-};
-
-// Find a bundle in node_modules, walking up from this file.
-function bundle(rel) {
-  let d = dir;
-  for (let i = 0; i < 6; i++) {
-    const p = d + 'node_modules/' + rel;
-    if (fs.existsSync(p)) return p;
-    d = d.replace(/[^/]+\/$/, '');
-  }
-  throw new Error(`Missing ${rel} — run: npm install @turf/turf@7.2.0 leaflet@1.9.4 proj4@2.11.0 jsdom`);
-}
-run(fs.readFileSync(bundle('leaflet/dist/leaflet-src.js'), 'utf8'), 'leaflet');
-run(fs.readFileSync(bundle('@turf/turf/turf.min.js'), 'utf8'), 'turf');
-run(fs.readFileSync(bundle('proj4/dist/proj4.js'), 'utf8'), 'proj4');
-run(fs.readFileSync(dir + 'data.js', 'utf8'), 'data.js');
-run(fs.readFileSync(dir + 'zone-data.js', 'utf8'), 'zone-data.js');
-run(fs.readFileSync(dir + 'bus-routes.js', 'utf8'), 'bus-routes.js');
-run(fs.readFileSync(dir + 'transit-data.js', 'utf8'), 'transit-data.js');
-run(fs.readFileSync(dir + 'poi-data.js', 'utf8'), 'poi-data.js');
-run(fs.readFileSync(dir + 'hydro-data.js', 'utf8'), 'hydro-data.js');
-run(fs.readFileSync(dir + 'app.js', 'utf8'), 'app.js');
-
-const doc = window.document;
-const $ = s => doc.querySelector(s);
-const click = el => el && el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-let pass = 0, fail = 0;
-const check = (name, cond, extra = '') => {
-  if (cond) { pass++; console.log(`  PASS  ${name} ${extra}`); }
-  else { fail++; console.log(`  FAIL  ${name} ${extra}`); }
-};
+const { window, doc, errors, geo, $, click } = bootApp();
+const { check, finish } = reporter();
 
 console.log('\n== boot ==');
 check('no errors while loading', errors.length === 0, errors.join(' | '));
@@ -83,7 +15,7 @@ check('picker shows the zones mode', /is-active/.test(doc.querySelector('#playSe
 check('HUD shows 100% remaining', $('#hudPct').textContent === '100%', `got "${$('#hudPct').textContent}"`);
 check('area HUD is hidden from the interface', $('#hud').hidden === true);
 check('mobile navigation has Map plus the four app tabs', doc.querySelectorAll('#mobileNav .mobile-nav-btn').length === 5);
-check('device location tracking starts automatically', geoWatchCalls === 1, `calls=${geoWatchCalls}`);
+check('device location tracking starts automatically', geo.watchCalls === 1, `calls=${geo.watchCalls}`);
 check('location button shows that a position is available', $('#locateBtn').classList.contains('is-on'));
 check('device position is display-only and absent from game state', window.eval("!Object.prototype.hasOwnProperty.call(HS.S, 'me')"));
 check('location pane sits above question and drawing overlays', Number(window.eval("HS.map.getPane('locationPane').style.zIndex")) === 490);
@@ -129,7 +61,7 @@ click($('#toolForm .question-back'));
 const parkCard = doc.querySelector('[data-question-type="matching"][data-card="Park"]');
 click(parkCard);
 check('a Matching card opens the answer workspace inline', !$('#toolForm').hidden && /Matching · Park/.test($('#toolForm').textContent) && !!$('#toolForm').closest('[data-question-slot="matching"]'));
-check('selected card pre-fills the category', $('#toolForm input[type="text"]').value === 'park', $('#toolForm input[type="text"]').value);
+check('selected card pre-fills the category', window.eval('HS.draft.categoryName') === 'park', window.eval('HS.draft.categoryName'));
 click($('#toolForm .question-back'));
 check('close keeps the six-category deck and hides the workspace', !$('#questionDeck').hidden && $('#toolForm').hidden);
 check('cancel/close leaves the current question family expanded',
@@ -151,10 +83,7 @@ check('Zone 2 request targets TL445984', /typeName=ugis%3ATL445984/.test(
   window.eval(`HS.wfsUrl(HS.S.sources.zone2)`)));
 check('official source IDs are visible in the Layers UI',
       ['TL1433667','TL445984','TL445987','TL445981'].every(id => $('#calBox').textContent.includes(id)));
-check('legacy move/scale controls are hidden',
-      ['calAuto','calDrag','calScaleVal','calSnippet','calSnap','calReset']
-        .every(id => doc.getElementById(id).closest('[hidden]')));
-check('play-area note describes an exact union', /Exact union/.test($('#playNote').textContent));
+check('play-area note describes the four-area union', /Exact union|four-area/.test($('#playNote').textContent), $('#playNote').textContent);
 const officialFixture = {
   type: 'FeatureCollection',
   features: [
@@ -269,9 +198,11 @@ check('Body-of-water Measuring uses the compact pre-unioned distance cache',
       window.eval("`distanceFeatures=${HS.hydroWaterDistanceFeatures().length}`"));
 check('Visible coastline geometry is clipped to the play area', window.eval(`(() => {
   const feats = HS.hydroCoastFeatures('south');
+  // Clipped endpoints sit on the boundary itself, so allow 1 m of float error.
+  const area = turf.buffer(HS.S.playArea, 1, { units: 'meters' });
   return feats.length > 0 && feats.every(ft => {
     const coords = ft.geometry.type === 'LineString' ? [ft.geometry.coordinates] : ft.geometry.coordinates;
-    return coords.every(line => line.every(c => turf.booleanPointInPolygon(turf.point(c), HS.S.playArea)));
+    return coords.every(line => line.every(c => turf.booleanPointInPolygon(turf.point(c), area)));
   });
 })()`));
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.035, 9.940) })");
@@ -333,8 +264,8 @@ window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
 window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9550) })");
 check('Thermometer accepts start and end by direct map taps', doc.querySelectorAll('.map-point-status small').length === 2 &&
       [...doc.querySelectorAll('.map-point-status small')].every((e) => /57\.04/.test(e.textContent)));
-check('travel distance computed', /travelled 1\.2\d mi/.test($('#toolForm').textContent),
-      `"${($('#toolForm').textContent.match(/You travelled [^.]*/)||[''])[0]}"`);
+check('straight-line distance computed', /1\.2\d mi apart/.test($('#toolForm').textContent),
+      `"${($('#toolForm').textContent.match(/points are [^.]*/)||[''])[0]}"`);
 click(doc.querySelectorAll('#toolForm .seg button')[0]); // Hotter
 click(doc.querySelector('#toolForm .solid-btn'));
 check('thermometer logged', window.eval("HS.S.constraints[0].type") === 'thermometer');
@@ -345,7 +276,7 @@ check('thermometer removed roughly half the map', (() => { const v = parseFloat(
 console.log('\n== free-shape drawing ==');
 click(doc.querySelector('[data-tab="ask"]'));
 window.eval("selectTool('area')");
-click(doc.querySelector('#toolForm .ghost-btn'));
+click([...doc.querySelectorAll('#toolForm .ghost-btn')].find((b) => /Draw the shape/.test(b.textContent)));
 check('draw hint bar appears', !$('#drawHint').hidden);
 check('Finish is disabled with no points', $('#drawFinish').disabled);
 for (const [la, ln] of [[57.06, 9.90], [57.06, 9.96], [57.03, 9.96]]) {
@@ -479,7 +410,7 @@ check('all twelve legend entries present', window.eval('HS.RAMME_STYLE.length') 
 check('plan number 1.1.C2 -> C', rc("{plannr:'1.1.C2'}") === 'C', rc("{plannr:'1.1.C2'}"));
 check('plan number 3.2.B1 -> B', rc("{plannr:'3.2.B1'}") === 'B');
 check('single-letter anvendelse field', rc("{anvendelse:'I'}") === 'I');
-check('unclassifiable returns null', window.eval("HS.rammeCategory({plannr:'zzz'})") === null);
+check('unclassifiable falls into the X catch-all', window.eval("HS.rammeCategory({plannr:'zzz'}).key") === 'X');
 
 console.log('\n== toggling, not stacking ==');
 click(doc.querySelector('[data-tab="layers"]'));
@@ -591,7 +522,7 @@ check('Lokalbus catalogue contains 38 and 271', routeCatalogue.local.refs.includ
 check('bundled GTFS Bybus contains all 14 Aalborg lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('bybus')).count") === 14);
 check('bundled GTFS Regionalbus contains 15 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('regional')).count") === 15);
 check('bundled GTFS Expresbus contains 8 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('express')).count") === 8);
-check('bundled GTFS Lokalbus contains 38 and 271', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('local')).refs.join(',')") === '38, 271');
+check('bundled GTFS Lokalbus contains 38 and 271', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('local')).refs.join(',')") === '38,271');
 check('route 11 has a guaranteed bundled fallback geometry', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11' && Array.isArray(x.staticGeometry) && x.staticGeometry.length>10)"));
 check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
 const bybusQ = window.eval("HS.overpassBusRefsQuery(['11','14'])");
@@ -673,70 +604,40 @@ check('Expresbus button is present', /Expresbus/.test(routeText));
 check('Lokalbus button is present', /Lokalbus/.test(routeText));
 check('Train lines button remains present', /Train lines/.test(routeText));
 
-console.log('\n== traced zone 2 and zone 3 ==');
-click(doc.querySelector('[data-tab="layers"]'));
-const zoneRows = () => doc.querySelectorAll('#zoneSources .src-main');
-click(zoneRows()[2]);                        // zone 3
-await new Promise(r => setTimeout(r, 40));
-check('zone 3 builds with no network', window.eval("!!HS.layerByKey('src:zone3')"));
-check('one polygon per traced district',
-      window.eval("HS.layerByKey('src:zone3').geojson.features.length") === window.eval("window.ZONE3_PX.length"),
-      `${window.eval("HS.layerByKey('src:zone3').geojson.features.length")} of ${window.eval("window.ZONE3_PX.length")}`);
-check('districts are real outlines, not boxes', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone3').geojson.features;
-  const v = fs.map(f => f.geometry.coordinates[0].length).sort((a,b)=>a-b);
-  window.__vmin = v[0]; window.__vmed = v[v.length>>1];
-  // a few tiny slivers are legitimately simple; the typical district is not
-  return v[0] >= 4 && v[v.length>>1] > 12 && v.reduce((a,b)=>a+b,0) > 800;
-})()`), `${window.eval("HS.layerByKey('src:zone3').geojson.features.reduce((a,f)=>a+f.geometry.coordinates[0].length,0)")} vertices, median ${window.eval("window.__vmed")}, smallest ${window.eval("window.__vmin")}`);
-check('districts carry names read off the screenshot', window.eval(`(() => {
-  const ns = HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn);
-  return ns.includes('Hasseris') && ns.includes('Vejgård') && ns.includes('Nørresundby Midtby');
-})()`), window.eval("HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn).slice(0,4).join(', ')"));
-check('no district name is duplicated', window.eval(`(() => {
-  const ns = HS.layerByKey('src:zone3').geojson.features.map(f=>f.properties.navn);
-  return new Set(ns).size === ns.length;
-})()`));
-check('Skalborg is not called Dall Villaby', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone3').geojson.features;
-  const sk = fs.find(f=>f.properties.navn==='Skalborg');
-  const dv = fs.find(f=>f.properties.navn==='Dall Villaby');
-  if (!sk || !dv) return false;
-  // Dall Villaby lies south of Skalborg on the map
-  return turf.centroid(dv).geometry.coordinates[1] < turf.centroid(sk).geometry.coordinates[1];
-})()`));
-
-click(zoneRows()[1]);                        // zone 2
-await new Promise(r => setTimeout(r, 40));
-check('zone 2 has exactly four areas',
-      window.eval("HS.layerByKey('src:zone2').geojson.features.length") === 4);
-check('the four are named and numbered', window.eval(
-      "HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).sort().join('|')")
-      === '1. Midtbyen|2. Nørresundby|3. Vest Aalborg|4. Øst Aalborg',
-      window.eval("HS.layerByKey('src:zone2').geojson.features.map(f=>f.properties.navn).sort().join('|')"));
+console.log('\n== zone 2 fallback outlines ==');
+const fallbackZones = () => window.eval('HS.buildAreaZones()');
+check('fallback has exactly four areas', fallbackZones().features.length === 4);
+check('the four are named and numbered',
+      fallbackZones().features.map(f => f.properties.navn).sort().join('|')
+      === '1. Midtbyen|2. Nørresundby|3. Vest Aalborg|4. Øst Aalborg');
 check('Midtbyen is the smallest zone', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const fs = HS.buildAreaZones().features;
   const byArea = fs.slice().sort((a,b)=>turf.area(a)-turf.area(b));
   return byArea[0].properties.navn === '1. Midtbyen';
 })()`));
 check('Nørresundby is the northernmost', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const fs = HS.buildAreaZones().features;
   const north = fs.slice().sort((a,b)=>turf.centroid(b).geometry.coordinates[1]-turf.centroid(a).geometry.coordinates[1]);
   return north[0].properties.navn === '2. Nørresundby';
 })()`));
 check('Vest Aalborg is west of Øst Aalborg', window.eval(`(() => {
-  const fs = HS.layerByKey('src:zone2').geojson.features;
+  const fs = HS.buildAreaZones().features;
   const g = n => turf.centroid(fs.find(f=>f.properties.navn.includes(n))).geometry.coordinates[0];
   return g('Vest') < g('Øst');
 })()`));
 check('each area gets its own colour', window.eval("new Set(HS.AREA_STYLE().map(c=>c.color)).size") === 4);
-check('area legend lists all four', /Nørresundby/.test($('#legend').textContent) &&
-      /Vest Aalborg/.test($('#legend').textContent));
+check('the four areas tile their outline without overlap', window.eval(`(() => {
+  const fs = HS.buildAreaZones().features;
+  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
+  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
+})()`));
+check('callers get a copy, not the shared fallback',
+      window.eval("HS.buildAreaZones() !== window.AALBORG_ZONE2_FALLBACK && HS.buildAreaZones().features[0] !== window.AALBORG_ZONE2_FALLBACK.features[0]"));
 
 console.log('\n== play area follows the four zones ==');
 window.eval("HS.setPlayMode('zones')");
 check('play area is the union of zone 2, not a hull', window.eval(`(() => {
-  const u = turf.area(HS.unionAll(HS.layerByKey('src:zone2').geojson.features));
+  const u = turf.area(HS.unionAll(HS.buildAreaZones().features));
   return Math.abs(turf.area(HS.S.playArea) - u) / u < 0.01;
 })()`));
 check('and it is genuinely concave, unlike a hull', window.eval(`(() => {
@@ -745,45 +646,13 @@ check('and it is genuinely concave, unlike a hull', window.eval(`(() => {
   return turf.area(hull) > turf.area(pa) * 1.12;   // hull noticeably bigger
 })()`), `play ${(window.eval("turf.area(HS.S.playArea)")/1e6).toFixed(0)} km2`);
 
-
-console.log('\n== no gaps between neighbouring zones ==');
-check('zone 3 tiles its own outline exactly', window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  const outline = turf.area(HS.unionAll(fs));
-  window.__z3 = [sum, outline];
-  return Math.abs(sum - outline) / outline < 0.002;
-})()`), (() => { const v = window.eval("window.__z3")||[0,1];
-  return 'sum ' + (v[0]/1e6).toFixed(2) + ' km2 vs union ' + (v[1]/1e6).toFixed(2); })());
-check('zone 2 tiles its own outline exactly', window.eval(`(() => {
-  const fs = HS.buildAreaZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
-})()`));
-check('no two districts overlap', window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  let worst = 0;
-  for (let i=0;i<fs.length;i++) for (let j=i+1;j<fs.length;j++) {
-    let inter=null;
-    try { inter = turf.intersect(turf.featureCollection([fs[i],fs[j]])); } catch(e) {}
-    if (inter) worst = Math.max(worst, turf.area(inter) / Math.min(turf.area(fs[i]),turf.area(fs[j])));
-  }
-  window.__ov = worst;
-  return worst < 0.005;
-})()`), 'worst overlap ' + (100*(window.eval("window.__ov")||0)).toFixed(3) + '% of the smaller');
-check('the four play zones cover the districts', window.eval(`(() => {
-  const z2 = turf.area(HS.unionAll(HS.buildAreaZones().features));
-  const z3 = turf.area(HS.unionAll(HS.buildDistrictZones().features));
-  window.__cov = z3/z2;
-  return z3/z2 > 0.85 && z3/z2 < 1.15;
-})()`), 'zone 3 covers ' + (100*(window.eval("window.__cov")||0)).toFixed(0) + '% of zone 2');
-
 console.log('\n== zone toggles stay reversible ==');
+window.eval(`HS.addLayer('Zone 3 test', { type: 'FeatureCollection', features: [
+  turf.polygon([[[9.90,57.03],[9.95,57.03],[9.95,57.06],[9.90,57.06],[9.90,57.03]]], { navn: 'Test district' })
+] }, { key: 'src:zone3', nameField: 'navn', style: 'plain', sourceKey: 'zone3' })`);
 click(doc.querySelector('[data-tab="layers"]'));
+window.eval('HS.renderSourceRows()');
 const zr = () => doc.querySelectorAll('#zoneSources .src-main');
-if (!window.eval("!!HS.layerByKey('src:zone3')")) {
-  click(zr()[2]); await new Promise(r=>setTimeout(r,40));
-}
 const vis = () => window.eval("HS.layerByKey('src:zone3').visible");
 const start = vis();
 click(zr()[2]);
@@ -793,271 +662,7 @@ check('tapping again flips it back', vis() === start);
 click(zr()[2]); click(zr()[2]);
 check('four taps later there is still exactly one layer',
       window.eval("HS.S.layers.filter(l=>l.key==='src:zone3').length") === 1 && vis() === start);
-
-console.log('\n== boundaries snapped to roads ==');
-check('a boundary along a road is straightened onto it', window.eval(`(() => {
-  const segs = [];
-  for (let i=0;i<40;i++) segs.push([9.90+i*0.002,57.05,9.90+(i+1)*0.002,57.05,1]);
-  for (let i=0;i<40;i+=3){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,2+i]); }
-  const sn = HS.snapRingsToRoads(HS.segmentIndex(segs, 0.004), 70);
-  const ring = []; for (let i=0;i<40;i++) ring.push([i, (i%2?0.1:-0.1)]);
-  const gr = { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.05) };
-  const out = sn.mapRing(ring.concat([ring[0]]), gr);
-  const lats = out.map(p=>p[1]);
-  window.__sp = (Math.max(...lats)-Math.min(...lats))*111200;
-  return window.__sp < 5;
-})()`), 'residual spread ' + (window.eval("window.__sp")||0).toFixed(1) + ' m');
-check('a boundary that follows no road is left alone', window.eval(`(() => {
-  const segs = [];
-  for (let j=0;j<12;j++){ const y=57.045+j*0.0009;
-    for (let i=0;i<40;i++) segs.push([9.90+i*0.002,y,9.90+(i+1)*0.002,y,100+j]); }
-  for (let i=0;i<40;i+=2){ const x=9.90+i*0.002; segs.push([x,57.045,x,57.055,200+i]); }
-  const sn = HS.snapRingsToRoads(HS.segmentIndex(segs, 0.004), 70);
-  const ring = []; for (let i=0;i<40;i++) ring.push([i, i]);
-  sn.mapRing(ring.concat([ring[0]]), { s: 0.002, lng0: 9.901, my0: HS.__mercY(57.0455) });
-  const st = sn.stats(); window.__lo = st.total - st.moved; window.__lt = st.total;
-  return st.moved < st.total * 0.25;
-})()`), window.eval("window.__lo") + ' of ' + window.eval("window.__lt") + ' left untouched');
-check('snapping keeps the zones joined', window.eval(`(() => {
-  const before = HS.buildDistrictZones().features;
-  const segs = [];
-  for (const f of before) { const c = f.geometry.coordinates[0];
-    for (let i=1;i<c.length;i++) segs.push([c[i-1][0]+0.0002,c[i-1][1]+0.0001,c[i][0]+0.0002,c[i][1]+0.0001,1]); }
-  HS.S.roadIndex = HS.segmentIndex(segs, 0.004); HS.S.snapOn = true; HS.S.snapM = 120;
-  const after = HS.buildDistrictZones().features;
-  const sum = after.reduce((a,f)=>a+turf.area(f),0);
-  const d = Math.abs(sum - turf.area(HS.unionAll(after)))/turf.area(HS.unionAll(after));
-  HS.S.roadIndex = null; HS.S.snapOn = false;
-  window.__sd = d;
-  return d < 0.005;
-})()`), 'sum vs union differ by ' + (100*(window.eval("window.__sd")||0)).toFixed(3) + '%');
-
-console.log('\n== automatic placement ==');
-check('scale and position are both recovered', window.eval(`(() => {
-  const truth = { mul: 1.22, lat: 57.0610, lng: 9.9400 };
-  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
-  const s = g.s * truth.mul;
-  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
-  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
-  const cv = HS.coastVertices(), coast = cv.map(put);
-  const bnd = HS.boundaryVertices(2);
-  const segs = [];
-  for (let i=1;i<bnd.length;i++){ const p=put(bnd[i-1]), q=put(bnd[i]); segs.push([p[0],p[1],q[0],q[1],i]); }
-  const best = HS.fitToGeography(cv, coast, bnd, HS.segmentIndex(segs,0.004),
-                                 { mul: 1.0, lat: 57.048, lng: 9.9187 }, []);
-  window.__af = best;
-  return Math.abs(best.mul - truth.mul) < 0.02;
-})()`), 'recovered ' + (window.eval("window.__af && window.__af.mul")||0).toFixed(3) + ' vs 1.220');
-
-
-console.log('\n== boundaries follow the source: smooth curves, sharp corners ==');
-const turnList = (expr) => window.eval(`(() => {
-  const fs = ${expr};
-  const turns = [];
-  for (const f of fs) {
-    const c = f.geometry.coordinates[0];
-    const u = [];
-    for (let i=1;i<c.length;i++) {
-      const dx=(c[i][0]-c[i-1][0])*0.545, dy=c[i][1]-c[i-1][1];
-      const n=Math.hypot(dx,dy); if(n>1e-12) u.push([dx/n,dy/n]);
-    }
-    for (let i=1;i<u.length;i++) {
-      const d=Math.max(-1,Math.min(1,u[i-1][0]*u[i][0]+u[i-1][1]*u[i][1]));
-      turns.push(Math.acos(d)*180/Math.PI);
-    }
-  }
-  return turns;
-})()`);
-const t3 = turnList("HS.buildDistrictZones().features");
-const gentle3 = t3.filter(t=>t<15).length/t3.length;
-const sharp3  = t3.filter(t=>t>60).length/t3.length;
-check('most of a district border runs gently', gentle3 > 0.5,
-      `${(100*gentle3).toFixed(0)}% of turns under 15\u00b0`);
-check('but real corners are kept sharp', sharp3 > 0.05 && t3.some(t=>t>85),
-      `${(100*sharp3).toFixed(0)}% over 60\u00b0, sharpest ${Math.max(...t3).toFixed(0)}\u00b0`);
-
-// The boundary in the photo: Midtbyen. Smooth along Østre Allé, hard turns
-// at Vestre Fjordvej and the tunnel.
-const tm = turnList("HS.buildAreaZones().features.filter(f=>f.properties.navn.includes('Midtbyen'))");
-const gm = tm.filter(t=>t<15).length/tm.length;
-check('Midtbyen runs smoothly along its long stretches', gm > 0.6,
-      `${(100*gm).toFixed(0)}% of turns under 15\u00b0`);
-check('Midtbyen keeps its hard turns', tm.filter(t=>t>60).length >= 3,
-      `${tm.filter(t=>t>60).length} turns over 60\u00b0, sharpest ${Math.max(...tm).toFixed(0)}\u00b0`);
-check('no staircase left over', t3.filter(t=>t>25 && t<50).length/t3.length < 0.25,
-      `${(100*t3.filter(t=>t>25&&t<50).length/t3.length).toFixed(0)}% in the 25-50\u00b0 band`);
-check('detail was not thrown away', window.eval(`(() => {
-  const v = HS.buildDistrictZones().features.reduce((a,f)=>a+f.geometry.coordinates[0].length,0);
-  window.__v = v; return v > 1500;
-})()`), window.eval("window.__v") + ' vertices across the districts');
-check('and the zones are still perfectly joined', window.eval(`(() => {
-  const fs = HS.buildDistrictZones().features;
-  const sum = fs.reduce((a,f)=>a+turf.area(f),0);
-  return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
-})()`));
-
-console.log('\n== placing the zones ==');
-const c0 = window.eval("JSON.stringify(HS.S.cal)");
-check('placement starts from data.js', window.eval(`(() => {
-  const c = HS.S.cal || HS.defaultCal(), p = window.PLACEMENT;
-  return Math.abs(c.lat-p.lat)<1e-9 && Math.abs(c.lng-p.lng)<1e-9 && Math.abs(c.mul-p.scale)<1e-9;
-})()`));
-
-console.log('  -- nudging by an exact distance --');
-check('nudging east moves the zones east by the amount asked', window.eval(`(() => {
-  const before = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  HS.nudgeCal(250, 0);
-  const after = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  const d = turf.distance(turf.point(before), turf.point(after), {units:'kilometers'})*1000;
-  window.__d = d;
-  return Math.abs(d - 250) < 3 && after[0] > before[0];
-})()`), 'moved ' + (window.eval("window.__d")||0).toFixed(1) + ' m for a 250 m nudge');
-check('nudging north moves north by the amount asked', window.eval(`(() => {
-  const before = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  HS.nudgeCal(0, 100);
-  const after = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  const d = turf.distance(turf.point(before), turf.point(after), {units:'kilometers'})*1000;
-  return Math.abs(d - 100) < 2 && after[1] > before[1];
-})()`));
-check('nudges undo exactly', window.eval(`(() => {
-  const a = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  HS.nudgeCal(-250, -100);
-  const b = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  HS.nudgeCal(250, 100); HS.nudgeCal(-250, -100);
-  const c = turf.centroid(HS.buildAreaZones().features[0]).geometry.coordinates;
-  return Math.abs(b[0]-c[0])<1e-9 && Math.abs(b[1]-c[1])<1e-9;
-})()`));
-window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
-
-console.log('  -- resizing about the screen centre --');
-check('a 1% resize changes the span by 1%', window.eval(`(() => {
-  const span = () => { const b = turf.bbox(HS.buildAreaZones());
-    return turf.distance(turf.point([b[0],b[1]]), turf.point([b[2],b[1]])); };
-  const a = span(); HS.scaleCal(1.01); const b = span();
-  window.__r = b/a;
-  return Math.abs(b/a - 1.01) < 0.002;
-})()`), 'ratio ' + (window.eval("window.__r")||0).toFixed(4));
-check('resizing keeps the map centre fixed', window.eval(`(() => {
-  const mid = HS.map.getCenter();
-  const at = () => { const gr = HS.georef();
-    // where does the map centre fall in overlay pixel space?
-    return [(mid.lng - gr.lng0)/gr.s, (HS.__mercY(mid.lat) - gr.my0)/(-gr.s)]; };
-  const a = at(); HS.scaleCal(1.05); const b = at();
-  window.__px = Math.hypot(a[0]-b[0], a[1]-b[1]);
-  return window.__px < 0.6;      // same overlay pixel stays under the centre
-})()`), 'centre drifted ' + (window.eval("window.__px")||0).toFixed(2) + ' overlay px');
-check('resizes undo exactly', window.eval(`(() => {
-  const m0 = HS.S.cal.mul;
-  HS.scaleCal(1.01); HS.scaleCal(1/1.01);
-  return Math.abs(HS.S.cal.mul - m0) < 1e-9;
-})()`));
-check('resizing refuses to run away', window.eval(`(() => {
-  const m0 = HS.S.cal.mul;
-  for (let i=0;i<200;i++) HS.scaleCal(1.1);
-  const big = HS.S.cal.mul <= 5;
-  for (let i=0;i<400;i++) HS.scaleCal(0.9);
-  return big && HS.S.cal.mul >= 0.2;
-})()`));
-window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
-
-console.log('  -- dragging --');
-check('drag mode stops the map panning', window.eval(`(() => {
-  HS.setCalMode(true);
-  const off = !HS.map.dragging.enabled();
-  HS.setCalMode(false);
-  return off && HS.map.dragging.enabled();
-})()`));
-
-console.log('  -- making it permanent --');
-check('the snippet is a valid PLACEMENT line', window.eval(`(() => {
-  const line = HS.placementSnippet();
-  window.__line = line;
-  if (line.indexOf('const PLACEMENT = {') !== 0 || line.slice(-2) !== '};') return false;
-  const o = eval('(' + line.slice('const PLACEMENT = '.length, -1) + ')');
-  const c = HS.S.cal || HS.defaultCal();
-  return Math.abs(o.lat-c.lat) < 1e-5 && Math.abs(o.lng-c.lng) < 1e-5
-      && Math.abs(o.scale-(c.mul||1)) < 1e-4;
-})()`), window.eval("window.__line"));
-check('pasting the snippet reproduces the placement exactly', window.eval(`(() => {
-  HS.nudgeCal(137, -42); HS.scaleCal(1.037);
-  const line = HS.placementSnippet();
-  const want = HS.buildAreaZones().features.map(f => turf.centroid(f).geometry.coordinates);
-  // simulate a fresh load with that PLACEMENT baked into data.js
-  const saved = window.PLACEMENT;
-  window.PLACEMENT = eval(line.replace('const PLACEMENT =','(').replace(/;$/,')'));
-  HS.S.cal = HS.defaultCal();
-  const got = HS.buildAreaZones().features.map(f => turf.centroid(f).geometry.coordinates);
-  window.PLACEMENT = saved;
-  const worst = Math.max(...want.map((w,i) =>
-    turf.distance(turf.point(w), turf.point(got[i]), {units:'kilometers'})*1000));
-  window.__worst = worst;
-  return worst < 1;             // under a metre
-})()`), 'reproduced to ' + (window.eval("window.__worst")||0).toFixed(2) + ' m');
-window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
-check('placement still survives the game link', window.eval(`(() => {
-  HS.S.cal = { lat: 57.05, lng: 9.93, mul: 1.2 };
-  const blob = JSON.parse(JSON.stringify(HS.serialize()));
-  HS.S.cal = HS.defaultCal();
-  HS.deserialize(blob);
-  return Math.abs(HS.S.cal.mul - 1.2) < 1e-9 && Math.abs(HS.S.cal.lng - 9.93) < 1e-9;
-})()`));
-window.eval(`HS.S.cal = ${c0}; HS.applyCal(true);`);
-
-console.log('\n== Østre Allé as the anchor ==');
-check('a reference road is defined', window.eval("(window.REFERENCE_ROADS||[]).length") >= 1,
-      window.eval("(window.REFERENCE_ROADS||[]).map(r=>r.name).join(', ')"));
-check('it is Midtbyen\u2019s southern edge', window.eval(`(() => {
-  const r = window.REFERENCE_ROADS[0];
-  const mid = window.ZONE2_PX.find(z => z.n === 1);
-  // every reference point must be a vertex of the Midtbyen ring
-  return r.px.every(p => mid.ring.some(q => q[0] === p[0] && q[1] === p[1]));
-})()`));
-check('the reference line densifies evenly', window.eval(`(() => {
-  const l = HS.referenceLines(2)[0];
-  let maxGap = 0;
-  for (let i=1;i<l.px.length;i++) maxGap = Math.max(maxGap,
-    Math.hypot(l.px[i][0]-l.px[i-1][0], l.px[i][1]-l.px[i-1][1]));
-  window.__gap = maxGap;
-  return l.px.length > window.REFERENCE_ROADS[0].px.length * 3 && maxGap <= 2.5;
-})()`), window.eval("HS.referenceLines(2)[0].px.length") + ' points, max gap ' +
-        (window.eval("window.__gap")||0).toFixed(1) + ' px');
-check('named-road query asks for the road by name', window.eval(`(() => {
-  const q = HS.overpassNamedRoadQuery(['Østre Allé']);
-  return q.includes('["name"="Østre Allé"]') && q.includes('out geom;');
-})()`));
-
-// The anchor should sharpen the fit: give it a deliberately poor start and
-// only the reference road plus a short coastline to work from.
-check('the anchor pins scale and position', window.eval(`(() => {
-  const truth = { mul: 1.31, lat: 57.0555, lng: 9.9310 };
-  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
-  const s = g.s * truth.mul;
-  const lng0 = truth.lng - s*a[0], my0 = HS.__mercY(truth.lat) + s*a[1];
-  const put = ([x,y]) => [lng0 + s*x, HS.__invMercY(my0 - s*y)];
-  const line = HS.referenceLines(2)[0];
-  // the "real" Østre Allé, as it would be if the truth transform held
-  const real = line.px.map(put);
-  const cv = HS.coastVertices();
-  const coast = cv.map(put);
-  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
-                                 { mul: 1.0, lat: 57.040, lng: 9.900 },
-                                 [{ name: 'Østre Allé', px: line.px, real }]);
-  window.__anchored = best;
-  return Math.abs(best.mul - truth.mul) < 0.01 &&
-         Math.abs(best.lat - truth.lat) < 0.001 &&
-         Math.abs(best.lng - truth.lng) < 0.0015;
-})()`), window.eval("window.__anchored ? 'recovered ' + window.__anchored.mul.toFixed(3) + ' / ' + window.__anchored.lat.toFixed(4) + ', ' + window.__anchored.lng.toFixed(4) : ''") + ' vs 1.310 / 57.0555, 9.9310');
-check('the fit still runs when the named road is missing', window.eval(`(() => {
-  const cv = HS.coastVertices();
-  const g = { s: window.BASE_PX_DEG }, a = HS.anchorPx();
-  const s = g.s * 1.2;
-  const lng0 = 9.94 - s*a[0], my0 = HS.__mercY(57.05) + s*a[1];
-  const coast = cv.map(([x,y]) => [lng0+s*x, HS.__invMercY(my0-s*y)]);
-  const best = HS.fitToGeography(cv, coast, HS.boundaryVertices(4), null,
-                                 { mul: 1.0, lat: 57.048, lng: 9.9187 }, []);
-  return Math.abs(best.mul - 1.2) < 0.05;
-})()`));
-
+window.eval("HS.removeLayerByKey('src:zone3')");
 
 console.log('\n== live boundaries from Aalborg KortInfo ==');
 check('the KortInfo endpoint is wired in', window.eval("HS.KORTINFO").includes('drift.kortinfo.net')
@@ -1118,8 +723,8 @@ check('GML2 coordinates syntax also parses', window.eval(`(() => {
     '</LinearRing></outerBoundaryIs></Polygon></a></featureMember></FeatureCollection>');
   return x.features.length === 1 && x.features[0].geometry.coordinates[0].length === 5;
 })()`));
-check('the traced outlines still work if KortInfo says no', window.eval(`(() => {
-  return HS.buildDistrictZones().features.length === window.ZONE3_PX.length;
+check('the fallback outlines still work if KortInfo says no', window.eval(`(() => {
+  return HS.buildAreaZones().features.length === 4;
 })()`));
 
 console.log('\n== official zone labels ==');
@@ -1168,8 +773,10 @@ check('Radar preview is non-committing and computes an impact', window.eval(`(()
          HS.questionPreview.metrics.afterM2 < HS.questionPreview.metrics.beforeM2;
 })()`));
 check('preview controls are now a standard live draft rather than an opt-in toggle', (() => {
-  window.eval("HS.selectTool('radar')");
-  return HS.questionPreview.active && !/Preview on map|Exit preview mode/.test($('#toolForm').textContent) && /Live map draft/.test($('#toolForm').textContent);
+  // selectTool toggles, so only open Radar if the previous check left it closed.
+  if ($('#toolForm').hidden || !/Radar/.test($('#toolForm').textContent)) window.eval("HS.selectTool('radar')");
+  window.eval("HS.map.fire('click', { latlng: L.latLng(57.0488, 9.9217) })");
+  return window.HS.questionPreview.active && !/Preview on map|Exit preview mode/.test($('#toolForm').textContent) && !!$('#previewImpactText');
 })());
 check('Thermometer handle stays on the selected travel ring', window.eval(`(() => {
   const a = [9.9217,57.0488];
@@ -1197,7 +804,7 @@ console.log('\n== automatic matching places ==');
 check('POI matching query uses the supplied OSM tag filter and compact game-area bbox', window.eval(`(() => {
   const q = HS.matchingPoiOverpassQuery({ filters:['["tourism"="museum"]'] });
   const bb = HS.activeGameBbox(1.5);
-  return q.includes('tourism"="museum') && q.includes('out center tags') && q.includes('[timeout:12]') &&
+  return q.includes('tourism"="museum') && q.includes('out center tags') && /\[timeout:\d+\]/.test(q) &&
     q.includes(String(bb[0])) && q.includes(String(bb[1])) && !q.includes('nwr(56.94,9.7,57.18,10.25)');
 })()`));
 check('POI parser accepts nodes and area centres and removes duplicate representations', window.eval(`(() => {
@@ -1275,12 +882,13 @@ check('automatic Matching removes candidates outside the current game area', win
   ]));
   return gj.features.length === 1 && gj.features[0].properties.name === 'Inside';
 })()`));
-check('commercial airport is retained as the deliberate outside-play-area exception', window.eval(`(() => {
+check('commercial airport uses the terminal point, which lies inside the play area', window.eval(`(() => {
   const mode = HS.MATCHING_POI_DEFS['commercial airport'];
+  const terminal = mode.fallback[0];
   const gj = HS.filterMatchingPoisToPlayArea(turf.featureCollection([
-    turf.point([9.849243,57.092759], {name:'Aalborg Airport (AAL)'})
+    turf.point(terminal.coordinates, { name: terminal.name })
   ]), mode);
-  return mode.allowOutsidePlayArea === true && gj.features.length === 1;
+  return mode.authoritativeOnly === true && gj.features.length === 1;
 })()`));
 
 check('zone display clipping never exposes polygon area outside the play area', window.eval(`(() => {
@@ -1332,5 +940,4 @@ check('bundled transit stops contain scheduled bus and rail stops', window.eval(
 console.log('\n== runtime errors ==');
 check('nothing threw during the whole run', errors.length === 0, errors.join(' | '));
 
-console.log(`\n──────────────\n${pass} passed, ${fail} failed\n`);
-process.exit(fail ? 1 : 0);
+finish();

@@ -40,8 +40,6 @@ const RADAR_PRESETS = [
    All of these are editable in the Layers tab, because a service can
    rename a layer and you do not want to be editing code on a bus.  */
 
-const PLANDATA = 'https://geoserver.plandata.dk/geoserver/wfs';
-
 /* Aalborg's own WebGIS. Its WFS is the real source for zones 2 and 3 — the
    traced outlines are only a stand-in. If your browser can reach it, use it:
    live geometry needs no tracing and no placement, because it arrives with
@@ -514,16 +512,8 @@ const S = {
   playAreaMeta: null,
   constraints: [],
   layers: [],            // {id,name,color,kind:'poly'|'line',geojson,layer,visible}
-  wms: [],               // {id,name,url,layers,visible,leaflet,opacity}
   sources: JSON.parse(JSON.stringify(DEFAULT_SOURCES)),
   zone2Official: null, // cached official Zone 2 geometry used by the play area
-  cal: null,          // where the traced zones sit on the map
-  calMode: false,     // dragging the overlay rather than the map
-  roadIndex: null,    // loaded road network, for boundary snapping
-  snapOn: false,      // whether boundaries are snapped to it
-  snapM: 70,          // how far a boundary point may be pulled
-  renames: {},        // district index -> your own name
-  me: null,
   baseKey: 'light',
   fogOpacity: 0.62,
   transitStops: { loaded: false, visible: false, loading: false, geojson: null, layer: null,
@@ -891,17 +881,15 @@ function setZonesPlayArea(fit) {
   return true;
 }
 
-/* Built-in zone layers are clipped to the play area, so they must be
-   rebuilt whenever it moves. Same for the landzone backdrop. */
+/* Zone 1 and Zone 4 layers are clipped to the play area (and carry a
+   catch-all remainder), so they must be rebuilt whenever it moves. */
 function refreshDerivedLayers() {
   for (const rec of S.layers.slice()) {
-    let gj = null;
-    if (rec.derived) gj = rec.derived === 'areas' ? buildAreaZones() : buildDistrictZones();
-    else if (rec.baseGeojson && ['zonekort', 'rammer'].includes(rec.style)) gj = rec.baseGeojson;
-    if (!gj) continue;
+    if (!rec.baseGeojson || !['zonekort', 'rammer'].includes(rec.style)) continue;
+    const gj = rec.baseGeojson;
     const wasVisible = rec.visible;
     const fresh = addLayer(rec.name, gj, {
-      key: rec.key, nameField: rec.nameField, style: rec.style, derived: rec.derived,
+      key: rec.key, nameField: rec.nameField, style: rec.style,
       sourceKey: rec.sourceKey, baseGeojson: rec.baseGeojson || gj, borderGeojson: rec.borderGeojson
     });
     if (fresh && !wasVisible) setLayerVisible(fresh, false);
@@ -1734,17 +1722,6 @@ function buildMatchingPoiLayer(gj, mode) {
   return group;
 }
 
-function applyQuestionPoiGeoJson(gj, mode, session) {
-  const inPlay = filterMatchingPoisToPlayArea(gj || { type: 'FeatureCollection', features: [] }, mode);
-  const activeMode = activeQuestionPoiMode();
-  if (session !== questionPoi.session || !activeMode || activeMode.key !== mode.key) return inPlay;
-  if (questionPoi.layer && map.hasLayer(questionPoi.layer)) map.removeLayer(questionPoi.layer);
-  questionPoi.geojson = inPlay;
-  questionPoi.layer = buildMatchingPoiLayer(inPlay, mode);
-  questionPoi.layer.addTo(map);
-  return inPlay;
-}
-
 async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
   if (!mode) return null;
   questionPoi.modeKey = mode.key;
@@ -1824,29 +1801,6 @@ function setMatchingPoiFromCoord(coord) {
   draft.matchName = (feats[bestIndex].properties || {}).name || mode.singular;
   draft.matchDistanceM = best;
   draft.categoryName = selectedQuestion ? selectedQuestion.phrase : mode.singular;
-  return true;
-}
-
-function setMeasuringPoiTargetFromCoord(coord) {
-  const mode = measuringPoiMode();
-  if (!mode) return false;
-  const feats = matchingPoiFeatures();
-  if (!feats.length) {
-    toast(questionPoi.loading ? `${mode.plural} are still loading.` : `No ${mode.plural} are available for this question.`, !questionPoi.loading);
-    return false;
-  }
-  const tap = turf.point(coord);
-  let best = Infinity, chosen = null;
-  for (const ft of feats) {
-    try {
-      const d = turf.distance(tap, ft, { units: 'meters' });
-      if (d < best) { best = d; chosen = ft; }
-    } catch (_) { /* continue */ }
-  }
-  if (!chosen) return false;
-  draft.target = chosen.geometry.coordinates.slice();
-  const p = chosen.properties || {};
-  draft.targetName = p.name || p.__displayName || mode.singular;
   return true;
 }
 
@@ -3225,34 +3179,6 @@ function syncQuestionPreview() {
   renderPreviewHandles();
 }
 
-function clearLiveDraftGeometry() {
-  if (activeTool === 'radar') delete draft.center;
-  else if (activeTool === 'thermometer') {
-    delete draft.a; delete draft.b; delete draft.distanceConfirmed;
-  } else if (activeTool === 'measuring') {
-    delete draft.seeker; delete draft.target; delete draft.targetDistanceM;
-    delete draft.proximityBandGeometry; delete draft.proximityCandidateCount;
-    delete draft.borderDistanceM; delete draft.borderBandGeometry;
-    delete draft.autoFeatureName; delete draft.autoFeatureKind; delete draft.autoFeatureSide;
-  } else if (activeTool === 'nearest') {
-    if (matchingAreaMode()) {
-      delete draft.matchPoint; delete draft.matchGeometry; delete draft.matchName;
-    } else if (matchingPoiMode()) {
-      delete draft.matchPoint; delete draft.matchName; delete draft.matchDistanceM;
-      draft.index = null; delete draft.answer;
-      draft.points = matchingPoiFeatures().map((ft) => ft.geometry.coordinates.slice());
-    } else {
-      draft.points = []; draft.index = null;
-    }
-  } else if (activeTool === 'transit') {
-    delete draft.lineGeom; delete draft.lineName;
-  } else if (activeTool === 'zone') {
-    delete draft.zoneGeometry; delete draft.zoneName; delete draft.zoneIdx;
-  } else if (activeTool === 'area') {
-    delete draft.geometry;
-  }
-}
-
 function addPreviewControls(box) {
   // Map is always one tap away in the mobile nav, and closing/cancelling the
   // question already clears its draft. Keep the useful impact/instruction text
@@ -4172,76 +4098,20 @@ function prepareSourceLabels(gj, sourceKey, configuredField) {
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
 
-/* ---------- traced Aalborg zones -------------------------------------
-   The outlines in data.js are real boundaries traced from the KortInfo
-   screenshots, stored in the screenshots' pixel space. A screenshot can
-   tell you the shape of a boundary but not where on Earth it sits, so
-   the pixel-to-degree transform starts as an estimate and is corrected
-   once, by hand, in the Calibrate control.                            */
+/* ---------- Zone 2 play areas ---------------------------------------- */
 
-const mercY = (lat) => (180 / Math.PI) * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
-const invMercY = (my) => (180 / Math.PI) * (2 * Math.atan(Math.exp(my * Math.PI / 180)) - Math.PI / 2);
+const AALBORG_AREAS = {
+  1: { name: 'Midtbyen',     color: '#e8734d' },
+  2: { name: 'Nørresundby',  color: '#4f9bd8' },
+  3: { name: 'Vest Aalborg', color: '#5fb56a' },
+  4: { name: 'Øst Aalborg',  color: '#b878cf' }
+};
 
-/* The overlays are the right shape already — only where they sit and how big
-   they are needs setting, and only once. Placement is three numbers: the map
-   position of the overlay's anchor point, and a scale multiplier. */
-function anchorPx() {
-  const z = (window.ZONE2_PX || []).find((r) => r.n === 1) || (window.ZONE2_PX || [])[0];
-  if (!z) return [446, 401];
-  let sx = 0, sy = 0;
-  for (const [x, y] of z.ring) { sx += x; sy += y; }
-  return [sx / z.ring.length, sy / z.ring.length];
-}
-
-function defaultCal() {
-  const p = window.PLACEMENT || { lat: 57.048, lng: 9.9187, scale: 1 };
-  return { lat: p.lat, lng: p.lng, mul: p.scale };
-}
-
-function georef() {
-  const c = S.cal || defaultCal();
-  const [ax, ay] = anchorPx();
-  const s = (window.BASE_PX_DEG || 0.00031) * (c.mul || 1);
-  return { s, lng0: c.lng - s * ax, my0: mercY(c.lat) + s * ay };
-}
-
-const pxToLngLat = (x, y, gr) => [gr.lng0 + gr.s * x, invMercY(gr.my0 - gr.s * y)];
-
-function ringToPolygon(ring, props, gr, snapper) {
-  const coords = snapper ? snapper.mapRing(ring, gr)
-                         : ring.map(([x, y]) => pxToLngLat(x, y, gr));
-  if (coords.length < 4) return null;
-  const first = coords[0], last = coords[coords.length - 1];
-  if (first[0] !== last[0] || first[1] !== last[1]) coords.push(first.slice());
-  try { return turf.polygon([coords], props); } catch (_) { return null; }
-}
-
-/* Zone 2: the four play zones, straight from the traced outlines. */
-/* Zone 2: the four play zones, straight from the traced outlines. */
+/* Traced outlines of the four play areas (zone2-fallback.js). They are used
+   only until official Zone 2 geometry is available. */
 function buildAreaZones() {
-  const gr = georef();
-  const snapper = (S.roadIndex && S.snapOn) ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
-  const out = [];
-  for (const z of window.ZONE2_PX || []) {
-    const f = ringToPolygon(z.ring, { navn: `${z.n}. ${z.name}`, area: z.n }, gr, snapper);
-    if (f) out.push(f);
-  }
-  return out.length ? { type: 'FeatureCollection', features: out } : null;
-}
-
-/* Zone 3: the city districts, with the names read off the screenshot's
-   own labels. Renames live in S.renames, keyed by index. */
-function buildDistrictZones() {
-  const gr = georef();
-  const snapper = (S.roadIndex && S.snapOn) ? snapRingsToRoads(S.roadIndex, S.snapM || 70) : null;
-  const out = [];
-  (window.ZONE3_PX || []).forEach((z, i) => {
-    const nm = (S.renames && S.renames[i]) || z.name || `District ${i + 1}`;
-    const f = ringToPolygon(z.ring, { navn: nm, idx: i }, gr, snapper);
-    if (f) out.push(f);
-  });
-  if (snapper) S.lastSnap = snapper.stats();
-  return out.length ? { type: 'FeatureCollection', features: out } : null;
+  const fb = window.AALBORG_ZONE2_FALLBACK;
+  return fb && fb.features && fb.features.length ? turf.clone(fb) : null;
 }
 
 /* The four official Zone 2 polygons are also the default play area. The
@@ -4448,13 +4318,13 @@ function hasOfficialZonesPlayArea() {
   return officialPlayZoneFeatures(officialZone2Data()).length > 0;
 }
 
-const AREA_STYLE = () => Object.entries(window.AALBORG_AREAS || {})
+const AREA_STYLE = () => Object.entries(AALBORG_AREAS)
   .map(([k, v]) => ({ key: k, label: `${k}. ${v.name}`, color: v.color }));
 
 function areaCategory(props) {
   const def = playZoneDef(props);
   if (!def) return null;
-  const a = (window.AALBORG_AREAS || {})[def.area];
+  const a = AALBORG_AREAS[def.area];
   return a ? { key: String(def.area), label: `${def.area}. ${a.name}`, color: a.color } : null;
 }
 
@@ -4521,7 +4391,7 @@ function addLayer(name, geojson, opts = {}) {
   const rec = { id: uid(), key: opts.key || null, name, color, kind, geojson: fcol,
                 baseGeojson, borderGeojson: opts.borderGeojson || null, sourceKey: opts.sourceKey || null,
                 nameField: opts.nameField || '', style: opts.style || 'plain',
-                derived: opts.derived || null, visible: true, layer: null,
+                visible: true, layer: null,
                 routeLayer: !!opts.routeLayer, routeCount: opts.routeCount || 0,
                 routeRefs: opts.routeRefs || [], labelLayer: null };
 
@@ -4552,7 +4422,6 @@ function addLayer(name, geojson, opts = {}) {
       }
       lyr.bindTooltip(tip, { className: 'zone-tip', sticky: true });
       lyr.on('click', (e) => {
-        if (kind === 'poly' && tryRename(ft)) { L.DomEvent.stopPropagation(e); return; }
         if (kind === 'poly' && activeTool === 'zone') {
           L.DomEvent.stopPropagation(e);
           const all = [];
@@ -4769,6 +4638,58 @@ async function fetchFirst(urls) {
   }
   throw new Error(problems.join(' / '));
 }
+
+function fetchWithDeadline(url, options = {}, timeoutMs = 30000) {
+  if (typeof AbortController === 'undefined') return fetch(url, options);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  return fetch(url, Object.assign({}, options, { signal: ctrl.signal }))
+    .finally(() => clearTimeout(timer));
+}
+
+const TRANSIENT_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/* Retry quick gateway/server errors once, but do not turn one full network
+   timeout into two. This catches the common 502/503/504 hiccup without making
+   a genuinely unreachable service take twice as long to fail. */
+async function fetchReliable(url, options = {}, timeoutMs = 30000, attempts = 2) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+    try {
+      const res = await fetchWithDeadline(url, options, timeoutMs);
+      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt + 1 >= attempts) return res;
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+      if ((err && err.name === 'AbortError') || attempt + 1 >= attempts) throw err;
+    }
+    await sleep(700 * (attempt + 1));
+  }
+  throw lastErr || new Error('network request failed');
+}
+
+async function overpassJson(query, opts = {}) {
+  const body = 'data=' + encodeURIComponent(query);
+  const urls = (opts.urls || OVERPASS).filter(Boolean);
+  const timeoutMs = Math.max(15000, Number(opts.timeoutMs) || 55000);
+  const problems = [];
+  for (const url of urls) {
+    try {
+      const res = await fetchWithDeadline(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
+      }, timeoutMs);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return JSON.parse(await res.text());
+    } catch (e) {
+      problems.push(e && e.name === 'AbortError' ? `${url}: timeout` : `${url}: ${e.message || e}`);
+    }
+  }
+  throw new Error(problems.join(' / ') || 'Overpass request failed');
+}
+
+/* Named-road anchors, densified in pixel space so the comparison against
+   the real road is even along its length. */
 
 /* ---------- layer capability browser ---------------------------------
    Reads the service's own list of layers so you never have to guess a
@@ -5195,18 +5116,6 @@ function parseTransitStops(json) {
       name, __displayName: name, __stopKind: kind,
       route_ref: tags.route_ref || tags.ref || '', shelter: tags.shelter || ''
     }));
-  }
-  return { type: 'FeatureCollection', features };
-}
-
-function mergeTransitStopCollections(a, b) {
-  const features = [], seen = new Set();
-  for (const ft of [...((a && a.features) || []), ...((b && b.features) || [])]) {
-    if (!ft || !ft.geometry || ft.geometry.type !== 'Point') continue;
-    const c = ft.geometry.coordinates, p = ft.properties || {};
-    const key = `${p.__stopKind || ''}:${Math.round(c[0] * 1e6)}:${Math.round(c[1] * 1e6)}:${normaliseStopName(p.name)}`;
-    if (seen.has(key)) continue;
-    seen.add(key); features.push(ft);
   }
   return { type: 'FeatureCollection', features };
 }
@@ -5960,18 +5869,6 @@ async function toggleSource(key, btn) {
   if (ex) { setLayerVisible(ex, !ex.visible); return; }
   if (zoneLoads.has(key)) return;
 
-  // Built-in zones need no network at all.
-  if (src.kind === 'areas' || src.kind === 'districts') {
-    const gj = src.kind === 'areas' ? buildAreaZones() : buildDistrictZones();
-    if (!gj) { setStatus(`${src.name}: could not build the zones — check data.js.`, true); return; }
-    const rec = addLayer(src.name, gj, {
-      key: 'src:' + key, nameField: 'navn', style: src.style, derived: src.kind,
-      sourceKey: key, baseGeojson: gj
-    });
-    if (rec) setStatus(`${src.name}: ${rec.geojson.features.length} zones on (approximate — built from data.js).`);
-    return;
-  }
-
   if (!src.url || (src.kind === 'wfs' && !src.typeName)) {
     setStatus(`${src.name}: no source set yet. Tap ⚙, paste the service URL, then Browse for the layer.`, true);
     return;
@@ -6064,7 +5961,7 @@ async function loadOfficialZone2PlayArea(forceLive = false) {
     if (status && cached) status.textContent = 'Official Zone 2 loaded instantly from the periodically refreshed local KortInfo snapshot.';
     else if (status && persistent) status.textContent = 'Official Zone 2 loaded instantly from this device’s persistent KortInfo cache.';
     renderSourceRows();
-    renderCal();
+    renderOfficialZoneStatus();
     return true;
   } catch (err) {
     console.warn('KortInfo Zone 2 unavailable; using traced fallback:', err.message);
@@ -6170,643 +6067,17 @@ async function toggleRoute(key, btn) {
   }
 }
 
-/* ---------- fitting the zones to real geography ------------------------
-   You spotted that the boundaries follow real features. They do — and
-   better still, many of them follow the shoreline, which is unmistakable.
-   The tracing recorded which vertices sit on water, so the app can pull
-   the real coastline from OpenStreetMap and slide the zones onto it. */
+/* ---------- official Zone 2 status ----------------------------------- */
 
-function coastVertices() {
-  const out = [];
-  for (const z of window.ZONE3_PX || []) {
-    const c = z.coast || [];
-    for (let i = 0; i < z.ring.length; i++) if (c[i]) out.push(z.ring[i]);
-  }
-  return out;
-}
-
-function overpassCoastQuery() {
-  const [s2, w, n, e] = OVERPASS_BBOX;
-  return `[out:json][timeout:90];way(${s2},${w},${n},${e})["natural"="coastline"];out geom;`;
-}
-
-function parseOverpassPoints(json, stepKm) {
-  const pts = [];
-  for (const el of (json && json.elements) || []) {
-    const g = el.geometry;
-    if (!Array.isArray(g)) continue;
-    for (let i = 1; i < g.length; i++) {
-      const a = g[i - 1], b = g[i];
-      if (!a || !b || a.lon == null || b.lon == null) continue;
-      const dx = (b.lon - a.lon) * 60.5, dy = (b.lat - a.lat) * 111.2;
-      const n = Math.max(1, Math.round(Math.hypot(dx, dy) / (stepKm || 0.05)));
-      for (let k = 0; k < n; k++) {
-        const t = k / n;
-        pts.push([a.lon + (b.lon - a.lon) * t, a.lat + (b.lat - a.lat) * t]);
-      }
-    }
-  }
-  return pts;
-}
-
-/* Cheap nearest-neighbour over a fixed grid — plenty for a few thousand
-   points, and it keeps the search loop fast enough to feel instant. */
-function makeIndex(pts, cell) {
-  const g = new Map();
-  const key = (a, b) => a + ':' + b;
-  for (const p of pts) {
-    const k = key(Math.floor(p[0] / cell), Math.floor(p[1] / cell));
-    if (!g.has(k)) g.set(k, []);
-    g.get(k).push(p);
-  }
-  return {
-    nearest(x, y) {
-      const gx = Math.floor(x / cell), gy = Math.floor(y / cell);
-      for (let r = 1; r <= 4; r++) {
-        let best = Infinity;
-        for (let i = gx - r; i <= gx + r; i++) {
-          for (let j = gy - r; j <= gy + r; j++) {
-            const c = g.get(key(i, j));
-            if (!c) continue;
-            for (const p of c) {
-              const dx = (p[0] - x) * 60.5, dy = (p[1] - y) * 111.2;
-              const d = dx * dx + dy * dy;
-              if (d < best) best = d;
-            }
-          }
-        }
-        if (best < Infinity) return Math.sqrt(best);
-      }
-      return null;
-    }
-  };
-}
-
-const median = (a) => {
-  if (!a.length) return Infinity;
-  const b = a.slice().sort((x, y) => x - y);
-  return b[b.length >> 1];
-};
-
-/* ---------- snapping boundaries to the roads they follow ---------------
-   Most district borders run down the middle of a street, and the traced
-   outlines are pixel-quantised, so they wobble either side of the real
-   line. But plenty of borders follow no road at all — a field edge, the
-   railway, the shore — and in a city there is almost always *some* street
-   within snapping range of those. Pulling every point onto its nearest
-   road is what made the first attempt jitter.
-
-   So a point only moves when its stretch of boundary genuinely follows a
-   road: the road must run in the same direction as the boundary, and the
-   same OSM way must be the best match for a run of consecutive points. */
-
-const SNAP_MIN_RUN = 3;          // consecutive points that must agree
-const SNAP_COS = 0.78;           // ~39 degrees of direction tolerance
-
-function overpassRoadQuery() {
-  const [s2, w, n, e] = OVERPASS_BBOX;
-  // Named roads like Østre Allé are secondary/tertiary; residential is left
-  // out because it bloats the download and borders rarely follow it.
-  return `[out:json][timeout:120];way(${s2},${w},${n},${e})` +
-         `["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified)$"];out geom;`;
-}
-
-/* [ax, ay, bx, by, wayId] */
-function roadSegments(json) {
-  const segs = [];
-  for (const el of (json && json.elements) || []) {
-    const g = el.geometry;
-    if (!Array.isArray(g)) continue;
-    for (let i = 1; i < g.length; i++) {
-      const a = g[i - 1], b = g[i];
-      if (!a || !b || a.lon == null || b.lon == null) continue;
-      segs.push([a.lon, a.lat, b.lon, b.lat, el.id]);
-    }
-  }
-  return segs;
-}
-
-const KX = 0.545;                       // cos(57°): lng degrees -> lat degrees
-
-function projectToSegment(x, y, s) {
-  const ax = s[0], ay = s[1], bx = s[2], by = s[3];
-  const dx = (bx - ax) * KX, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  let t = len2 ? (((x - ax) * KX) * dx + (y - ay) * dy) / len2 : 0;
-  t = t < 0 ? 0 : t > 1 ? 1 : t;
-  const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
-  const ex = (px - x) * KX, ey = py - y;
-  return { x: px, y: py, d2: ex * ex + ey * ey, way: s[4], dx, dy, len2 };
-}
-
-function segmentIndex(segs, cell) {
-  const g = new Map();
-  const put = (i, j, v) => {
-    const k = i + ':' + j;
-    if (!g.has(k)) g.set(k, []);
-    g.get(k).push(v);
-  };
-  segs.forEach((s) => {
-    const i0 = Math.floor(Math.min(s[0], s[2]) / cell), i1 = Math.floor(Math.max(s[0], s[2]) / cell);
-    const j0 = Math.floor(Math.min(s[1], s[3]) / cell), j1 = Math.floor(Math.max(s[1], s[3]) / cell);
-    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) put(i, j, s);
-  });
-  return {
-    /* Best road within `maxDeg`. With a direction, only roads running
-       roughly parallel to it count. */
-    nearest(x, y, maxDeg, ux, uy) {
-      const gi = Math.floor(x / cell), gj = Math.floor(y / cell);
-      const r = Math.max(1, Math.ceil(maxDeg / cell));
-      let best = null;
-      for (let i = gi - r; i <= gi + r; i++) {
-        for (let j = gj - r; j <= gj + r; j++) {
-          const c = g.get(i + ':' + j);
-          if (!c) continue;
-          for (const s of c) {
-            const p = projectToSegment(x, y, s);
-            if (p.d2 > maxDeg * maxDeg) continue;
-            if (ux !== undefined && p.len2 > 0) {
-              const l = Math.sqrt(p.len2);
-              if (Math.abs((p.dx / l) * ux + (p.dy / l) * uy) < SNAP_COS) continue;
-            }
-            if (!best || p.d2 < best.d2) best = p;
-          }
-        }
-      }
-      return best;
-    }
-  };
-}
-
-/* Snapped positions are cached per pixel coordinate and the first result
-   wins, so a vertex shared by two districts resolves identically in both
-   and the zones stay joined. */
-function snapRingsToRoads(index, toleranceM) {
-  const tolDeg = (toleranceM / 1000) / 111.2;
-  const cache = new Map();
-  let moved = 0, total = 0;
-
-  function mapRing(ring, gr) {
-    const pts = ring.map(([x, y]) => pxToLngLat(x, y, gr));
-    const n = Math.max(1, pts.length - 1);          // last repeats the first
-    const cand = new Array(pts.length).fill(null);
-
-    for (let i = 0; i < n; i++) {
-      const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
-      let ux = (next[0] - prev[0]) * KX, uy = next[1] - prev[1];
-      const l = Math.hypot(ux, uy);
-      if (!l) continue;
-      ux /= l; uy /= l;
-      cand[i] = index.nearest(pts[i][0], pts[i][1], tolDeg, ux, uy);
-    }
-
-    // keep only runs of consecutive points that agree on the same road
-    const use = new Array(pts.length).fill(false);
-    let i = 0;
-    while (i < n) {
-      if (!cand[i]) { i++; continue; }
-      let j = i;
-      while (j + 1 < n && cand[j + 1] && cand[j + 1].way === cand[i].way) j++;
-      if (j - i + 1 >= SNAP_MIN_RUN) for (let k = i; k <= j; k++) use[k] = true;
-      i = j + 1;
-    }
-
-    return ring.map(([x, y], idx) => {
-      const key = x.toFixed(1) + ',' + y.toFixed(1);
-      if (cache.has(key)) return cache.get(key);
-      const k = idx === pts.length - 1 ? 0 : idx;
-      let p = pts[idx];
-      if (use[k] && cand[k]) { p = [cand[k].x, cand[k].y]; moved++; }
-      total++;
-      cache.set(key, p);
-      return p;
-    });
-  }
-  return { mapRing, stats: () => ({ moved, total }) };
-}
-
-function fetchWithDeadline(url, options = {}, timeoutMs = 30000) {
-  if (typeof AbortController === 'undefined') return fetch(url, options);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  return fetch(url, Object.assign({}, options, { signal: ctrl.signal }))
-    .finally(() => clearTimeout(timer));
-}
-
-const TRANSIENT_HTTP = new Set([408, 425, 429, 500, 502, 503, 504]);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/* Retry quick gateway/server errors once, but do not turn one full network
-   timeout into two. This catches the common 502/503/504 hiccup without making
-   a genuinely unreachable service take twice as long to fail. */
-async function fetchReliable(url, options = {}, timeoutMs = 30000, attempts = 2) {
-  let lastErr = null;
-  for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
-    try {
-      const res = await fetchWithDeadline(url, options, timeoutMs);
-      if (res.ok || !TRANSIENT_HTTP.has(res.status) || attempt + 1 >= attempts) return res;
-      lastErr = new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      lastErr = err;
-      if ((err && err.name === 'AbortError') || attempt + 1 >= attempts) throw err;
-    }
-    await sleep(700 * (attempt + 1));
-  }
-  throw lastErr || new Error('network request failed');
-}
-
-async function overpassJson(query, opts = {}) {
-  const body = 'data=' + encodeURIComponent(query);
-  const urls = (opts.urls || OVERPASS).filter(Boolean);
-  const timeoutMs = Math.max(15000, Number(opts.timeoutMs) || 55000);
-  const problems = [];
-  for (const url of urls) {
-    try {
-      const res = await fetchWithDeadline(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
-      }, timeoutMs);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return JSON.parse(await res.text());
-    } catch (e) {
-      problems.push(e && e.name === 'AbortError' ? `${url}: timeout` : `${url}: ${e.message || e}`);
-    }
-  }
-  throw new Error(problems.join(' / ') || 'Overpass request failed');
-}
-
-/* Named-road anchors, densified in pixel space so the comparison against
-   the real road is even along its length. */
-function referenceLines(stepPx) {
-  const out = [];
-  for (const r of window.REFERENCE_ROADS || []) {
-    const pts = [];
-    for (let i = 1; i < r.px.length; i++) {
-      const a = r.px[i - 1], b = r.px[i];
-      const n = Math.max(1, Math.round(Math.hypot(b[0] - a[0], b[1] - a[1]) / (stepPx || 2)));
-      for (let k = 0; k < n; k++) {
-        const t = k / n;
-        pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-      }
-    }
-    pts.push(r.px[r.px.length - 1]);
-    out.push({ name: r.name, note: r.note, px: pts });
-  }
-  return out;
-}
-
-function overpassNamedRoadQuery(names) {
-  const [s2, w, n, e] = OVERPASS_BBOX;
-  const clause = names.map((nm) => `way(${s2},${w},${n},${e})["name"="${nm}"];`).join('');
-  return `[out:json][timeout:90];(${clause});out geom;`;
-}
-
-/* All boundary vertices, thinned — the road term of the fit runs over these. */
-function boundaryVertices(step) {
-  const out = [];
-  const push = (ring) => { for (let i = 0; i < ring.length; i += (step || 1)) out.push(ring[i]); };
-  for (const z of window.ZONE3_PX || []) push(z.ring);
-  return out;
-}
-
-/* Scale is what the roads pin down. A long straight road like Østre Allé
-   only lines up with the boundary that runs along it at one size, so
-   including the street network removes the need to touch the slider. */
-function fitToGeography(coastVerts, coastPts, bndVerts, roadIdx, start, refs) {
-  const coastIdx = makeIndex(coastPts, 0.01);
-  const [ax, ay] = anchorPx();
-  const g = { s: window.BASE_PX_DEG || 0.00031 };
-
-  // The fit searches thousands of candidate placements, so thin every point
-  // set down first — a few hundred per term locates the optimum just as well
-  // and turns a 15-second wait on a phone into about a second.
-  const thin = (arr, cap) => {
-    if (arr.length <= cap) return arr;
-    const step = arr.length / cap, out = [];
-    for (let i = 0; i < arr.length; i += step) out.push(arr[Math.floor(i)]);
-    return out;
-  };
-  const cVerts = thin(coastVerts, 120);
-  const cPts = thin(coastPts, 200);      // only the anti-collapse reverse term
-  const bVerts = thin(bndVerts, 200);
-  const refIdx = (refs || []).map((r) => ({
-    px: thin(r.px, 110), idx: makeIndex(r.real, 0.004), real: thin(r.real, 60)
-  }));
-
-  let useRoads = true;
-  function evaluate(mul, lat, lng) {
-    const s = g.s * mul;
-    const lng0 = lng - s * ax, my0 = mercY(lat) + s * ay;
-    const proj = (p) => [lng0 + s * p[0], invMercY(my0 - s * p[1])];
-
-    const cv = cVerts.map(proj);
-    const fwd = [];
-    let minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
-    for (const p of cv) {
-      const d = coastIdx.nearest(p[0], p[1]);
-      if (d != null) fwd.push(d);
-      if (p[0] < minx) minx = p[0]; if (p[0] > maxx) maxx = p[0];
-      if (p[1] < miny) miny = p[1]; if (p[1] > maxy) maxy = p[1];
-    }
-    const back = makeIndex(cv, 0.01);
-    const rev = [];
-    for (const p of cPts) {
-      if (p[0] < minx || p[0] > maxx || p[1] < miny || p[1] > maxy) continue;
-      const d = back.nearest(p[0], p[1]);
-      if (d != null) rev.push(d);
-    }
-
-    let road = 0;
-    if (roadIdx && useRoads) {
-      const ds = [];
-      for (const v of bVerts) {
-        const p = proj(v);
-        const hit = roadIdx.nearest(p[0], p[1], 0.006);
-        ds.push(hit ? Math.sqrt(hit.d2) * 111.2 : 0.7);
-      }
-      ds.sort((a, b) => a - b);
-      road = ds.length ? ds[Math.floor(ds.length * 0.3)] : 0;   // the ones that do follow a road
-    }
-    // Named roads: Midtbyen's southern edge runs along Østre Allé, so lining
-    // the two up fixes position and scale far more tightly than the coast can.
-    let ref = 0;
-    for (const r of refIdx) {
-      const ds = [];
-      for (const v of r.px) {
-        const p = proj(v);
-        const d = r.idx.nearest(p[0], p[1]);
-        if (d != null) ds.push(d);
-      }
-      ref += median(ds);                       // "mostly along it" — median, not mean
-      const back2 = makeIndex(r.px.map(proj), 0.004);
-      const rv = [];
-      for (const p of r.real) {
-        const d = back2.nearest(p[0], p[1]);
-        if (d != null) rv.push(d);
-      }
-      if (rv.length) ref += median(rv);        // the road's length constrains scale
-    }
-    return median(fwd) + (rev.length ? median(rev) : 3) + 2 * road + 4 * ref;
-  }
-
-  let best = { cost: Infinity, mul: start.mul, lat: start.lat, lng: start.lng };
-  let centre = { mul: start.mul, lat: start.lat, lng: start.lng };
-  let rMul = 0.4, rLat = 0.04, rLng = 0.07;
-  for (let pass = 0; pass < 7; pass++) {
-    useRoads = pass >= 2;                 // coast + named road locate it first
-    for (let i = -3; i <= 3; i++) {
-      const mul = centre.mul * Math.exp((i / 3) * Math.log(1 + rMul));
-      if (mul < 0.5 || mul > 2.2) continue;
-      for (let j = -3; j <= 3; j++) {
-        const lat = centre.lat + (j / 3) * rLat;
-        for (let k = -3; k <= 3; k++) {
-          const lng = centre.lng + (k / 3) * rLng;
-          const c = evaluate(mul, lat, lng);
-          if (c < best.cost) best = { cost: c, mul, lat, lng };
-        }
-      }
-    }
-    centre = { mul: best.mul, lat: best.lat, lng: best.lng };
-    rMul *= 0.5; rLat *= 0.5; rLng *= 0.5;
-  }
-  return best;
-}
-
-async function autoCalibrate(btn) {
-  const verts = coastVertices();
-  if (verts.length < 30) { toast('No shoreline vertices recorded to fit against.', true); return; }
-  const original = btn.textContent;
-  btn.disabled = true;
-  setStatus('Asking OpenStreetMap for the shoreline and the street network…');
-  try {
-    btn.textContent = 'Fetching the coastline…';
-    const coastJson = await overpassJson(overpassCoastQuery());
-    const pts = parseOverpassPoints(coastJson, 0.05);
-    if (pts.length < 200) throw new Error('the coastline came back almost empty');
-
-    let roadIdx = null, segCount = 0;
-    try {
-      btn.textContent = 'Fetching the streets…';
-      const roadJson = await overpassJson(overpassRoadQuery());
-      const segs = roadSegments(roadJson);
-      segCount = segs.length;
-      if (segs.length > 500) {
-        roadIdx = segmentIndex(segs, 0.004);
-        S.roadIndex = roadIdx;              // reused by the snap button
-      }
-    } catch (_) { /* the coastline alone still gives a usable fit */ }
-
-    // Named-road anchors, e.g. Midtbyen's southern edge along Østre Allé.
-    const refs = [];
-    const wanted = referenceLines(2);
-    if (wanted.length) {
-      try {
-        btn.textContent = 'Finding Østre Allé…';
-        const named = await overpassJson(overpassNamedRoadQuery(wanted.map((r) => r.name)));
-        const byName = new Map();
-        for (const el of (named && named.elements) || []) {
-          const nm = el.tags && el.tags.name;
-          if (!nm || !Array.isArray(el.geometry)) continue;
-          if (!byName.has(nm)) byName.set(nm, []);
-          for (const p of el.geometry) if (p && p.lon != null) byName.get(nm).push([p.lon, p.lat]);
-        }
-        for (const r of wanted) {
-          const real = byName.get(r.name);
-          if (real && real.length > 4) refs.push({ name: r.name, px: r.px, real });
-        }
-      } catch (_) { /* the fit still works without it */ }
-    }
-
-    btn.textContent = 'Lining everything up…';
-    await new Promise((r) => setTimeout(r, 20));
-    const best = fitToGeography(verts, pts, boundaryVertices(2), roadIdx,
-                                S.cal || defaultCal(), refs);
-    S.cal = { mul: best.mul, lat: best.lat, lng: best.lng };
-    applyCal(true);
-
-    const zones = buildAreaZones();
-    const bb = zones ? turf.bbox(zones) : null;
-    const across = bb ? turf.distance(turf.point([bb[0], bb[1]]), turf.point([bb[2], bb[1]]),
-                                      { units: 'kilometers' }) * 1000 : 0;
-    let refMsg = '';
-    if (refs.length) {
-      const gr = georef(), r = refs[0], ridx = makeIndex(r.real, 0.004), ds = [];
-      for (const v of r.px) {
-        const p = pxToLngLat(v[0], v[1], gr);
-        const d = ridx.nearest(p[0], p[1]);
-        if (d != null) ds.push(d * 1000);
-      }
-      ds.sort((a, b) => a - b);
-      if (ds.length) refMsg = ` Midtbyen's southern edge sits about ` +
-                              `${fmtDist(ds[ds.length >> 1])} from ${r.name}.`;
-    }
-    setStatus(`Fitted using ${refs.length ? refs[0].name + ', ' : ''}the shoreline` +
-              `${roadIdx ? ` and ${segCount} road segments` : ''}. ` +
-              `Scale set automatically — the zones span ${fmtDist(across)}.${refMsg}`);
-    toast('Placed and scaled automatically.');
-  } catch (err) {
-    setStatus(`Could not fit automatically — ${err.message}. Pin the centre and use the slider instead.`, true);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-}
-
-async function snapToRoads(btn) {
-  const original = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Fetching roads…';
-  setStatus("Asking OpenStreetMap for Aalborg's streets…");
-  try {
-    if (!S.roadIndex) {
-      const json = await overpassJson(overpassRoadQuery());
-      const segs = roadSegments(json);
-      if (segs.length < 500) throw new Error('the road network came back almost empty');
-      S.roadIndex = segmentIndex(segs, 0.004);
-    }
-    btn.textContent = 'Snapping…';
-    await new Promise((r) => setTimeout(r, 20));
-    S.snapOn = true;
-    refreshDerivedLayers();
-    if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
-    const st = S.lastSnap || { moved: 0, total: 0 };
-    setStatus(`Snapped ${st.moved} of ${st.total} boundary points onto roads. ` +
-              `The rest follow no road — a shoreline, a railway, a field edge — and were left ` +
-              `alone on purpose. Reset undoes it.`);
-    toast('Boundaries pulled onto the streets.');
-    saveToUrl();
-  } catch (err) {
-    setStatus(`Could not snap to roads — ${err.message}.`, true);
-  } finally {
-    btn.disabled = false; btn.textContent = original;
-  }
-}
-
-/* ---------- moving and scaling the overlay ----------------------------
-   The shapes are already right; only placement needs setting, once. So the
-   tools are the direct kind: drag the zones around with a finger, scale
-   them about the map centre, nudge by an exact number of metres, and then
-   bake the result into data.js so nobody ever does it again. */
-
-let dragging = null;
-
-function calStep() { return Number($('#calStepSel').value) || 25; }
-
-/* Move the overlay by a distance in metres. The east-west conversion uses a
-   fixed reference latitude rather than the current one, so a nudge and its
-   opposite cancel exactly — otherwise repeated tweaking drifts. */
-const NUDGE_REF_LAT = 57.05;
-const M_PER_DEG_LNG = 111320 * Math.cos(NUDGE_REF_LAT * Math.PI / 180);
-
-function nudgeCal(dxM, dyM) {
-  const c = Object.assign({}, S.cal || defaultCal());
-  c.lat += dyM / 111320;
-  c.lng += dxM / M_PER_DEG_LNG;
-  S.cal = c;
-  applyCal(true);
-}
-
-/* Scale about the centre of the visible map, so what you are looking at
-   stays put while the overlay grows or shrinks around it. */
-function scaleCal(factor) {
-  const c = Object.assign({}, S.cal || defaultCal());
-  const mid = map.getCenter();
-  const k = (c.mul || 1) * factor;
-  if (k < 0.2 || k > 5) return;
-  // keep the map centre fixed: the anchor moves relative to it by `factor`
-  c.lng = mid.lng + (c.lng - mid.lng) * factor;
-  const my = mercY(mid.lat) + (mercY(c.lat) - mercY(mid.lat)) * factor;
-  c.lat = invMercY(my);
-  c.mul = k;
-  S.cal = c;
-  applyCal(true);
-}
-
-function setCalMode(on) {
-  S.calMode = on;
-  document.body.classList.toggle('cal-mode', on);
-  $('#calDrag').classList.toggle('is-picking', on);
-  $('#calDrag').textContent = on ? 'Dragging on — tap to finish' : 'Drag the zones on the map';
-  map.dragging[on ? 'disable' : 'enable']();
-  if (on) {
-    toast('Drag the map to move the zones. Pinch or use +/− to resize.');
-    if (window.innerWidth <= 820) closeSheet();
-  }
-}
-
-function calPointerDown(e) {
-  if (!S.calMode) return;
-  const p = e.touches ? e.touches[0] : e;
-  dragging = { x: p.clientX, y: p.clientY };
-}
-function calPointerMove(e) {
-  if (!S.calMode || !dragging) return;
-  const p = e.touches ? e.touches[0] : e;
-  const a = map.containerPointToLatLng([dragging.x, dragging.y]);
-  const b = map.containerPointToLatLng([p.clientX, p.clientY]);
-  const c = Object.assign({}, S.cal || defaultCal());
-  c.lat += b.lat - a.lat;
-  c.lng += b.lng - a.lng;
-  S.cal = c;
-  dragging = { x: p.clientX, y: p.clientY };
-  applyCal(true, true);          // light repaint while the finger is down
-  e.preventDefault();
-}
-function calPointerUp() {
-  if (!dragging) return;
-  dragging = null;
-  applyCal(true);
-}
-
-/* The line to paste into data.js so this never has to be done again. */
-function placementSnippet() {
-  const c = S.cal || defaultCal();
-  return `const PLACEMENT = { lat: ${c.lat.toFixed(6)}, lng: ${c.lng.toFixed(6)}, ` +
-         `scale: ${(c.mul || 1).toFixed(5)} };`;
-}
-
-/* ---------- calibration ------------------------------------------------ */
-
-function calSpanText() {
-  const z = buildAreaZones();
-  if (!z) return '—';
-  const bb = turf.bbox(z);
-  const km = turf.distance(turf.point([bb[0], bb[1]]), turf.point([bb[2], bb[1]]),
-                           { units: 'kilometers' });
-  return fmtDist(km * 1000) + ' across';
-}
-
-function renderCal() {
-  const c = S.cal || defaultCal();
-  $('#calScaleVal').textContent = ((c.mul || 1) * 100).toFixed(1) + '%';
-  $('#calSpan').textContent = calSpanText();
-  $('#calSnippet').value = placementSnippet();
+function renderOfficialZoneStatus() {
   const status = $('#officialZoneStatus');
-  if (status) {
-    status.textContent = hasOfficialZonesPlayArea()
-      ? 'Official Zone 2 is active. The play area is the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.'
-      : 'Official Zone 2 loads automatically. Until KortInfo replies, the traced geometry is used only as a temporary fallback.';
-  }
+  if (!status) return;
+  status.textContent = hasOfficialZonesPlayArea()
+    ? 'Official Zone 2 is active. The play area is the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.'
+    : 'Official Zone 2 loads automatically. Until KortInfo replies, the traced geometry is used only as a temporary fallback.';
 }
 
-/* Rebuild anything derived from the transform, then repaint. */
-function applyCal(silent, light) {
-  refreshDerivedLayers();
-  if (light) {
-    // during a drag, skip the play-area rebuild and the fog recompute
-    renderCal();
-    return;
-  }
-  if (S.playAreaMeta && S.playAreaMeta.type === 'zones') setZonesPlayArea(false);
-  else recompute();
-  renderCal();
-  saveToUrl();
-  if (!silent) setStatus(`Zones now ${calSpanText()}.`);
-}
-
-$('#calAuto').addEventListener('click', (e) => autoCalibrate(e.target));
-
-/* The four KortInfo layer IDs are now the defaults. This button retries
-   official Zone 2 and immediately rebuilds the play area from its four named
-   polygons; the calibration controls below affect only the traced fallback. */
+/* Retry official Zone 2 and rebuild the play area from its four named polygons. */
 $('#calLive').addEventListener('click', async (e) => {
   const btn = e.target;
   btn.disabled = true;
@@ -6822,79 +6093,6 @@ $('#calLive').addEventListener('click', async (e) => {
   }
   btn.disabled = false;
   btn.textContent = was;
-});
-$('#calSnap').addEventListener('click', (e) => snapToRoads(e.target));
-
-/* Three districts sit on the crop edge and came through unnamed; any name
-   can be corrected here. Names never affect a zone answer. */
-let renaming = false;
-$('#calRename').addEventListener('click', () => {
-  renaming = !renaming;
-  $('#calRename').classList.toggle('is-picking', renaming);
-  toast(renaming ? 'Tap a district on the map to rename it.' : 'Renaming off.');
-  if (renaming && window.innerWidth <= 820) closeSheet();
-});
-
-function tryRename(ft) {
-  if (!renaming || !ft.properties || ft.properties.idx == null) return false;
-  const cur = ft.properties.navn || '';
-  const next = prompt('Name this district', cur);
-  if (next && next !== cur) {
-    S.renames = Object.assign({}, S.renames, { [ft.properties.idx]: next });
-    refreshDerivedLayers();
-    saveToUrl();
-    toast(`Renamed to ${next}.`);
-  }
-  renaming = false;
-  $('#calRename').classList.remove('is-picking');
-  openSheet();
-  return true;
-}
-
-$('#calDrag').addEventListener('click', () => setCalMode(!S.calMode));
-
-const mapEl = $('#map');
-mapEl.addEventListener('mousedown', calPointerDown);
-mapEl.addEventListener('touchstart', calPointerDown, { passive: false });
-window.addEventListener('mousemove', calPointerMove);
-window.addEventListener('touchmove', calPointerMove, { passive: false });
-window.addEventListener('mouseup', calPointerUp);
-window.addEventListener('touchend', calPointerUp);
-
-$('#calBox').addEventListener('click', (e) => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  if (b.dataset.nudge) {
-    const m = calStep();
-    if (b.dataset.nudge === 'n') nudgeCal(0, m);
-    if (b.dataset.nudge === 's') nudgeCal(0, -m);
-    if (b.dataset.nudge === 'e') nudgeCal(m, 0);
-    if (b.dataset.nudge === 'w') nudgeCal(-m, 0);
-  }
-  if (b.dataset.scale) scaleCal(Number(b.dataset.scale));
-});
-
-/* Arrow keys nudge too, while dragging mode is on. */
-document.addEventListener('keydown', (e) => {
-  if (!S.calMode) return;
-  const m = calStep();
-  const k = { ArrowUp: [0, m], ArrowDown: [0, -m], ArrowLeft: [-m, 0], ArrowRight: [m, 0] }[e.key];
-  if (!k) return;
-  nudgeCal(k[0], k[1]);
-  e.preventDefault();
-});
-
-$('#calCopy').addEventListener('click', async () => {
-  const line = placementSnippet();
-  try { await navigator.clipboard.writeText(line); toast('Copied. Paste it over PLACEMENT in data.js.'); }
-  catch (_) { $('#calSnippet').select(); toast('Select and copy the line above.'); }
-});
-
-$('#calReset').addEventListener('click', () => {
-  S.cal = defaultCal();
-  S.roadIndex = null; S.snapOn = false;   // also drops any road snapping
-  setCalMode(false);
-  applyCal();
 });
 
 /* ---------- layers tab UI --------------------------------------------- */
@@ -6971,16 +6169,6 @@ function renderSourceRows() {
       (btn) => toggleTransitStops(btn), null));
   }
 }
-
-function renderWmsList() {
-  const box = $('#wmsList');
-  if (box) box.innerHTML = '';
-}
-
-/* Compatibility no-ops for old imported state. The inactive NT picture overlay
-   has been removed; route data is loaded as usable vector geometry instead. */
-function toggleWms() { return null; }
-function addWms() { return null; }
 
 /* --- source editor --- */
 let editingKey = null;
@@ -7342,8 +6530,6 @@ function serialize() {
     fog: S.fogOpacity,
     transitStopsVisible: !!S.transitStops.visible,
     sources: S.sources,
-    cal: S.cal,
-    renames: S.renames,
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
       delete o.error;
@@ -7370,8 +6556,6 @@ function deserialize(data) {
   if (data.sourceConfigVersion === SOURCE_CONFIG_VERSION && data.sources) {
     S.sources = Object.assign(S.sources, data.sources);
   }
-  if (data.cal) S.cal = data.cal;
-  if (data.renames) S.renames = data.renames;
   if (typeof data.fog === 'number') { S.fogOpacity = data.fog; $('#fogRange').value = Math.round(data.fog * 100); }
 
   const m = data.playAreaMeta;
@@ -7388,7 +6572,7 @@ function deserialize(data) {
     markPlayMode(m.mode === 'kommune' ? 'kommune' : 'circle');
   }
   renderSourceRows();
-  renderCal();
+  renderOfficialZoneStatus();
   applyUnits();
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
   if (data.transitStopsVisible) toggleTransitStops();
@@ -7461,7 +6645,6 @@ document.addEventListener('keydown', (e) => {
   if (activeTool) selectTool(activeTool);
 });
 
-S.cal = defaultCal();
 // If the weekly KortInfo snapshot is present, use its exact Zone 2 polygons
 // before the very first play-area calculation instead of briefly starting on
 // the traced fallback.
@@ -7481,9 +6664,8 @@ if (!setZonesPlayArea(false)) {
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [16, 16] }); } catch (_) {}
 }
 renderSourceRows();
-renderWmsList();
 renderLayerList();
-renderCal();
+renderOfficialZoneStatus();
 const restoredFromUrl = loadFromUrl();
 if (!restoredFromUrl) applyUnits();
 renderToolForm();
@@ -7498,19 +6680,12 @@ if (!restoredFromUrl) loadOfficialZone2PlayArea();
 /* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
   map, S, CONFIG, draft, drawing, RADAR_PRESETS, previewShapeLayer,
-  recompute, addLayer, addWms, setCircularPlayArea, setCustomPlayArea,
-  toggleSource, toggleRoute, toggleWms, setLayerVisible, layerByKey,
+  recompute, addLayer, setCircularPlayArea, setCustomPlayArea,
+  toggleSource, toggleRoute, setLayerVisible, layerByKey, removeLayerByKey,
   unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
-  buildDistrictZones, buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
-  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, clipZoneDisplayGeoJsonToPlayArea, georef, pxToLngLat,
-  defaultCal, anchorPx, applyCal, autoCalibrate,
-  nudgeCal, scaleCal, setCalMode, placementSnippet, georef,
-  snapToRoads, snapRingsToRoads, segmentIndex, roadSegments, SNAP_MIN_RUN,
-  fitToGeography, boundaryVertices, overpassJson,
-  referenceLines, overpassNamedRoadQuery,
-  projectToSegment, overpassRoadQuery,
-  coastVertices, parseOverpassPoints, makeIndex, overpassCoastQuery,
-  __mercY: mercY, __invMercY: invMercY,
+  buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
+  prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, clipZoneDisplayGeoJsonToPlayArea,
+  overpassJson,
   setZonesPlayArea, setPlayMode, refreshDerivedLayers,
   parseOverpassRoutes, overpassQuery, fetchOverpass, fetchNtBusRoutes,
   extractRouteRefs, routeTokens, routeColor, routeStyle, annotateRouteGeoJson,
@@ -7536,7 +6711,7 @@ window.HS = {
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,
-  matchingPoiFeatures, setMatchingPoiFromCoord, setMeasuringPoiTargetFromCoord, syncAutomaticMeasuringPoiTarget, matchingPoiCell, parsePositiveDecimal,
+  matchingPoiFeatures, setMatchingPoiFromCoord, syncAutomaticMeasuringPoiTarget, matchingPoiCell, parsePositiveDecimal,
   measuringBorderMode, measuringHydroMode, bundledHydroData, updateMeasuringHydroFromCoord, distanceToFeatureM, nearestWaterFeature, hydroFeatureMarkerCoord, hydroCoastFeatures, hydroWaterFeatures, hydroWaterDistanceFeatures, clipHydroFeatureToPlayArea, zoneBorderLines, nearestZoneBorderDistanceM, zoneBorderBand, landmassRegions,
   ensureZoneSourceVisible, releaseQuestionZoneLayers, claimZoneLayerManually,
   questionAutoZoneSources, zoneLoads, mapLoadTasks, setMapLoadingTask, fetchTransitStopsReliable, splitBboxGrid, fetchRailwayLines,

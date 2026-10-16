@@ -614,8 +614,6 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
 }
 
 /* while dragging the overlay, the map itself should not pan */
-body.cal-mode .leaflet-container{ cursor:move; }
-body.cal-mode #map{ touch-action:none; }
 
 
 /* Official zone defaults: visible proof of the active KortInfo configuration. */
