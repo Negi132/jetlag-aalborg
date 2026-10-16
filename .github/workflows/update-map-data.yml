@@ -32,32 +32,48 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Scheduled and manual runs always rebuild the data. A push rebuilds it
+      # only when it changes the generators, so their effect is visible at once.
+      - name: Decide whether to regenerate map data
+        id: mode
+        shell: bash
+        run: |
+          regen=true
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if git diff --quiet "${{ github.event.before }}" "${{ github.sha }}" -- scripts/ 2>/dev/null; then
+              regen=false
+            fi
+          fi
+          echo "regen=$regen" >> "$GITHUB_OUTPUT"
+          echo "Regenerate map data: $regen"
+
       - name: Set up Python
-        if: github.event_name != 'push'
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - name: Install map-data generator dependencies
-        if: github.event_name != 'push'
+      - name: Install generator dependencies
+        run: python -m pip install --disable-pip-version-check "shapely==2.1.2" "pyproj==3.7.2"
+
+      - name: Install osmium
+        if: steps.mode.outputs.regen == 'true'
         run: |
-          python -m pip install --disable-pip-version-check "shapely==2.1.2" "pyproj==3.7.2"
           sudo apt-get update -qq
           sudo apt-get install -y -qq osmium-tool
 
       - name: Snapshot official Aalborg game zones
         id: zone_snapshot
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         continue-on-error: true
         timeout-minutes: 2
         run: python scripts/update_zones.py
 
       - name: Warn if the municipal zone refresh was unavailable
-        if: github.event_name != 'push' && steps.zone_snapshot.outcome == 'failure'
-        run: echo "::warning::KortInfo zone refresh failed or timed out. Continuing with the last committed zone/play-area snapshot; the browser still has its live WFS/traced fallback."
+        if: steps.mode.outputs.regen == 'true' && steps.zone_snapshot.outcome == 'failure'
+        run: echo "::warning::KortInfo zone refresh failed or timed out. Continuing with the last committed zone/play-area snapshot; the browser still has its live WFS and built-in fallback."
 
       - name: Download current Rejseplanen GTFS
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: |
           curl --fail --location --retry 3 --retry-delay 5 \
             https://www.rejseplanen.info/labs/GTFS.zip \
@@ -65,15 +81,15 @@ jobs:
           unzip -t GTFS.zip >/dev/null
 
       - name: Regenerate Aalborg bus routes
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: python scripts/update_bus_routes.py GTFS.zip
 
       - name: Regenerate Aalborg train lines and transit stops
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: python scripts/update_transit.py GTFS.zip
 
       - name: Download current Denmark OpenStreetMap extract
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: |
           curl --fail --location --retry 3 --retry-delay 8 \
             https://download.geofabrik.de/europe/denmark-latest.osm.pbf \
@@ -81,7 +97,7 @@ jobs:
           osmium fileinfo denmark-latest.osm.pbf >/dev/null
 
       - name: Extract Aalborg POI-relevant OpenStreetMap objects
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: |
           # First cut a padded Greater-Aalborg extract. The smart strategy keeps
           # multipolygon relations reference-complete, which matters for parks
@@ -100,11 +116,11 @@ jobs:
             --output=poi-source.geojson --output-format=geojson --overwrite
 
       - name: Regenerate Aalborg Matching POIs
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: python scripts/update_pois.py poi-source.geojson
 
       - name: Extract Aalborg coastline and body-of-water geometry
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: |
           osmium tags-filter \
             --expressions=scripts/hydro-filter-expressions.txt \
@@ -115,7 +131,7 @@ jobs:
             --output=hydro-source.geojson --output-format=geojson --overwrite
 
       - name: Regenerate Aalborg coastline and water geometry
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         run: python scripts/update_hydro.py hydro-source.geojson
 
       # Every deploy (push or scheduled refresh) must pass the test suite, so
@@ -132,8 +148,11 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run generator tests
+        run: python -m unittest discover -s tests/python -v
+
       - name: Show map-data changes
-        if: github.event_name != 'push'
+        if: steps.mode.outputs.regen == 'true'
         id: data_changes
         shell: bash
         run: |
@@ -148,7 +167,7 @@ jobs:
           fi
 
       - name: Commit updated map-data bundles
-        if: github.event_name != 'push' && steps.data_changes.outputs.changed == 'true'
+        if: steps.mode.outputs.regen == 'true' && steps.data_changes.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

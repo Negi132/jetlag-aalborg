@@ -1,6 +1,6 @@
 # Aalborg zone snapshot audit
 
-- Generated: `2026-10-16T21:26:20.741893+00:00`
+- Generated: `2026-10-16T21:47:27.577653+00:00`
 - Source: `https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside`
 - Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area and Zone 1/4 catch-all areas are precomputed on GitHub, so the browser does no clipping/union work when toggling them. Genuine border lines are cached separately from the unclipped official geometry for Measuring.
 

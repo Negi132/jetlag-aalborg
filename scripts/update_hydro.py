@@ -16,21 +16,23 @@ buffering every water body independently on every drag.
 from __future__ import annotations
 
 import argparse
+import sys
 import hashlib
 import json
-import re
-import unicodedata
 from collections import defaultdict
 from statistics import median
 import math
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapely.geometry import GeometryCollection, LineString, MultiLineString, Point, shape, mapping
+from shapely.geometry import LineString, shape, mapping
 from shapely.ops import unary_union
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
+from common import PLAY_AREA, normalise_name
+
 ROOT = Path(__file__).resolve().parents[1]
-PLAY = ROOT / 'scripts' / 'play_area.geojson'
+PLAY = PLAY_AREA
 OUTPUT = ROOT / 'hydro-data.js'
 AUDIT = ROOT / 'HYDRO_AUDIT.md'
 
@@ -70,10 +72,7 @@ WATER_DISTANCE_SIMPLIFY_DEG = 0.000180
 
 
 def norm(value):
-    s = unicodedata.normalize('NFD', str(value or ''))
-    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
-    s = s.lower().replace('æ', 'ae').replace('ø', 'o').replace('å', 'a')
-    return re.sub(r'[^a-z0-9]+', ' ', s).strip().replace('aa', 'a')
+    return normalise_name(value, fold_aa=True)
 
 
 def load_play():

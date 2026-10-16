@@ -10,22 +10,21 @@ so app.js can apply the exact live Zone-2 play-area filter at runtime.
 from __future__ import annotations
 
 import argparse
-import csv
-import io
+import sys
 import json
-import math
 import re
-import unicodedata
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shapely.geometry import LineString, Point, box, shape
-from shapely.ops import unary_union
+from shapely.geometry import LineString, Point, box
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
+from common import PLAY_AREA, feed_dates, haversine_m, line_parts, load_play_area, natural_key, normalise_name, read_csv_from_zip, rounded_line_coords
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLAY_AREA = ROOT / 'scripts' / 'play_area.geojson'
+DEFAULT_PLAY_AREA = PLAY_AREA
 DEFAULT_OUTPUT = ROOT / 'transit-data.js'
 DEFAULT_AUDIT = ROOT / 'TRANSIT_AUDIT.md'
 
@@ -41,83 +40,8 @@ MIN_TRAIN_STOPS = 4
 MAX_STOPS = 800
 
 
-def read_csv_from_zip(zf: zipfile.ZipFile, name: str):
-    raw = zf.open(name)
-    text = io.TextIOWrapper(raw, encoding='utf-8-sig', newline='')
-    return text, csv.DictReader(text)
-
-
-def load_play_area(path: Path):
-    data = json.loads(path.read_text(encoding='utf-8'))
-    if data.get('type') == 'FeatureCollection':
-        geoms = [shape(f['geometry']) for f in data.get('features', []) if f.get('geometry')]
-        if not geoms:
-            raise RuntimeError('play-area file has no polygon geometry')
-        play = unary_union(geoms)
-    elif data.get('type') == 'Feature':
-        play = shape(data['geometry'])
-    else:
-        play = shape(data)
-    minx, miny, maxx, maxy = play.bounds
-    if minx < 9.65 or miny < 56.86 or maxx > 10.32 or maxy > 57.24:
-        raise RuntimeError(
-            'play-area snapshot is outside the expected Aalborg game vicinity: '
-            f'{minx:.4f},{miny:.4f},{maxx:.4f},{maxy:.4f}. '
-            'Keep the previous scripts/play_area.geojson and refresh zones later.'
-        )
-    return play
-
-
-def feed_dates(zf: zipfile.ZipFile):
-    starts, ends = [], []
-    try:
-        text, rows = read_csv_from_zip(zf, 'calendar.txt')
-        with text:
-            for row in rows:
-                if row.get('start_date'): starts.append(row['start_date'])
-                if row.get('end_date'): ends.append(row['end_date'])
-    except KeyError:
-        pass
-    fmt = lambda s: datetime.strptime(s, '%Y%m%d').strftime('%Y-%m-%d')
-    return (fmt(min(starts)) if starts else 'unknown', fmt(max(ends)) if ends else 'unknown')
-
-
 def norm_name(value: str) -> str:
-    s = unicodedata.normalize('NFD', str(value or ''))
-    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
-    s = s.lower().replace('æ', 'ae').replace('ø', 'o').replace('å', 'a')
-    s = re.sub(r'\([^)]*\)', ' ', s)
-    return re.sub(r'[^a-z0-9]+', ' ', s).strip()
-
-
-def natural_key(value: str):
-    parts = re.split(r'(\d+)', str(value or '').upper())
-    return tuple(int(p) if p.isdigit() else p for p in parts)
-
-
-def haversine_m(a, b):
-    lon1, lat1 = map(math.radians, a)
-    lon2, lat2 = map(math.radians, b)
-    dlon, dlat = lon2 - lon1, lat2 - lat1
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 6371008.8 * 2 * math.asin(min(1.0, math.sqrt(h)))
-
-
-def clipped_parts(geom):
-    if geom.is_empty: return []
-    if geom.geom_type == 'LineString': return [geom]
-    if geom.geom_type == 'MultiLineString': return list(geom.geoms)
-    if geom.geom_type == 'GeometryCollection':
-        return [g for g in geom.geoms if g.geom_type == 'LineString' and not g.is_empty]
-    return []
-
-
-def round_line(line):
-    coords = [[round(float(x), 6), round(float(y), 6)] for x, y in line.coords]
-    clean = []
-    for p in coords:
-        if not clean or p != clean[-1]: clean.append(p)
-    return clean if len(clean) >= 2 else []
+    return normalise_name(value, drop_parenthetical=True)
 
 
 def parse_existing(path: Path):
@@ -168,7 +92,7 @@ def dedupe_stop_records(records, threshold_m):
 
 
 def build_bundle(gtfs: Path, play_area_path: Path):
-    play = load_play_area(play_area_path)
+    play = load_play_area(play_area_path, check_bounds=True)
     minx, miny, maxx, maxy = play.bounds
     # Keep a small margin so exact runtime clipping against the freshly loaded
     # official Zone-2 union cannot lose an edge stop/shape because the checked-in
@@ -246,7 +170,7 @@ def build_bundle(gtfs: Path, play_area_path: Path):
         seq.sort(key=lambda p: p[0])
         line = LineString([(p[1], p[2]) for p in seq])
         if line.is_empty or not line.intersects(play): continue
-        parts = [round_line(g) for g in clipped_parts(line.intersection(envelope))]
+        parts = [rounded_line_coords(g) for g in line_parts(line.intersection(envelope))]
         parts = [p for p in parts if p]
         if not parts: continue
         for rid in rail_shape_routes[sid]:

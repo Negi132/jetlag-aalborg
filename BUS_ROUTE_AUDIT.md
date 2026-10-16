@@ -6,8 +6,8 @@ Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled;
 ## Bybus — 14
 1, 2, 3, 5, 6, 11, 12, 13, 14, 15, 16, 17, 18, 19
 
-## Regionalbus — 15
-36, 42, 46, 50, 52, 54, 55, 56, 72, 73, 100, 102, 176, 200, 213
+## Regionalbus — 13
+36, 42, 46, 50, 52, 54, 55, 56, 72, 73, 100, 176, 200
 
 ## Expresbus — 8
 60X, 950X, 951X, 954X, 970X, 971X, 973X, 974X
@@ -17,7 +17,7 @@ Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled;
 
 ## Changes from previous bundle
 - Added: none
-- Removed: none
+- Removed: 102, 213
 
 ## GTFS special/night lines not in the game categories
 18E, 21N, 22N, 23N, 24N, 25N, 26N, 27N, 52N, 53N, 72N, 73N, BUS75

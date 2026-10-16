@@ -13,21 +13,20 @@ Designed for GitHub Actions but also runnable locally:
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import re
 import sys
 import zipfile
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
 
-from shapely.geometry import LineString, box, shape
-from shapely.ops import unary_union
+from shapely.geometry import LineString, box
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
+from common import PLAY_AREA, feed_dates, line_parts, load_play_area, natural_key, read_csv_from_zip, rounded_line_coords
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLAY_AREA = ROOT / "scripts" / "play_area.geojson"
+DEFAULT_PLAY_AREA = PLAY_AREA
 DEFAULT_CATEGORIES = ROOT / "scripts" / "bus_route_categories.json"
 DEFAULT_OUTPUT = ROOT / "bus-routes.js"
 DEFAULT_AUDIT = ROOT / "BUS_ROUTE_AUDIT.md"
@@ -36,45 +35,6 @@ DEFAULT_AUDIT = ROOT / "BUS_ROUTE_AUDIT.md"
 MIN_CATEGORY_COUNTS = {"bybus": 8, "regional": 3, "express": 2, "local": 1}
 MIN_TOTAL_ROUTES = 20
 MAX_TOTAL_ROUTES = 80
-
-
-def natural_route_key(ref: str):
-    parts = re.split(r"(\d+)", ref.upper())
-    return tuple(int(p) if p.isdigit() else p for p in parts)
-
-
-def read_csv_from_zip(zf: zipfile.ZipFile, name: str):
-    raw = zf.open(name)
-    text = io.TextIOWrapper(raw, encoding="utf-8-sig", newline="")
-    return text, csv.DictReader(text)
-
-
-def load_play_area(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("type") == "FeatureCollection":
-        geoms = [shape(f["geometry"]) for f in data.get("features", []) if f.get("geometry")]
-        if not geoms:
-            raise RuntimeError("play-area file has no polygon geometry")
-        return unary_union(geoms)
-    if data.get("type") == "Feature":
-        return shape(data["geometry"])
-    return shape(data)
-
-
-def feed_dates(zf: zipfile.ZipFile):
-    starts, ends = [], []
-    try:
-        text, rows = read_csv_from_zip(zf, "calendar.txt")
-        with text:
-            for row in rows:
-                if row.get("start_date"):
-                    starts.append(row["start_date"])
-                if row.get("end_date"):
-                    ends.append(row["end_date"])
-    except KeyError:
-        pass
-    fmt = lambda s: datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
-    return (fmt(min(starts)) if starts else "unknown", fmt(max(ends)) if ends else "unknown")
 
 
 def find_nt_agency(zf: zipfile.ZipFile):
@@ -135,28 +95,6 @@ def parse_existing_refs(output_path: Path):
         return {str(f.get("properties", {}).get("ref", "")) for f in data.get("features", []) if f.get("properties")}
     except Exception:
         return set()
-
-
-def clipped_parts(geom):
-    if geom.is_empty:
-        return []
-    if geom.geom_type == "LineString":
-        return [geom]
-    if geom.geom_type == "MultiLineString":
-        return list(geom.geoms)
-    if geom.geom_type == "GeometryCollection":
-        return [g for g in geom.geoms if g.geom_type == "LineString" and not g.is_empty]
-    return []
-
-
-def round_coords(line: LineString):
-    coords = [[round(float(x), 6), round(float(y), 6)] for x, y in line.coords]
-    # Remove repeated adjacent points after rounding.
-    clean = []
-    for p in coords:
-        if not clean or p != clean[-1]:
-            clean.append(p)
-    return clean if len(clean) >= 2 else []
 
 
 def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
@@ -226,7 +164,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
         if line.is_empty or not line.intersects(play):
             continue
         clipped = line.intersection(envelope)
-        parts = [round_coords(g) for g in clipped_parts(clipped)]
+        parts = [rounded_line_coords(g) for g in line_parts(clipped)]
         parts = [p for p in parts if p]
         if not parts:
             continue
@@ -238,7 +176,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
     excluded_special = []
     features = []
     categories = {k: [] for k in ("bybus", "regional", "express", "local")}
-    for ref in sorted(route_parts, key=natural_route_key):
+    for ref in sorted(route_parts, key=natural_key):
         category, was_inferred = classify_route(ref, reverse_categories)
         if category is None:
             excluded_special.append(ref)
@@ -280,7 +218,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
         })
 
     for refs in categories.values():
-        refs.sort(key=natural_route_key)
+        refs.sort(key=natural_key)
 
     bundle = {
         "type": "FeatureCollection",
@@ -299,7 +237,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
             "inferred_categories": [
                 {"ref": ref, "category": category} for ref, category in inferred
             ],
-            "excluded_special_routes": sorted(excluded_special, key=natural_route_key),
+            "excluded_special_routes": sorted(excluded_special, key=natural_key),
         },
         "features": features,
     }
@@ -360,8 +298,8 @@ def render_audit(bundle, inferred, previous_refs):
         lines += [f"## {label} — {len(refs)}", ", ".join(refs) if refs else "(none)", ""]
     current = {r for refs in cats.values() for r in refs}
     if previous_refs:
-        added = sorted(current - previous_refs, key=natural_route_key)
-        removed = sorted(previous_refs - current, key=natural_route_key)
+        added = sorted(current - previous_refs, key=natural_key)
+        removed = sorted(previous_refs - current, key=natural_key)
         lines += ["## Changes from previous bundle", f"- Added: {', '.join(added) if added else 'none'}", f"- Removed: {', '.join(removed) if removed else 'none'}", ""]
     excluded_special = meta.get("excluded_special_routes", [])
     if excluded_special:

@@ -11,8 +11,8 @@ never be mistaken for genuine Measuring borders.
 from __future__ import annotations
 
 import argparse
+import sys
 import json
-import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -24,10 +24,13 @@ from shapely.geometry import shape, mapping
 from shapely.ops import unary_union
 from pyproj import Transformer
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
+from common import PLAY_AREA, load_play_area, normalise_name
+
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'zone-data.js'
 AUDIT = ROOT / 'ZONE_AUDIT.md'
-PLAY_OUTPUT = ROOT / 'scripts' / 'play_area.geojson'
+PLAY_OUTPUT = PLAY_AREA
 ENDPOINT = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside'
 LAYERS = {
     'zone1': 'ugis:TL1433667',
@@ -46,11 +49,7 @@ ZONE2_ALIASES = [
 
 
 def norm_text(value):
-    import unicodedata, re
-    s = unicodedata.normalize('NFD', str(value or ''))
-    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
-    s = s.lower().replace('æ', 'ae').replace('ø', 'o').replace('å', 'a')
-    return re.sub(r'[^a-z0-9]+', ' ', s).strip()
+    return normalise_name(value)
 
 
 def zone2_def(props):
@@ -278,10 +277,31 @@ def _map_coords(obj, fn):
     return obj
 
 
+def _is_position(value):
+    return isinstance(value, list) and len(value) >= 2 and all(isinstance(v, (int, float)) for v in value[:2])
+
+
+def _drop_repeated_positions(coords):
+    """Remove consecutive duplicate positions from every line/ring in a coordinates array.
+
+    Rounding can merge neighbouring vertices, and a zero-length segment makes
+    Turf's point-to-line distance fail in the browser.
+    """
+    if not isinstance(coords, list) or not coords:
+        return coords
+    if _is_position(coords[0]):
+        clean = [p for i, p in enumerate(coords) if i == 0 or p[:2] != coords[i - 1][:2]]
+        closed = len(coords) >= 4 and coords[0][:2] == coords[-1][:2]
+        return clean if len(clean) >= (4 if closed else 2) else coords
+    if _is_position(coords):
+        return coords
+    return [_drop_repeated_positions(c) for c in coords]
+
+
 def round_coords(obj, ndigits=6):
     """Round every coordinate in a GeoJSON object (6 decimals is about 0.1 m)."""
     if isinstance(obj, dict):
-        return {k: (_map_coords(v, lambda x, y: (round(x, ndigits), round(y, ndigits)))
+        return {k: (_drop_repeated_positions(_map_coords(v, lambda x, y: (round(x, ndigits), round(y, ndigits))))
                     if k == 'coordinates' else round_coords(v, ndigits))
                 for k, v in obj.items()}
     if isinstance(obj, list):
@@ -474,13 +494,7 @@ def current_play_geometry():
     if not PLAY_OUTPUT.exists():
         return None
     try:
-        data = json.loads(PLAY_OUTPUT.read_text(encoding='utf-8'))
-        if data.get('type') == 'FeatureCollection':
-            geoms = [shape(ft['geometry']) for ft in data.get('features', []) if ft.get('geometry')]
-            return unary_union(geoms) if geoms else None
-        if data.get('type') == 'Feature':
-            return shape(data['geometry'])
-        return shape(data)
+        return load_play_area(PLAY_OUTPUT)
     except Exception:
         return None
 

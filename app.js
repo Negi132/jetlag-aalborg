@@ -1799,7 +1799,9 @@ function flattenLineFeatures(ft) {
   try {
     const flat = turf.flatten(ft);
     for (const f of (flat && flat.features) || []) {
-      if (f.geometry && f.geometry.type === 'LineString') out.push(f);
+      if (!f.geometry || f.geometry.type !== 'LineString') continue;
+      const coords = withoutRepeatedVertices(f.geometry.coordinates);
+      if (coords.length >= 2) out.push(turf.lineString(coords, f.properties));
     }
   } catch (_) { /* malformed geometry */ }
   return out;
@@ -2033,6 +2035,12 @@ function geometryLineParts(geometry) {
   return [];
 }
 
+/* Turf's distance functions throw on zero-length segments, which rounded or
+   live WFS geometry can contain, so drop consecutive repeated vertices. */
+function withoutRepeatedVertices(coords) {
+  return (coords || []).filter((c, i) => i === 0 || c[0] !== coords[i - 1][0] || c[1] !== coords[i - 1][1]);
+}
+
 function zoneBorderLines(rec) {
   if (!rec) return [];
   if (rec.__zoneBorderLines) return rec.__zoneBorderLines;
@@ -2045,8 +2053,8 @@ function zoneBorderLines(rec) {
       // play-area-clipped display polygons. Live/legacy sources still arrive
       // as polygons and are converted here as before.
       if (/LineString/.test(ft.geometry.type)) {
-        for (const coords of geometryLineParts(ft.geometry)) {
-          if (coords && coords.length >= 2) lines.push(turf.lineString(coords));
+        for (const coords of geometryLineParts(ft.geometry).map(withoutRepeatedVertices)) {
+          if (coords.length >= 2) lines.push(turf.lineString(coords));
         }
         continue;
       }
@@ -2054,8 +2062,8 @@ function zoneBorderLines(rec) {
       const boundary = turf.polygonToLine(ft);
       const feats = boundary.type === 'FeatureCollection' ? boundary.features : [boundary];
       for (const lineFt of feats) {
-        for (const coords of geometryLineParts(lineFt.geometry)) {
-          if (coords && coords.length >= 2) lines.push(turf.lineString(coords));
+        for (const coords of geometryLineParts(lineFt.geometry).map(withoutRepeatedVertices)) {
+          if (coords.length >= 2) lines.push(turf.lineString(coords));
         }
       }
     } catch (_) { /* skip malformed pieces */ }
@@ -3247,6 +3255,9 @@ function thermoForm(box) {
 
   const required = draft.requiredDistanceM || 0;
   let straightM = 0;
+  // The auto-placed end point sits exactly on the card distance; allow 1 m so
+  // floating-point error never makes it count as too short.
+  const longEnough = () => straightM + 1 >= required;
   if (required) {
     const fixed = document.createElement('div');
     fixed.className = 'selected-distance';
@@ -3257,11 +3268,11 @@ function thermoForm(box) {
   if (draft.a && draft.b) {
     straightM = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
     const p = document.createElement('p');
-    p.className = 'hint' + (required && straightM >= required ? ' is-valid' : '');
+    p.className = 'hint' + (required && longEnough() ? ' is-valid' : '');
     p.textContent = `Your start and end points are ${fmtDist(straightM)} apart in a straight line.`;
     box.appendChild(p);
 
-    if (required && straightM < required) {
+    if (required && !longEnough()) {
       const confirm = document.createElement('label');
       confirm.className = 'travel-confirm';
       confirm.innerHTML = `<input type="checkbox" ${draft.distanceConfirmed ? 'checked' : ''}>
@@ -3278,7 +3289,7 @@ function thermoForm(box) {
     }
   }
   answerSeg(box, [['hotter', 'Hotter'], ['colder', 'Colder']]);
-  const distanceOkay = !required || straightM >= required || draft.distanceConfirmed;
+  const distanceOkay = !required || longEnough() || draft.distanceConfirmed;
   actions(box, draft.a && draft.b && draft.answer && distanceOkay, () => {
     const m = turf.distance(turf.point(draft.a), turf.point(draft.b), { units: 'kilometers' }) * 1000;
     commit({ type: 'thermometer', a: draft.a, b: draft.b, travelM: m,

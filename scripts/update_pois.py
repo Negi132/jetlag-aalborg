@@ -17,7 +17,6 @@ import json
 import math
 import re
 import sys
-import unicodedata
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -25,10 +24,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from shapely.geometry import Point, shape
-from shapely.ops import unary_union
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
+from common import PLAY_AREA, haversine_m, load_play_area, normalise_name
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLAY_AREA = ROOT / "scripts" / "play_area.geojson"
+DEFAULT_PLAY_AREA = PLAY_AREA
 DEFAULT_OUTPUT = ROOT / "poi-data.js"
 DEFAULT_AUDIT = ROOT / "POI_AUDIT.md"
 
@@ -115,33 +116,8 @@ MIN_COUNTS = {
 MIN_TOTAL = 25
 
 
-def load_play_area(path: Path):
-    data = json.loads(path.read_text(encoding='utf-8'))
-    if data.get('type') == 'FeatureCollection':
-        geoms = [shape(f['geometry']) for f in data.get('features', []) if f.get('geometry')]
-        if not geoms:
-            raise RuntimeError('play-area file contains no geometry')
-        return unary_union(geoms)
-    if data.get('type') == 'Feature':
-        return shape(data['geometry'])
-    return shape(data)
-
-
 def norm_name(value: str) -> str:
-    s = unicodedata.normalize('NFD', str(value or ''))
-    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
-    s = s.lower().replace('æ', 'ae').replace('ø', 'o').replace('å', 'a')
-    s = re.sub(r'\([^)]*\)', ' ', s)
-    s = re.sub(r'[^a-z0-9]+', ' ', s).strip()
-    return s.replace('aa', 'a')
-
-
-def haversine_m(a, b):
-    lon1, lat1 = map(math.radians, a)
-    lon2, lat2 = map(math.radians, b)
-    dlon, dlat = lon2 - lon1, lat2 - lat1
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 6371008.8 * 2 * math.asin(min(1.0, math.sqrt(h)))
+    return normalise_name(value, drop_parenthetical=True, fold_aa=True)
 
 
 def approx_area_m2(geom):
