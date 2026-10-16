@@ -833,9 +833,11 @@ map.createPane('routeLabelPane');map.getPane('routeLabelPane').style.zIndex = 46
 map.createPane('drawPane');      map.getPane('drawPane').style.zIndex = 470;
 map.createPane('locationPane');  map.getPane('locationPane').style.zIndex = 490;
 
+// "Plain" is the standard OSM tiles desaturated in CSS (.basemap-plain). CARTO's
+// light tiles now require an API key, which a public static page can't hide.
 const BASES = {
-  light: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, attribution: '&copy; OpenStreetMap contributors &copy; CARTO' }),
+  light: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, className: 'basemap-plain', attribution: '&copy; OpenStreetMap contributors' }),
   streets: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }),
   satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {

@@ -50,6 +50,8 @@ html,body{
   background:#dfe4e8;
 }
 .leaflet-container{ font-family:"IBM Plex Sans",sans-serif; background:#dfe4e8; }
+/* Plain basemap: OSM tiles washed out so the fog and overlays read clearly. */
+.basemap-plain{ filter:grayscale(1) brightness(1.12) contrast(.7); }
 .leaflet-control-attribution{
   font-size:10px; background:rgba(255,255,255,.78); color:#4a5560;
 }
