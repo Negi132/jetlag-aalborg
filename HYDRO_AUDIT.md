@@ -1,21 +1,21 @@
 # Aalborg hydro snapshot audit
 
-- Generated: `2026-10-11T09:00:21.722514+00:00`
-- Formal OSM coastline pieces used as source: **31**
-- Generalized northern shoreline pieces: **3**
+- Generated: `2026-10-16T22:13:14.144570+00:00`
+- Formal OSM coastline pieces used as source: **22**
+- Generalized northern shoreline pieces: **2**
 - Generalized southern shoreline pieces: **2**
 - Shoreline inference from roads/railways/quays/paths: **disabled**
 - Shoreline bank selection: **outer north/south coastline envelope (v8)**
 - Island coastlines (including Egholm): **ignored automatically as interior envelope samples**
-- Envelope longitude bins accepted/rejected: **765/1**
-- Cross-bank validation: **502/502 overlapping samples correct**
-- Hidden northern distance-cache pieces: **3**
+- Envelope longitude bins accepted/rejected: **513/0**
+- Cross-bank validation: **343/343 overlapping samples correct**
+- Hidden northern distance-cache pieces: **2**
 - Hidden southern distance-cache pieces: **2**
-- Total body-of-water targets: **890**
+- Total body-of-water targets: **245**
 - Pre-unioned water-distance geometries: **2**
-- Distinct unnamed mapped water targets: **864**
-- Chalk/limestone quarry fallback targets: **1**
+- Distinct unnamed mapped water targets: **224**
+- Chalk/limestone quarry fallback targets: **0**
 
 ## Named body-of-water targets
 
-Brillesø, Gadekæret, Hasseris Å, Kjærs Møllesø, Klingenbergsøen, Lergraven, Lille Fuglesø, Limfjorden, Lindholm Kridtgrav, Lindholm Å, Nordens Kridtgrav, Nørre Uttrup Lystbådehavn, Nørretranders Gadekær, Obels Kanal, Pilesøen, Poulstrup Kalkgrav, Poulstrup Sø, Romdrup Å, Store Fuglesø, Svanemøllesøen, Tunnelbassinet, Vestermølle Sø, Voerbjerg Sø, Øster Landgrøft, Østerå, Østre Havnebasin
+Gadekæret, Hasseris Å, Kjærs Møllesø, Klingenbergsøen, Lergraven, Lille Fuglesø, Limfjorden, Lindholm Kridtgrav, Lindholm Å, Nordens Kridtgrav, Nørre Uttrup Lystbådehavn, Nørretranders Gadekær, Obels Kanal, Pilesøen, Romdrup Å, Store Fuglesø, Tunnelbassinet, Voerbjerg Sø, Øster Landgrøft, Østerå, Østre Havnebasin

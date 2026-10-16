@@ -17,7 +17,7 @@ Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled;
 
 ## Changes from previous bundle
 - Added: none
-- Removed: 102, 213
+- Removed: none
 
 ## GTFS special/night lines not in the game categories
 18E, 21N, 22N, 23N, 24N, 25N, 26N, 27N, 52N, 53N, 72N, 73N, BUS75

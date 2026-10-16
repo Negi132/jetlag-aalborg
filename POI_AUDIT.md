@@ -1,6 +1,6 @@
 # Aalborg POI bundle audit
 
-- Generated: `2026-10-04T08:32:49Z`
+- Generated: `2026-10-16T22:13:11Z`
 - Source: OpenStreetMap Denmark extract from Geofabrik + the project's authoritative local fallbacks
 - License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0
 - Scope: representative points inside the Hide + Seek play-area snapshot; the commercial-airport point is the passenger terminal rather than the aerodrome centroid
@@ -8,18 +8,18 @@
 | Category | Count |
 |---|---:|
 | Commercial airport | 1 |
-| Park | 35 |
+| Park | 34 |
 | Amusement park | 1 |
 | Zoo | 1 |
 | Aquarium | 0 |
-| Golf course | 1 |
+| Golf course | 0 |
 | Museum | 10 |
 | Movie theater | 3 |
 | Hospital | 6 |
-| Library | 7 |
+| Library | 6 |
 | Foreign consulate | 1 |
 
-**Total: 66 POIs**
+**Total: 63 POIs**
 
 ## Included names
 
@@ -27,9 +27,9 @@
 
 Aalborg Airport terminal (AAL)
 
-### Park (35)
+### Park (34)
 
-5. Maj Parken, Aabos Plads, Ansgar Anlægget, Åparken, Bundgaardsparken, Fjordmarken, Golfparken, Jernbaneparken, Jomfru Ane Parken, Karolinelund, Kildeparken, Kunstens Skulpturpark, Lindholm Fjordpark, Lindholm stations park, Lindholm Strandpark, Mølleparken, Mulighedernes Park, Østerådalen, Østerådalen Nord, Østerådalen Syd, Østre Anlæg, Rotunden, Skanseparken, Skanseparken, Skovbakken, Skovdalen, Søheltens Have, Sohngårdsholmsparken, Stigsparken, Svanemølleparken, Tornhøjhave, Urtehaven, Utzon Parken, Vandbakken, Vestre Fjordpark
+5. Maj Parken, Aabos Plads, Ansgar Anlægget, Åparken, Bundgaardsparken, Fjordmarken, Golfparken, Jernbaneparken, Jomfru Ane Parken, Karolinelund, Kildeparken, Kunstens Skulpturpark, Lindholm Fjordpark, Lindholm stations park, Lindholm Strandpark, Mølleparken, Mulighedernes Park, Østerådalen, Østerådalen Nord, Østerådalen Syd, Østre Anlæg, Rotunden, Skanseparken, Skanseparken, Skovbakken, Skovdalen, Søheltens Have, Sohngårdsholmsparken, Stigsparken, Tornhøjhave, Urtehaven, Utzon Parken, Vandbakken, Vestre Fjordpark
 
 ### Amusement park (1)
 
@@ -43,9 +43,9 @@ Aalborg Zoo
 
 _None in the play area._
 
-### Golf course (1)
+### Golf course (0)
 
-Ørnehøj Golfklub
+_None in the play area._
 
 ### Museum (10)
 
@@ -59,9 +59,9 @@ Biffen, Nordisk Film Biografer Aalborg City Syd, Nordisk Film Biografer Aalborg 
 
 Aalborg Universitetshospital, Brandevej, Aalborg Universitetshospital, Hospitalsbyen, Aalborg Universitetshospital, Mølleparkvej, Aalborg Universitetshospital, Nord, Aleris Aalborg, Capio Aalborg
 
-### Library (7)
+### Library (6)
 
-Haraldslund, Hasseris Bibliotek, Hovedbiblioteket i Aalborg, Nørresundby Bibliotek, Svenstrup Bibliotek, Trekanten - Bibliotek og Kulturhus, Vejgaard Bibliotek
+Haraldslund, Hasseris Bibliotek, Hovedbiblioteket i Aalborg, Nørresundby Bibliotek, Trekanten - Bibliotek og Kulturhus, Vejgaard Bibliotek
 
 ### Foreign consulate (1)
 
