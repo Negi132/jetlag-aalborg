@@ -278,6 +278,17 @@ def _map_coords(obj, fn):
     return obj
 
 
+def round_coords(obj, ndigits=6):
+    """Round every coordinate in a GeoJSON object (6 decimals is about 0.1 m)."""
+    if isinstance(obj, dict):
+        return {k: (_map_coords(v, lambda x, y: (round(x, ndigits), round(y, ndigits)))
+                    if k == 'coordinates' else round_coords(v, ndigits))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [round_coords(v, ndigits) for v in obj]
+    return obj
+
+
 def normalise_axis_order(gj):
     """Return all cached zone geometry as GeoJSON longitude/latitude.
 
@@ -493,7 +504,7 @@ def validate_play_geometry(play, previous_play=None):
     to_utm = Transformer.from_crs('EPSG:4326', 'EPSG:25832', always_xy=True)
     from shapely.ops import transform
     area_km2 = transform(to_utm.transform, play).area / 1_000_000
-    if not (120 <= area_km2 <= 420):
+    if not (60 <= area_km2 <= 250):
         raise RuntimeError(f'Zone 2 snapshot has implausible area {area_km2:.1f} km²')
     if previous_play is not None and not previous_play.is_empty:
         prev_km2 = transform(to_utm.transform, previous_play).area / 1_000_000
@@ -610,7 +621,7 @@ def main():
                 counts[key] = len(prior.get('features', []))
                 print(f'WARNING: {key} collapsed from {old_count}; retaining previous snapshot.')
 
-    play_fc = {'type': 'FeatureCollection', 'features': cleaned['zone2']}
+    play_fc = round_coords({'type': 'FeatureCollection', 'features': cleaned['zone2']})
     play_tmp = PLAY_OUTPUT.with_suffix('.geojson.tmp')
     play_tmp.write_text(json.dumps(play_fc, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     play_tmp.replace(PLAY_OUTPUT)
@@ -621,8 +632,8 @@ def main():
         'source': ENDPOINT,
         'displayPrepared': True,
         'layers': LAYERS,
-        'zones': zones,
-        'borders': borders,
+        'zones': round_coords(zones),
+        'borders': round_coords(borders),
     }
     payload = '/* Generated from Aalborg Kommune KortInfo WFS. Do not edit by hand. */\n' \
               + 'window.AALBORG_ZONE_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'

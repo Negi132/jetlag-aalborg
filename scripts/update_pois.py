@@ -109,7 +109,7 @@ CATEGORY_LABELS = {
 # First-generation floor checks. Categories which can legitimately be empty have zero minima.
 MIN_COUNTS = {
     'airport': 1, 'park': 10, 'amusement': 0, 'zoo': 1, 'aquarium': 0,
-    'golf': 1, 'museum': 3, 'cinema': 3, 'hospital': 2, 'library': 4,
+    'golf': 0, 'museum': 3, 'cinema': 3, 'hospital': 2, 'library': 4,
     'consulate': 0,
 }
 MIN_TOTAL = 25

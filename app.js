@@ -4002,7 +4002,7 @@ const AALBORG_AREAS = {
   4: { name: 'Øst Aalborg',  color: '#b878cf' }
 };
 
-/* Traced outlines of the four play areas (zone2-fallback.js). They are used
+/* Built-in outlines of the four play areas (zone2-fallback.js). They are used
    only until official Zone 2 geometry is available. */
 function buildAreaZones() {
   const fb = window.AALBORG_ZONE2_FALLBACK;
@@ -4102,7 +4102,7 @@ function clipZoneDisplayGeoJsonToPlayArea(gj, key) {
   if (!gj || !Array.isArray(gj.features)) return gj;
   // Zone 2 defines the play area. A live KortInfo response can contain extra
   // polygons, so display ONLY the four recognised game areas rather than every
-  // feature the WFS happened to return. Do not clip these against a traced or
+  // feature the WFS happened to return. Do not clip these against a fallback or
   // stale pre-load area: these four polygons are the authoritative boundary.
   if (key === 'zone2') {
     return { type: 'FeatureCollection', features: officialPlayZoneFeatures(gj).map((ft) => turf.clone(ft)) };
@@ -4199,9 +4199,9 @@ function officialZone2Data() {
   return layer ? layer.geojson : null;
 }
 
-/* Prefer the exact KortInfo geometry. The traced geometry remains a startup
-   and outage fallback so a temporarily unavailable municipal server never
-   makes the game unusable. */
+/* Prefer the exact KortInfo geometry. The built-in fallback covers startup
+   and outages so a temporarily unavailable municipal server never makes the
+   game unusable. */
 function zonesPlayArea() {
   const official = officialPlayZoneFeatures(officialZone2Data());
   if (official.length) return unionAll(official);
@@ -5416,7 +5416,7 @@ async function toggleSource(key, btn) {
 }
 
 /* Load official Zone 2 quietly at startup so the four named municipal
-   polygons replace the traced fallback as soon as the service answers. */
+   polygons replace the built-in fallback as soon as the service answers. */
 async function loadOfficialZone2PlayArea(forceLive = false) {
   const src = S.sources.zone2;
   const cached = forceLive ? null : bundledZoneGeoJson('zone2');
@@ -5444,9 +5444,9 @@ async function loadOfficialZone2PlayArea(forceLive = false) {
     renderOfficialZoneStatus();
     return true;
   } catch (err) {
-    console.warn('KortInfo Zone 2 unavailable; using traced fallback:', err.message);
+    console.warn('KortInfo Zone 2 unavailable; using the built-in fallback:', err.message);
     const status = $('#officialZoneStatus');
-    if (status) status.textContent = 'KortInfo Zone 2 could not be loaded; the traced geometry is temporarily active. Use Reload official Zone 2 to retry.';
+    if (status) status.textContent = 'KortInfo Zone 2 could not be loaded; the built-in outlines are temporarily active. Use Reload official Zone 2 to retry.';
     return false;
   } finally {
     setZoneLoading('zone2', false);
@@ -5515,7 +5515,7 @@ function renderOfficialZoneStatus() {
   if (!status) return;
   status.textContent = hasOfficialZonesPlayArea()
     ? 'Official Zone 2 is active. The play area is the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.'
-    : 'Official Zone 2 loads automatically. Until KortInfo replies, the traced geometry is used only as a temporary fallback.';
+    : 'Official Zone 2 loads automatically. Until it does, built-in outlines of the four areas are used.';
 }
 
 /* Retry official Zone 2 and rebuild the play area from its four named polygons. */
@@ -5530,7 +5530,7 @@ $('#calLive').addEventListener('click', async (e) => {
     setStatus('Official Zone 2 loaded. The play area now follows the exact union of its four named areas.');
     toast('Official Zone 2 play area loaded.');
   } else {
-    setStatus('KortInfo did not answer or all four area names could not be identified. The traced fallback remains active.', true);
+    setStatus('KortInfo did not answer or all four area names could not be identified. The built-in outlines remain active.', true);
   }
   btn.disabled = false;
   btn.textContent = was;
@@ -5890,7 +5890,7 @@ function markPlayMode(mode) {
   $$('#playSeg button').forEach((b) => b.classList.toggle('is-active', b.dataset.area === mode));
   $('#radiusField').hidden = mode !== 'circle';
   $('#playNote').textContent = mode === 'zones' && !hasOfficialZonesPlayArea()
-    ? 'Traced fallback while official Zone 2 loads; exact same four-area mode.'
+    ? 'Built-in outlines while official Zone 2 loads; same four-area mode.'
     : (PLAY_NOTES[mode] || '');
 }
 
@@ -5900,7 +5900,7 @@ async function setPlayMode(mode) {
       markPlayMode('zones');
       toast(hasOfficialZonesPlayArea()
         ? 'Play area: the four official Zone 2 areas.'
-        : 'Play area: traced fallback while KortInfo loads.');
+        : 'Play area: built-in outlines while KortInfo loads.');
       if (!hasOfficialZonesPlayArea()) await loadOfficialZone2PlayArea();
     } else toast('Could not build the four Zone 2 play areas.', true);
     return;
@@ -5991,7 +5991,7 @@ function deserialize(data) {
   S.seq = S.constraints.length + 1;
   S.zone2Official = null;
   if (data.units) S.units = data.units;
-  // Source settings from older links were based on the traced/legacy defaults.
+  // Source settings from older links were based on legacy defaults.
   // Do not let them silently replace the four official KortInfo layers.
   S.sources = JSON.parse(JSON.stringify(DEFAULT_SOURCES));
   if (data.sourceConfigVersion === SOURCE_CONFIG_VERSION && data.sources) {
@@ -6088,7 +6088,7 @@ document.addEventListener('keydown', (e) => {
 
 // If the weekly KortInfo snapshot is present, use its exact Zone 2 polygons
 // before the very first play-area calculation instead of briefly starting on
-// the traced fallback.
+// the built-in fallback.
 const bootZone2Snapshot = bundledZoneGeoJson('zone2');
 if (bootZone2Snapshot) {
   try {
@@ -6113,7 +6113,7 @@ renderToolForm();
 // GitHub Pages is served over HTTPS, so this requests permission and keeps a
 // display-only marker current without changing any question workflow.
 startLocationTracking();
-// Do not block first paint: the traced union is already usable. In a real
+// Do not block first paint: the fallback union is already usable. In a real
 // browser this replaces it with the exact official Zone 2 union as soon as
 // KortInfo answers. Test environments without window.fetch keep the fallback.
 if (!restoredFromUrl) loadOfficialZone2PlayArea();
