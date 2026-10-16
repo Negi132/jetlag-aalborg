@@ -374,8 +374,6 @@ const wfs = window.eval("HS.wfsUrl({url:'https://geoserver.plandata.dk/geoserver
 check('WFS asks for GeoJSON', /outputFormat=application%2Fjson/.test(wfs));
 check('WFS pins WGS84', /srsName=EPSG%3A4326/.test(wfs));
 check('WFS passes the CQL filter', /CQL_FILTER=komnr%3D851/.test(wfs));
-const gc2 = window.eval("HS.gc2Url('rutekortweb.ntmap_bybus_murl')");
-check('GC2 SQL url built', /api\/v2\/sql\/nt\?q=SELECT/.test(gc2) && /srs=4326/.test(gc2), gc2.slice(0,72)+'…');
 
 
 console.log('\n== zone 1: byzone red / landzone green ==');
@@ -502,32 +500,22 @@ check('namespaced XML also parses', window.eval(
   "HS.parseWfsCapabilities('<wfs:WFS_Capabilities xmlns:wfs=\\'http://www.opengis.net/wfs\\'><wfs:FeatureTypeList><wfs:FeatureType><wfs:Name>ns:layer</wfs:Name></wfs:FeatureType></wfs:FeatureTypeList></wfs:WFS_Capabilities>')[0].name") === 'ns:layer');
 check('garbage yields an empty list', window.eval("HS.parseWfsCapabilities('not xml at all').length") === 0);
 
-console.log('\n== route endpoints have a fallback ==');
-const urls = window.eval("JSON.stringify(HS.gc2Urls('rutekortweb.ntmap_bybus_murl'))");
-const u = JSON.parse(urls);
-check('two strategies offered', u.length === 2);
-check('first is the GC2 SQL API', /api\/v2\/sql\/nt/.test(u[0]));
-check('second is the GC2 WFS', /\/wfs\/nt\/rutekortweb\/4326/.test(u[1]), u[1].slice(0,60));
-check('WFS strategy strips the schema from typeName', /typeName=ntmap_bybus_murl/.test(u[1]));
-
 console.log('\n== NT timetable bus categories and route labels ==');
-const routeCatalogue = window.eval('HS.NT_ROUTE_CATALOGUE');
+const busCategories = window.eval('HS.BUS_CATEGORIES');
 check('four NT timetable bus categories are configured',
-      Object.keys(routeCatalogue).sort().join(',') === 'bybus,express,local,regional',
-      Object.keys(routeCatalogue).join(','));
-check('Bybus catalogue contains line 11', routeCatalogue.bybus.refs.includes('11'));
-check('Regionalbus catalogue excludes local route 38', !routeCatalogue.regional.refs.includes('38'));
-check('Expresbus catalogue contains 950X', routeCatalogue.express.refs.includes('950X'));
-check('Lokalbus catalogue contains 38 and 271', routeCatalogue.local.refs.includes('38') && routeCatalogue.local.refs.includes('271'));
+      Object.keys(busCategories).sort().join(',') === 'bybus,express,local,regional',
+      Object.keys(busCategories).join(','));
+check('bundled GTFS Bybus contains line 11', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('bybus')).refs.includes('11')"));
+check('bundled GTFS Regionalbus excludes local route 38', !window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('regional')).refs.includes('38')"));
+check('bundled GTFS Expresbus contains 950X', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('express')).refs.includes('950X')"));
 check('bundled GTFS Bybus contains all 14 Aalborg lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('bybus')).count") === 14);
 check('bundled GTFS Regionalbus contains 15 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('regional')).count") === 15);
 check('bundled GTFS Expresbus contains 8 Aalborg-intersecting lines', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('express')).count") === 8);
 check('bundled GTFS Lokalbus contains 38 and 271', window.eval("HS.routeSummary(HS.bundledGtfsBusCategory('local')).refs.join(',')") === '38,271');
-check('route 11 has a guaranteed bundled fallback geometry', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='11' && Array.isArray(x.staticGeometry) && x.staticGeometry.length>10)"));
-check('route 38 is a required fallback route', window.eval("HS.REQUIRED_BUS_ROUTE_SUPPLEMENTS.some(x=>x.ref==='38')"));
-const bybusQ = window.eval("HS.overpassBusRefsQuery(['11','14'])");
-check('category query asks only for requested refs', /ref.*11\\|14/.test(bybusQ), bybusQ.slice(0,130));
-check('category query is geographically bounded', /relation\(/.test(bybusQ));
+check('a bus category loads from the bundle and is clipped to the play area', (() => {
+  const result = window.eval("HS.fetchBusCategoryRoutes('local')");
+  return result.raw.features.length > 0 && result.summary.refs.join(',') === '38,271';
+})());
 
 window.__sharedRoutes = {type:'FeatureCollection',features:[
   {type:'Feature',properties:{rutenr:'11'},geometry:{type:'LineString',coordinates:[[9.88,57.04],[9.98,57.04]]}},
