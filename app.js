@@ -416,6 +416,20 @@ const S = {
   seq: 1
 };
 
+/* Shared-map session (see "shared map" below). Device-local, never saved in
+   the game itself. */
+const share = {
+  room: null,          // room code, part of the ntfy topic
+  events: null,        // EventSource watching the room for new posts
+  latestId: null,      // newest post seen in the room
+  latestTime: null,
+  appliedId: null,     // post this phone last pulled or posted
+  postedIds: new Set(),
+  syncedSignature: null,
+  maybeStale: false,   // rejoined with a map that differs from the last sync
+  busy: false
+};
+
 /* Network-backed administrative layers can take several seconds on mobile.
    Keep loading state separate from the saved game: it is UI-only and lets
    both the Layers tab and map show that something is actually happening. */
@@ -828,6 +842,7 @@ function recompute() {
   updateHud(possible, dead);
   renderLog();
   saveToUrl();
+  renderShareUi();
 }
 
 function drawFog(possible) {
@@ -6149,6 +6164,369 @@ $('#importFile').addEventListener('change', (e) => {
   e.target.value = '';
 });
 
+/* ---------- shared map ------------------------------------------------------
+   Seekers can share one map through a room on ntfy.sh, a free public relay
+   (no account or key). Nothing changes on a phone by itself: "Post map" sends
+   this phone's answers to the room and "Get latest map" replaces them with the
+   newest posted map. A dot on Get latest means someone posted something newer;
+   a dot on Post means this phone has answers it has not posted.
+   ntfy.sh keeps a post for 12 hours (3 hours if it is over 4 KB, which a game
+   rarely is because answers travel as recipes). */
+const SHARE_RELAY = 'https://ntfy.sh';
+const SHARE_TOPIC_PREFIX = 'jetlag-aalborg-';
+const SHARE_FORMAT = 'HS1';
+const SHARE_ROOM_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+function storageGet(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
+function storageSet(key, value) {
+  try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (_) { /* private mode */ }
+}
+
+function newRoomCode() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => SHARE_ROOM_ALPHABET[b % SHARE_ROOM_ALPHABET.length]).join('');
+}
+
+function normaliseRoomCode(value) {
+  const text = String(value || '').trim();
+  const fromLink = text.match(/[?&]room=([a-z0-9]+)/i);
+  const code = (fromLink ? fromLink[1] : text).toLowerCase();
+  return /^[a-z0-9]{8,40}$/.test(code) ? code : null;
+}
+
+const shareTopicUrl = (path = '') => `${SHARE_RELAY}/${SHARE_TOPIC_PREFIX}${share.room}${path}`;
+const inviteLink = () => `${location.origin}${location.pathname}?room=${share.room}`;
+
+/* What identifies the logged answers: changes when one is logged, muted or deleted. */
+function answersSignature() {
+  return S.constraints.map((c) => `${c.id}:${c.active ? 1 : 0}`).join('|');
+}
+
+/* Which data files this phone is running; recipes rebuild identically only
+   when phones match. */
+function mapDataVersion() {
+  const w = window;
+  return [
+    w.AALBORG_ZONE_DATA && w.AALBORG_ZONE_DATA.generatedAt,
+    w.AALBORG_HYDRO_DATA && w.AALBORG_HYDRO_DATA.generatedAt,
+    w.AALBORG_POI_DATA && w.AALBORG_POI_DATA.generatedAt
+  ].map((v) => String(v || '-').slice(0, 10)).join('/');
+}
+
+async function streamBytes(stream) {
+  const reader = stream.getReader();
+  const parts = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    total += value.length;
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
+const bytesStream = (bytes) => new ReadableStream({ start(c) { c.enqueue(bytes); c.close(); } });
+
+async function encodeSharedGame(game) {
+  const raw = new TextEncoder().encode(JSON.stringify(game));
+  const packed = await streamBytes(bytesStream(raw).pipeThrough(new CompressionStream('deflate-raw')));
+  let bin = '';
+  for (let i = 0; i < packed.length; i += 0x8000) bin += String.fromCharCode.apply(null, packed.subarray(i, i + 0x8000));
+  return `${SHARE_FORMAT}.` + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function decodeSharedGame(text) {
+  const body = String(text || '').trim();
+  if (!body.startsWith(`${SHARE_FORMAT}.`)) throw new Error('that post is not a shared map');
+  const bin = atob(body.slice(SHARE_FORMAT.length + 1).replace(/-/g, '+').replace(/_/g, '/'));
+  const packed = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+  const raw = await streamBytes(bytesStream(packed).pipeThrough(new DecompressionStream('deflate-raw')));
+  return JSON.parse(new TextDecoder().decode(raw));
+}
+
+function sharedGameNow() {
+  return {
+    data: mapDataVersion(),
+    posted: Date.now(),
+    playAreaMeta: compactPlayAreaMeta(S.playAreaMeta),
+    constraints: serialize().constraints
+  };
+}
+
+/* The newest post in the room (ntfy.sh keeps posts for 12 hours). */
+async function fetchLatestPost() {
+  const res = await fetchWithDeadline(shareTopicUrl('/json?poll=1&since=all'), {}, 20000);
+  if (!res.ok) throw new Error(`relay answered HTTP ${res.status}`);
+  const posts = (await res.text()).split('\n').filter(Boolean)
+    .map((line) => { try { return JSON.parse(line); } catch (_) { return null; } })
+    .filter((m) => m && m.event === 'message');
+  return posts.length ? posts[posts.length - 1] : null;
+}
+
+async function readPostBody(post) {
+  if (!post.attachment) return post.message;
+  const res = await fetchWithDeadline(post.attachment.url, {}, 20000);
+  if (!res.ok) throw new Error('the last shared map has expired (large maps are kept for 3 hours) — ask someone to post again');
+  return res.text();
+}
+
+function notePost(post) {
+  if (!post || (share.latestTime && post.time < share.latestTime)) return;
+  share.latestId = post.id;
+  share.latestTime = post.time;
+}
+
+function hasNewerSharedMap() {
+  if (!share.latestId || share.postedIds.has(share.latestId)) return false;
+  return share.latestId !== share.appliedId || share.maybeStale;
+}
+/* An empty map is never offered for posting: it is far more likely a phone
+   that reopened without its game than a deliberate reset. */
+function hasUnpostedAnswers() {
+  return !!share.room && S.constraints.length > 0 && answersSignature() !== share.syncedSignature;
+}
+
+/* Remember what this phone last posted or pulled, so a reload does not
+   show a false "unposted" dot. */
+function saveShareSync() {
+  storageSet('hs-share-sync', share.room ? JSON.stringify({ room: share.room, appliedId: share.appliedId,
+    signature: share.syncedSignature }) : null);
+}
+
+function minutesAgo(seconds) {
+  const m = Math.max(0, Math.round((Date.now() / 1000 - seconds) / 60));
+  return m < 1 ? 'just now' : m === 1 ? '1 min ago' : m < 90 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+}
+
+async function postSharedMap() {
+  if (!share.room || share.busy) return;
+  if (!S.constraints.length && share.latestId &&
+      !confirm('Your map has no answers. Posting it will clear the shared map for everyone. Post an empty map?')) return;
+  if (hasNewerSharedMap() && !confirm('Someone posted a newer map that you have not loaded yet. Posting will replace it for everyone. Post anyway?')) return;
+  share.busy = true;
+  renderShareUi();
+  try {
+    const body = await encodeSharedGame(sharedGameNow());
+    const res = await fetchWithDeadline(shareTopicUrl(), { method: 'POST', body }, 20000);
+    if (res.status === 429) throw new Error('the relay is limiting this network — try again in a minute');
+    if (!res.ok) throw new Error(`relay answered HTTP ${res.status}`);
+    const post = await res.json();
+    share.postedIds.add(post.id);
+    notePost(post);
+    share.appliedId = post.id;
+    share.syncedSignature = answersSignature();
+    share.maybeStale = false;
+    saveShareSync();
+    toast(`Map posted: ${S.constraints.length} answer${S.constraints.length === 1 ? '' : 's'}.`);
+  } catch (err) {
+    toast(`Could not post the map: ${err.message}.`, true);
+  } finally {
+    share.busy = false;
+    renderShareUi();
+  }
+}
+
+async function pullSharedMap({ quietIfEmpty = false, askFirst = true } = {}) {
+  if (!share.room || share.busy) return;
+  share.busy = true;
+  renderShareUi();
+  try {
+    const post = await fetchLatestPost();
+    if (!post) {
+      if (!quietIfEmpty) toast('Nothing has been posted to this shared map in the last 12 hours.');
+      return;
+    }
+    notePost(post);
+    if (post.id === share.appliedId && !hasUnpostedAnswers() && !share.maybeStale) { toast('Your map is already the latest.'); return; }
+    if (askFirst && hasUnpostedAnswers() && S.constraints.length &&
+        !confirm('Load the latest shared map? Changes on this phone that you have not posted will be replaced.')) return;
+    const game = await decodeSharedGame(await readPostBody(post));
+    applySharedGame(game);
+    share.appliedId = post.id;
+    share.syncedSignature = answersSignature();
+    share.maybeStale = false;
+    saveShareSync();
+    const sameData = game.data === mapDataVersion();
+    toast(`Map updated: ${S.constraints.length} answer${S.constraints.length === 1 ? '' : 's'}, posted ${minutesAgo(post.time)}.` +
+          (sameData ? '' : ' It came from a phone with different map data; reload both phones so the maps match exactly.'), !sameData);
+  } catch (err) {
+    toast(`Could not load the shared map: ${err.message}.`, true);
+  } finally {
+    share.busy = false;
+    renderShareUi();
+  }
+}
+
+/* Replace the answers and play area; units, basemap and shading stay personal. */
+function applySharedGame(game) {
+  if (activeTool) selectTool(activeTool);   // close any open draft first
+  S.constraints = (game.constraints || []).map((c) => Object.assign({}, c));
+  S.seq = S.constraints.length + 1;
+  const m = game.playAreaMeta;
+  if (m && m.type === 'zones') {
+    setZonesPlayArea(false);
+    markPlayMode('zones');
+  } else if (m && m.type === 'circle') {
+    S.playArea = turf.circle(m.center, m.radiusKm, { steps: 256, units: 'kilometers' });
+    S.playAreaMeta = m;
+    markPlayMode('circle');
+    refreshDerivedLayers();
+  } else if (m && m.type === 'custom' && m.mode === 'kommune' && window.AALBORG_KOMMUNE_OUTLINE) {
+    S.playArea = turf.clone(window.AALBORG_KOMMUNE_OUTLINE);
+    S.playAreaMeta = Object.assign({}, m, { geometry: S.playArea.geometry });
+    markPlayMode('kommune');
+    refreshDerivedLayers();
+  } else if (m && m.type === 'custom' && m.geometry) {
+    S.playArea = turf.feature(m.geometry);
+    S.playAreaMeta = m;
+    markPlayMode('circle');
+    refreshDerivedLayers();
+  }
+  recompute();
+}
+
+function watchSharedRoom() {
+  if (share.events) share.events.close();
+  share.events = null;
+  if (!share.room || typeof EventSource !== 'function') return;
+  const es = new EventSource(shareTopicUrl('/sse'));
+  es.onmessage = (e) => {
+    let msg = null;
+    try { msg = JSON.parse(e.data); } catch (_) { return; }
+    if (!msg || msg.event !== 'message') return;
+    notePost(msg);
+    renderShareUi();
+  };
+  // Also catch up on anything posted while the connection was down.
+  es.onopen = () => {
+    fetchLatestPost().then((post) => { notePost(post); renderShareUi(); }).catch(() => {});
+  };
+  share.events = es;
+}
+
+function joinSharedRoom(code, { fromInvite = false } = {}) {
+  share.room = code;
+  share.latestId = share.latestTime = share.appliedId = null;
+  share.postedIds.clear();
+  share.syncedSignature = null;
+  try {
+    const saved = JSON.parse(storageGet('hs-share-sync') || 'null');
+    if (saved && saved.room === code) { share.appliedId = saved.appliedId; share.syncedSignature = saved.signature; }
+  } catch (_) { /* ignore a corrupt value */ }
+  // Reopened (e.g. from a home-screen icon) with a different map than the one
+  // last synced: this phone may be out of date, so point at Get latest.
+  share.maybeStale = share.syncedSignature != null && answersSignature() !== share.syncedSignature;
+  storageSet('hs-share-room', code);
+  const url = new URL(location.href);
+  url.searchParams.set('room', code);
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  watchSharedRoom();
+  renderShareUi();
+  // Opening an invite on a phone with no answers loads the shared map at once.
+  if (fromInvite) pullSharedMap({ quietIfEmpty: true, askFirst: S.constraints.length > 0 });
+}
+
+function leaveSharedRoom() {
+  if (share.events) share.events.close();
+  share.events = null;
+  share.room = null;
+  storageSet('hs-share-room', null);
+  storageSet('hs-share-sync', null);
+  const url = new URL(location.href);
+  url.searchParams.delete('room');
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  renderShareUi();
+}
+
+async function startSharedRoom() {
+  joinSharedRoom(newRoomCode());
+  await postSharedMap();
+  copyInviteLink();
+}
+
+async function copyInviteLink() {
+  const link = inviteLink();
+  try {
+    if (navigator.share) { await navigator.share({ title: 'Hide + Seek shared map', url: link }); return; }
+    await navigator.clipboard.writeText(link);
+    toast('Invite link copied. Send it to your co-seekers.');
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;   // the share sheet was closed
+    const field = $('#shareInviteLink');
+    if (field) { switchTab('game'); field.focus(); field.select(); }
+    toast('Copy the invite link from the Game tab and send it to your co-seekers.');
+  }
+}
+
+function renderShareUi() {
+  const inRoom = !!share.room;
+  const actions = $('#shareActions');
+  if (actions) actions.hidden = !inRoom;
+  const pull = $('#pullMapBtn'), post = $('#postMapBtn');
+  if (pull) {
+    pull.classList.toggle('has-dot', inRoom && hasNewerSharedMap());
+    pull.disabled = share.busy;
+    pull.title = hasNewerSharedMap() ? `Get latest map — new map posted ${minutesAgo(share.latestTime)}` : 'Get latest map';
+  }
+  if (post) {
+    post.classList.toggle('has-dot', hasUnpostedAnswers());
+    post.disabled = share.busy;
+    post.title = hasUnpostedAnswers() ? 'Post map — this phone has answers you have not posted' : 'Post map';
+  }
+
+  const box = $('#shareControls');
+  if (!box) return;
+  box.innerHTML = '';
+  const status = $('#shareStatus');
+  if (!inRoom) {
+    status.textContent = 'Share one map with your co-seekers. Everyone sees the same answers, and each phone still previews questions on its own.';
+    const start = document.createElement('button');
+    start.className = 'solid-btn wide'; start.textContent = 'Start a shared map';
+    start.addEventListener('click', startSharedRoom);
+    const row = document.createElement('div');
+    row.className = 'inline';
+    const input = document.createElement('input');
+    input.type = 'text'; input.placeholder = 'Invite link or room code'; input.id = 'shareJoinInput';
+    input.setAttribute('autocapitalize', 'off'); input.setAttribute('autocomplete', 'off');
+    const join = document.createElement('button');
+    join.className = 'ghost-btn'; join.textContent = 'Join';
+    join.addEventListener('click', () => {
+      const code = normaliseRoomCode(input.value);
+      if (!code) { toast('That is not a shared-map link or room code.', true); return; }
+      joinSharedRoom(code, { fromInvite: true });
+    });
+    row.append(input, join);
+    box.append(start, row);
+    return;
+  }
+  status.textContent = `Shared map ${share.room.slice(0, 4)}… is on. Use the buttons on the map: ⤓ gets the latest map, ⤒ posts yours. ` +
+    (share.latestTime ? `Last post ${minutesAgo(share.latestTime)}.` : 'Nothing posted yet.');
+  const linkField = document.createElement('input');
+  linkField.type = 'text'; linkField.readOnly = true; linkField.id = 'shareInviteLink';
+  linkField.value = inviteLink();
+  linkField.setAttribute('aria-label', 'Invite link');
+  linkField.addEventListener('focus', () => linkField.select());
+  box.append(linkField);
+  const invite = document.createElement('button');
+  invite.className = 'ghost-btn'; invite.textContent = 'Invite co-seekers';
+  invite.addEventListener('click', copyInviteLink);
+  const leave = document.createElement('button');
+  leave.className = 'ghost-btn'; leave.textContent = 'Leave shared map';
+  leave.addEventListener('click', () => { if (confirm('Leave the shared map? Your answers stay on this phone.')) leaveSharedRoom(); });
+  const row = document.createElement('div');
+  row.className = 'inline wrap';
+  row.append(invite, leave);
+  box.append(row);
+}
+
+$('#pullMapBtn').addEventListener('click', () => pullSharedMap());
+$('#postMapBtn').addEventListener('click', () => postSharedMap());
+
 /* ---------- boot ------------------------------------------------------------ */
 
 document.addEventListener('keydown', (e) => {
@@ -6191,6 +6569,15 @@ startLocationTracking();
 // KortInfo answers. Test environments without window.fetch keep the fallback.
 if (!restoredFromUrl) loadOfficialZone2PlayArea();
 
+// Rejoin a shared map: from an invite link, or the one this phone was in.
+{
+  const invited = normaliseRoomCode(new URLSearchParams(location.search).get('room'));
+  const previous = storageGet('hs-share-room');
+  if (invited) joinSharedRoom(invited, { fromInvite: invited !== previous });
+  else if (previous) joinSharedRoom(previous);
+  renderShareUi();
+}
+
 /* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
   map, S, CONFIG, draft, drawing, RADAR_PRESETS, previewShapeLayer,
@@ -6215,7 +6602,8 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, geometryFromRecipe, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
+  matchingAreaMode, matchingAreaAt, geometryFromRecipe, share, postSharedMap, pullSharedMap,
+  joinSharedRoom, leaveSharedRoom, encodeSharedGame, decodeSharedGame, answersSignature, mapDataVersion, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
   OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,

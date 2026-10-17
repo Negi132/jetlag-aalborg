@@ -9,7 +9,9 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 
-export function bootApp() {
+// `url` opens the page at a different address (e.g. a shared-map invite);
+// `beforeScripts(window)` can install fakes such as the relay before the app runs.
+export function bootApp({ url = 'https://example.github.io/hideseek/', beforeScripts = null } = {}) {
   const errors = [];
   // Strip the CDN tags; local copies from node_modules are injected below.
   const page = html
@@ -18,7 +20,7 @@ export function bootApp() {
   const dom = new JSDOM(page, {
     runScripts: 'outside-only',
     pretendToBeVisual: true,
-    url: 'https://example.github.io/hideseek/'
+    url
   });
   const { window } = dom;
   window.addEventListener('error', (e) => errors.push('window error: ' + e.message));
@@ -46,6 +48,11 @@ export function bootApp() {
     clearWatch() {}
   };
   window.innerWidth = 1200;
+  // Browser stream/compression APIs that jsdom lacks; Node has the same ones.
+  for (const name of ['CompressionStream', 'DecompressionStream', 'ReadableStream']) {
+    if (!window[name]) window[name] = globalThis[name];
+  }
+  if (beforeScripts) beforeScripts(window);
 
   // Run each file as a classic <script> would, so its top-level functions and
   // constants are globals the checks can reach through window.eval.

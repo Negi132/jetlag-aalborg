@@ -95,9 +95,15 @@ html,body{
 .hud.is-dead .hud-value{ color:var(--danger); }
 
 /* ── Map buttons ──────────────────────────────────────── */
-.map-btn{
+.map-actions{
   position:absolute; right:14px; bottom:calc(24px + var(--safe-b));
   z-index:800;
+  display:flex; flex-direction:column; gap:10px;
+}
+.map-actions-share{ display:flex; flex-direction:column; gap:10px; }
+.map-actions-share[hidden]{ display:none; }
+.map-btn{
+  position:relative;
   width:46px; height:46px;
   display:grid; place-items:center;
   background:rgba(13,20,29,.92);
@@ -112,6 +118,14 @@ html,body{
 .leaflet-location-pane{ pointer-events:none; }
 .map-btn svg{ width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
 .map-btn svg .fill{ fill:currentColor; stroke:none; }
+.map-btn:disabled{ opacity:.55; cursor:progress; }
+/* Dot: a newer shared map to get, or answers on this phone not yet posted. */
+.map-btn.has-dot::after{
+  content:''; position:absolute; top:6px; right:6px;
+  width:9px; height:9px; border-radius:50%;
+  background:var(--amber); box-shadow:0 0 0 2px rgba(13,20,29,.92);
+}
+#shareControls input{ flex:1; min-width:0; }
 
 /* ── Draw hint bar ────────────────────────────────────── */
 .draw-hint{
@@ -451,7 +465,7 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
   .hud{ left:12px; top:12px; padding:9px 13px 8px; min-width:0; }
   .hud-value{ font-size:24px; }
 
-  .map-btn{ bottom:calc(84px + var(--safe-b)); }
+  .map-actions{ bottom:calc(84px + var(--safe-b)); }
   .draw-hint{ left:12px; right:12px; bottom:calc(84px + var(--safe-b)); }
 
   .sheet-toggle{
@@ -975,7 +989,7 @@ input[type=range]{ width:100%; accent-color:var(--signal); }
     max-height:calc(100dvh - var(--mobile-nav-h) - 8px); padding-bottom:0;
   }
   .tabs{ display:none; }
-  .map-btn{ bottom:calc(var(--mobile-nav-h) + 12px + var(--safe-b)); }
+  .map-actions{ bottom:calc(var(--mobile-nav-h) + 12px + var(--safe-b)); }
   .draw-hint{
     left:8px; right:auto; max-width:calc(100vw - 74px);
     bottom:calc(var(--mobile-nav-h) + 10px + var(--safe-b));

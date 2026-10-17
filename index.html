@@ -12,7 +12,7 @@
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<link rel="stylesheet" href="styles.css?v=20261016b-cleanup">
+<link rel="stylesheet" href="styles.css?v=20261018a-sharedmap">
 </head>
 <body>
 
@@ -28,9 +28,19 @@
     <div class="hud-sub"><span id="hudPct">100%</span> of play area left · <span id="hudCount">0</span> answers</div>
   </div>
 
-  <button id="locateBtn" class="map-btn" title="Center map on my location" aria-label="Center map on my location">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5" fill="none"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
-  </button>
+  <div class="map-actions">
+    <div id="shareActions" class="map-actions-share" hidden>
+      <button id="pullMapBtn" class="map-btn" title="Get latest map" aria-label="Get latest shared map">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7 10l5 5 5-5M4.5 19.5h15"/></svg>
+      </button>
+      <button id="postMapBtn" class="map-btn" title="Post map" aria-label="Post my map to the shared map">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5v-11M7 9l5-5 5 5M4.5 19.5h15"/></svg>
+      </button>
+    </div>
+    <button id="locateBtn" class="map-btn" title="Center map on my location" aria-label="Center map on my location">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="7.5" fill="none"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/></svg>
+    </button>
+  </div>
 
   <div id="drawHint" class="draw-hint" hidden>
     <span id="drawHintText">Tap the map</span>
@@ -202,6 +212,12 @@
         <p class="hint">The link carries the whole game state — send it to your co-seeker and you both see the same map.</p>
       </div>
 
+      <div class="field" id="shareBox">
+        <label>Shared map</label>
+        <p class="hint" id="shareStatus"></p>
+        <div class="stack" id="shareControls"></div>
+      </div>
+
       <div class="field">
         <button class="danger-btn wide" id="resetBtn">Clear all answers</button>
       </div>
@@ -262,6 +278,6 @@
 <script src="poi-data.js?v=20261017a-fixes"></script>
 <script src="hydro-data.js?v=20261017a-fixes"></script>
 <script src="zone-data.js?v=20261017a-fixes"></script>
-<script src="app.js?v=20261017f-fill40"></script>
+<script src="app.js?v=20261018a-sharedmap"></script>
 </body>
 </html>

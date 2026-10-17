@@ -8,7 +8,8 @@ const suites = [
   ['geometry.test.mjs', 'constraint maths'],
   ['data.test.mjs', 'generated data bundles'],
   ['ui.test.mjs', 'app behaviour'],
-  ['features.test.mjs', 'every layer, control and question card']
+  ['features.test.mjs', 'every layer, control and question card'],
+  ['share.test.mjs', 'two phones sharing a map']
 ];
 
 const results = suites.map(([file, about]) => {

@@ -39,6 +39,28 @@ whatever survives stays bright.
 - **Location.** The blue marker shows your device position. It is display-only and never saved or
   shared.
 
+### Shared map
+
+Seekers can share one map instead of crowding around one phone. In the **Game** tab, one seeker taps
+**Start a shared map** and sends the invite link; everyone else opens it. Two buttons then appear
+above the location button:
+
+- **⤒ Post map** sends this phone's answers to everyone. A dot on it means this phone has answers it
+  has not posted yet.
+- **⤓ Get latest map** replaces this phone's answers with the newest posted map. A dot on it means
+  someone has posted something newer.
+
+Nothing changes on anyone's phone by itself, so an answer logged by mistake goes nowhere until it is
+posted. Posting over a newer map you have not loaded, or loading over answers you have not posted,
+asks first. Each phone still previews questions on its own; only logged answers and the play area are
+shared, while units, basemap, shading strength and your location dot stay personal.
+
+The relay is [ntfy.sh](https://ntfy.sh), a free public service (no account or key). It keeps a post
+for 12 hours, and the weekly health check confirms it is still up. Answers travel as small recipes
+(what was asked and where) that each phone rebuilds from its own data files, so a whole game is
+usually 1–3 KB. Phones should run the same version of the site for identical maps; if they don't,
+loading a map says so. **Copy game link** still works as a fallback.
+
 ### Game-specific rules built into the map
 
 - **Play area:** the exact union of Zone 2's four areas — Midtbyen, Nørresundby, Vest Aalborg and
@@ -124,6 +146,7 @@ npm test
 | `tests/data.test.mjs` | A generated bundle that is malformed, empty, outside the play area or missing a category, and `index.html` referencing a missing or unversioned file. |
 | `tests/ui.test.mjs` | Detailed app behaviour: parsing, labels, POI rules, previews, URL state. |
 | `tests/features.test.mjs` | Any layer toggle, Game-tab control or question card that stops working. It opens **every** card in the deck, answers it and logs it, and fails if a new card is added without a test. |
+| `tests/share.test.mjs` | The shared map: two simulated phones on a fake relay post, get the latest, get warned before overwriting, and end up with identical maps. |
 
 The UI suites boot the real `index.html` and scripts in jsdom via `tests/harness.mjs`.
 

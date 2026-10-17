@@ -30,6 +30,7 @@ DATA_SOURCES = {
 }
 # Services the browser calls while playing.
 LIVE_SERVICES = {
+    'ntfy.sh relay (shared maps)': 'https://ntfy.sh/v1/health',
     'KortInfo zone WFS (live zone fallback)':
         'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside&service=WFS&request=GetCapabilities',
 }
