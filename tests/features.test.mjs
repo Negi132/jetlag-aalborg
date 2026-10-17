@@ -201,19 +201,17 @@ await wait();
 check('a 2-mile circle has the right area', Math.abs(remainingKm2() - Math.PI * (2 * MI / 1000) ** 2) / remainingKm2() < 0.01,
       `${remainingKm2().toFixed(2)} km²`);
 {
-  const kommune = { type: 'Feature', properties: { navn: 'Aalborg' },
-    geometry: { type: 'Polygon', coordinates: [[[9.6, 56.85], [10.4, 56.85], [10.4, 57.25], [9.6, 57.25], [9.6, 56.85]]] } };
+  // The outline is bundled (kommune-outline.js); the old Dataforsyningen API is retired.
   const realFetch = window.fetch;
   const requested = [];
-  window.fetch = async (url) => {
-    requested.push(String(url));
-    return { ok: true, status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(kommune) };
-  };
+  window.fetch = async (url) => { requested.push(String(url)); throw new Error('offline'); };
   click(doc.querySelector('#playSeg [data-area="kommune"]'));
-  await wait(80);
+  await wait(40);
   window.fetch = realFetch;
-  check('municipality mode loads Aalborg Kommune from Dataforsyningen',
-        ev('HS.S.playAreaMeta.mode') === 'kommune' && requested.some((u) => /dataforsyningen\.dk\/kommuner\/0851/.test(u)), requested.join(' '));
+  check('municipality mode uses the bundled Aalborg Kommune outline, offline',
+        ev('HS.S.playAreaMeta.mode') === 'kommune' && requested.length === 0 && remainingKm2() > 1000 && remainingKm2() < 1300,
+        `${remainingKm2().toFixed(0)} km², ${requested.length} requests`);
+  check('the municipality includes Nibe and Hals', ev(`[[9.64, 56.982], [10.307, 56.9965]].every((c) => turf.booleanPointInPolygon(c, HS.S.playArea))`));
 }
 click(doc.querySelector('#playSeg [data-area="zones"]'));
 await wait(60);

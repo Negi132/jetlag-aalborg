@@ -121,3 +121,12 @@ def rounded_line_coords(line, ndigits: int = 6):
         if not clean or p != clean[-1]:
             clean.append(p)
     return clean if len(clean) >= 2 else []
+
+
+def round_coords_deep(geometry, ndigits: int = 6):
+    """A GeoJSON geometry with every coordinate rounded and tuples turned into lists."""
+    def walk(c):
+        if isinstance(c, (list, tuple)) and c and isinstance(c[0], (int, float)):
+            return [round(float(v), ndigits) for v in c]
+        return [walk(x) for x in c]
+    return dict(geometry, coordinates=walk(geometry['coordinates']))

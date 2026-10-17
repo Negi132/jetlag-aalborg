@@ -66,6 +66,7 @@ whatever survives stays bright.
 | `hydro-data.js` | Generalized Limfjord banks and bodies of water, from OpenStreetMap. |
 | `zone-data.js` | Snapshot of Aalborg Kommune's four KortInfo zone layers, clipped to the play area (about 1.3 MB gzipped). |
 | `zone2-fallback.js` | Simplified official outlines of the four Zone 2 areas, used only if `zone-data.js` and KortInfo are both unavailable. |
+| `kommune-outline.js` | Aalborg Kommune's boundary (OpenStreetMap) for the "whole municipality" play area. Built by hand with `scripts/make_kommune_outline.py`; borders rarely change. |
 | `scripts/` | Python generators for the data files above (shared helpers in `common.py`), plus `play_area.geojson` (official Zone 2, written by `update_zones.py`) and filter lists. |
 | `tests/` | Headless test suite (jsdom). |
 | `*_AUDIT.md` | What the latest data refresh produced. |
@@ -86,6 +87,14 @@ the device for 45 days), POIs, stops and train lines (Overpass) if a bundle is m
 The generators refuse to overwrite good data when a source looks incomplete (route or stop counts
 collapsing, implausible zone bounds), and the test suite must pass before anything is committed or
 deployed. Only `index.html`, `styles.css` and the `.js` files are published.
+
+**Weekly monitoring.** After every scheduled or manual run, `scripts/health_check.py` confirms the data
+is fresh, the GTFS timetable is not about to expire, and every outside service still answers properly:
+the data sources, the CDN libraries, KortInfo, and each basemap. A basemap must serve real, varying
+tiles, so a provider that starts demanding an API key (as CARTO did) is caught. If anything fails, or the
+refresh, deploy or zone snapshot fails, the run turns red and an issue labelled `map-data-health` is
+opened (or updated) with the details. The next clean run closes it. The run also re-enables its own
+schedule, because GitHub switches off scheduled workflows in repositories that are inactive for 60 days.
 
 **One-time GitHub setup** (already done for this repo): Settings → Actions → General → Workflow
 permissions → *Read and write*; Settings → Pages → Source → *GitHub Actions*.

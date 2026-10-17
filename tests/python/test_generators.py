@@ -21,6 +21,7 @@ import update_hydro as hydro  # noqa: E402
 import update_pois as pois  # noqa: E402
 import update_transit as transit  # noqa: E402
 import update_zones as zones  # noqa: E402
+import health_check  # noqa: E402
 
 # How each generator normalised names before the helpers were shared. The
 # expected values were recorded from the original per-script functions.
@@ -245,11 +246,39 @@ class PoiTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             pois.validate_bundle(broken, self.bundle)
 
+    def test_every_authoritative_fallback_has_fixed_coordinates(self):
+        # No geocoding service is used, so a place without coordinates would vanish.
+        for place in pois.AALBORG_LIBRARY_LOCATIONS + pois.AALBORG_HOSPITAL_FALLBACK:
+            with self.subTest(place=place['name']):
+                lng, lat = place['coordinates']
+                self.assertTrue(9.4 < lng < 10.5 and 56.8 < lat < 57.3)
+
     def test_park_rules(self):
         self.assertTrue(pois.park_name_allowed('Kildeparken'))
         self.assertTrue(pois.park_name_allowed('Østerådalen Nord'))
         self.assertTrue(pois.park_name_allowed('Golfparken'))
         self.assertFalse(pois.park_name_allowed('Some private garden'))
+
+
+class HealthCheckTest(unittest.TestCase):
+    def test_tile_numbers_for_aalborg(self):
+        self.assertEqual(health_check.tile_xy(57.0488, 9.9217, 12), (2160, 1253))
+
+    def test_committed_data_passes_the_freshness_rules(self):
+        report = health_check.Report()
+        health_check.check_freshness(report, max_age_days=3650)
+        self.assertEqual(report.problems, [], report.markdown())
+
+    def test_stale_data_is_reported(self):
+        report = health_check.Report()
+        health_check.check_freshness(report, max_age_days=-1)   # everything counts as too old
+        self.assertGreaterEqual(len(report.problems), 4)
+
+    def test_a_crashing_check_is_reported_not_raised(self):
+        report = health_check.Report()
+        report.attempt('boom', lambda: 1 / 0)
+        self.assertEqual(len(report.problems), 1)
+        self.assertIn('ZeroDivisionError', report.markdown())
 
 
 if __name__ == '__main__':

@@ -14,8 +14,7 @@ const CONFIG = {
   zoom: 12,
   playRadiusMi: 6,
   kommunekode: '851',       // Aalborg
-  komnr: 851,
-  dawa: 'https://api.dataforsyningen.dk'
+  komnr: 851
 };
 
 /* Radar values from the US deck, plus the short ones a city game needs.
@@ -1390,58 +1389,10 @@ function filterMatchingPoisToPlayArea(gj, mode = null) {
   return { type: 'FeatureCollection', features };
 }
 
-const poiFallbackGeocodeCache = new Map();
-
-async function geocodePoiFallback(fallback) {
-  if (!fallback) return null;
-  if (Array.isArray(fallback.coordinates) && fallback.coordinates.length >= 2) return fallback;
-  if (!fallback.address) return null;
-
-  const cacheKey = String(fallback.address).trim().toLowerCase();
-  if (poiFallbackGeocodeCache.has(cacheKey)) {
-    const cached = poiFallbackGeocodeCache.get(cacheKey);
-    return cached ? { ...fallback, coordinates: cached.slice() } : null;
-  }
-
-  try {
-    const url = `${CONFIG.dawa}/adresser?q=${encodeURIComponent(fallback.address)}&struktur=mini&per_side=1`;
-    const res = await fetchWithDeadline(url, {}, 8000);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const rows = await res.json();
-    const hit = Array.isArray(rows) && rows[0];
-    const x = Number(hit && (hit.x ?? (hit.adgangsadresse && hit.adgangsadresse.adgangspunkt && hit.adgangsadresse.adgangspunkt.koordinater && hit.adgangsadresse.adgangspunkt.koordinater[0])));
-    const y = Number(hit && (hit.y ?? (hit.adgangsadresse && hit.adgangsadresse.adgangspunkt && hit.adgangsadresse.adgangspunkt.koordinater && hit.adgangsadresse.adgangspunkt.koordinater[1])));
-    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('no coordinates');
-    const coord = [x, y];
-    poiFallbackGeocodeCache.set(cacheKey, coord);
-    return { ...fallback, coordinates: coord };
-  } catch (_) {
-    poiFallbackGeocodeCache.set(cacheKey, null);
-    return null;
-  }
-}
-
-async function resolveMatchingPoiFallbacks(mode, existingGeoJson) {
-  const existing = (existingGeoJson && existingGeoJson.features) || [];
-  const fallback = (mode && mode.fallback) || [];
-  const resolved = [];
-
-  // Hard-coded coordinates are authoritative and cheap, so always retain them.
-  for (const f of fallback) {
-    if (Array.isArray(f.coordinates) && f.coordinates.length >= 2) resolved.push(f);
-  }
-
-  // Address-only fallbacks are needed only when that official place is absent
-  // from OSM. Resolve those in parallel so a complete library outage does not
-  // serially trigger five slow address lookups.
-  const missing = fallback.filter((f) => {
-    if (Array.isArray(f.coordinates) && f.coordinates.length >= 2) return false;
-    const wanted = normalisePoiName(f.name);
-    return !existing.some((ft) => normalisePoiName((ft.properties || {}).name || (ft.properties || {}).__displayName) === wanted);
-  });
-  const geocoded = await Promise.all(missing.map(geocodePoiFallback));
-  for (const f of geocoded) if (f) resolved.push(f);
-  return resolved;
+/* Authoritative fallback places (libraries, hospitals, the airport…) all carry
+   fixed coordinates, so they are always available without any lookup. */
+async function resolveMatchingPoiFallbacks(mode) {
+  return ((mode && mode.fallback) || []).filter((f) => Array.isArray(f.coordinates) && f.coordinates.length >= 2);
 }
 
 function appendFallbackPois(gj, mode, resolvedFallback = null) {
@@ -1643,7 +1594,7 @@ async function ensureMatchingPoiSource(mode, session = questionPoi.session) {
           if (!(mode.fallback && mode.fallback.length)) throw err;
           gj = { type: 'FeatureCollection', features: [] };
         }
-        const resolvedFallback = await resolveMatchingPoiFallbacks(mode, gj);
+        const resolvedFallback = await resolveMatchingPoiFallbacks(mode);
         gj = appendFallbackPois(gj, mode, resolvedFallback);
       }
       gj = collapseNearbyPoiSites(gj, mode);
@@ -5922,18 +5873,17 @@ async function setPlayMode(mode) {
     setCircularPlayArea(map.getCenter(), bigToM(n) / 1000);
     return;
   }
-  markPlayMode('kommune');
-  try {
-    const gj = await fetchGeoJson(`${CONFIG.dawa}/kommuner/0${CONFIG.kommunekode}?format=geojson`);
-    normaliseCoords(gj);
-    const ft = gj.type === 'FeatureCollection' ? gj.features[0] : gj;
-    setCustomPlayArea(ft, 'Aalborg Kommune');
-    S.playAreaMeta.mode = 'kommune';
-    toast('Play area: Aalborg Kommune.');
-  } catch (err) {
-    toast('Could not fetch the municipality outline: ' + err.message, true);
+  // Bundled in kommune-outline.js (OpenStreetMap), so this needs no network.
+  const outline = window.AALBORG_KOMMUNE_OUTLINE;
+  if (!outline) {
+    toast('The municipality outline is missing (kommune-outline.js).', true);
     markPlayMode(S.playAreaMeta && S.playAreaMeta.type === 'zones' ? 'zones' : 'circle');
+    return;
   }
+  markPlayMode('kommune');
+  setCustomPlayArea(turf.clone(outline), 'Aalborg Kommune');
+  S.playAreaMeta.mode = 'kommune';
+  toast('Play area: Aalborg Kommune.');
 }
 
 $('#playSeg').addEventListener('click', (e) => {

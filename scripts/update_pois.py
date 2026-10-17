@@ -17,8 +17,6 @@ import json
 import math
 import re
 import sys
-import urllib.parse
-import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -241,29 +239,6 @@ def append_fallbacks(features, category, fallbacks):
     return out
 
 
-def geocode_address(address: str):
-    query = urllib.parse.urlencode({'q': address, 'struktur': 'mini', 'per_side': 1})
-    url = 'https://api.dataforsyningen.dk/adresser?' + query
-    req = urllib.request.Request(url, headers={'User-Agent': 'aalborg-hide-seek-poi-updater/1.0'})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as res:
-            rows = json.load(res)
-        if not rows:
-            return None
-        hit = rows[0]
-        x, y = hit.get('x'), hit.get('y')
-        if x is None or y is None:
-            ap = ((hit.get('adgangsadresse') or {}).get('adgangspunkt') or {}).get('koordinater')
-            if ap and len(ap) >= 2:
-                x, y = ap[:2]
-        if x is None or y is None:
-            return None
-        return [float(x), float(y)]
-    except Exception as exc:
-        print(f'warning: geocoding failed for {address!r}: {exc}', file=sys.stderr)
-        return None
-
-
 def parse_existing_bundle(path: Path):
     if not path.exists():
         return None
@@ -355,7 +330,7 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
         wanted = norm_name(h['name'])
         if wanted in existing_hospital_names:
             continue
-        coord = h.get('coordinates') or geocode_address(h['address'])
+        coord = h.get('coordinates')
         if coord:
             hospital_fallbacks.append({**h, 'coordinates': coord, 'authoritative': True})
         else:

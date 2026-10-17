@@ -11,7 +11,7 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 const sandbox = { window: {} };
 vm.createContext(sandbox);
-for (const file of ['zone2-fallback.js', 'bus-routes.js', 'transit-data.js', 'poi-data.js', 'hydro-data.js', 'zone-data.js']) {
+for (const file of ['zone2-fallback.js', 'kommune-outline.js', 'bus-routes.js', 'transit-data.js', 'poi-data.js', 'hydro-data.js', 'zone-data.js']) {
   vm.runInContext(read(file), sandbox, { filename: file });
 }
 const W = sandbox.window;
@@ -67,6 +67,17 @@ console.log('\n== zone2-fallback.js ==');
   check('fallback covers the same ground as the play area (±2%)',
         Math.abs(km2(union) - km2(play)) / km2(play) < 0.02, `${km2(union).toFixed(1)} vs ${km2(play).toFixed(1)} km²`);
   check('fallback polygons are valid', fb.features.every((f) => turf.booleanValid(f)));
+}
+
+console.log('\n== kommune-outline.js ==');
+{
+  const k = W.AALBORG_KOMMUNE_OUTLINE;
+  check('municipality outline is a valid polygon', k && /Polygon$/.test(k.geometry.type) && turf.booleanValid(k));
+  check('municipality outline is about 1,130 km²', km2(k) > 1050 && km2(k) < 1250, `${km2(k).toFixed(0)} km²`);
+  // OSM's municipal boundary follows the coast, so only the Limfjord water of
+  // the play area (~13 km²) may lie outside it.
+  const inside = km2(turf.intersect(turf.featureCollection([play, k])));
+  check('municipality outline covers the play area apart from the fjord', inside > km2(play) * 0.85, `${inside.toFixed(1)} of ${km2(play).toFixed(1)} km²`);
 }
 
 console.log('\n== bus-routes.js ==');
