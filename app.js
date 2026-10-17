@@ -2792,11 +2792,11 @@ function renderPreviewShapes() {
     L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
     if (draft.borderBandGeometry && !draft.answer) {
       const bandFt = turf.feature(draft.borderBandGeometry);
-      // Water bands are often thin rings around small ponds, so shade them a little more.
-      const hydroKind = (measuringHydroMode() || {}).kind;
+      // Water and coastline bands are shaded more strongly than zone-border bands.
+      const hydroBand = !!measuringHydroMode();
       L.geoJSON(bandFt, { pane: 'previewPane', interactive: false,
         style: { color: P, weight: 2.2, opacity: .95, dashArray: '6 4',
-                 fillColor: P, fillOpacity: hydroKind === 'water' ? .19 : .105 } }).addTo(previewShapeLayer);
+                 fillColor: P, fillOpacity: hydroBand ? .4 : .105 } }).addTo(previewShapeLayer);
       const before = solveCurrentArea().possible;
       const closer = before ? gIntersect(before, bandFt) : null;
       if (before) questionPreview.metrics = {
@@ -3957,7 +3957,9 @@ function prepareSourceLabels(gj, sourceKey, configuredField) {
 /* ---------- layers ---------------------------------------------------- */
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
-const ZONE3_COLOR = '#7cf58a';   // neon green, whatever else is switched on
+// Neon yellow: no Zone 2 area (orange, blue, green, purple) is close to it,
+// and it is clearer than the amber used for logged answers.
+const ZONE3_COLOR = '#ffe600';
 
 /* ---------- Zone 2 play areas ---------------------------------------- */
 
