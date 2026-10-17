@@ -87,6 +87,7 @@ const borderWeight = (key) => ev(`(() => { let w = null;
   HS.layerByKey('src:${key}').layer.eachLayer((l) => { if (w === null) w = l.options.weight; }); return w; })()`);
 check('Zone 3 borders are as thick as the bus route lines', borderWeight('zone3') === ev("HS.routeStyle('1').weight"),
       `${borderWeight('zone3')} vs ${ev("HS.routeStyle('1').weight")}`);
+check('Zone 3 borders are always neon green', ev("HS.layerByKey('src:zone3').color") === '#7cf58a');
 check('the other zone levels keep thin borders', ['zone1', 'zone2', 'zone4'].every((k) => borderWeight(k) < 2));
 check('zone layers never stack copies', ev("HS.S.layers.filter((l) => /^src:zone/.test(l.key)).length") === 4);
 

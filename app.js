@@ -2796,7 +2796,7 @@ function renderPreviewShapes() {
       const hydroKind = (measuringHydroMode() || {}).kind;
       L.geoJSON(bandFt, { pane: 'previewPane', interactive: false,
         style: { color: P, weight: 2.2, opacity: .95, dashArray: '6 4',
-                 fillColor: P, fillOpacity: hydroKind === 'water' ? .15 : .105 } }).addTo(previewShapeLayer);
+                 fillColor: P, fillOpacity: hydroKind === 'water' ? .19 : .105 } }).addTo(previewShapeLayer);
       const before = solveCurrentArea().possible;
       const closer = before ? gIntersect(before, bandFt) : null;
       if (before) questionPreview.metrics = {
@@ -3957,6 +3957,7 @@ function prepareSourceLabels(gj, sourceKey, configuredField) {
 /* ---------- layers ---------------------------------------------------- */
 
 const LAYER_COLORS = ['#7c9cf5', '#f57cae', '#7cf5d0', '#f5d17c', '#b97cf5', '#7cf58a'];
+const ZONE3_COLOR = '#7cf58a';   // neon green, whatever else is switched on
 
 /* ---------- Zone 2 play areas ---------------------------------------- */
 
@@ -4219,7 +4220,7 @@ function addLayer(name, geojson, opts = {}) {
 
   if (opts.key) removeLayerByKey(opts.key);
 
-  const color = LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
+  const color = opts.sourceKey === 'zone3' ? ZONE3_COLOR : LAYER_COLORS[S.layers.length % LAYER_COLORS.length];
   // Zone 1 and Zone 4 are classifications, not complete polygon blankets.
   // Give the unclassified remainder of the play area a real feature so it is
   // coloured, named and selectable just like an official polygon.
