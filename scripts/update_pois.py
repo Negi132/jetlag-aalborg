@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a static Aalborg Matching-POI bundle from an Osmium GeoJSON export.
+"""Build a city's static Matching-POI bundle from an Osmium GeoJSON export.
 
 The scheduled GitHub Action downloads Geofabrik's Denmark OSM PBF, uses
 `osmium tags-filter` to keep only POI-relevant objects, exports that small
@@ -24,76 +24,37 @@ from pathlib import Path
 from shapely.geometry import Point, shape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
-from common import PLAY_AREA, haversine_m, load_play_area, normalise_name
+from common import DEFAULT_CITY, add_city_argument, haversine_m, load_city, load_play_area, normalise_name
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLAY_AREA = PLAY_AREA
-DEFAULT_OUTPUT = ROOT / "poi-data.js"
-DEFAULT_AUDIT = ROOT / "POI_AUDIT.md"
-
+GLOBAL_NAME = 'HS_POI_DATA'
 PARK_AUTO_MIN_AREA_M2 = 2500
 
-OFFICIAL_AALBORG_PARKS = [
-    'Budolfihaven', 'Bundgårdsparken', 'Den Gamle Golfbane', 'Jomfru Ane Parken',
-    'Karolinelund', 'Kildeparken', 'Lindholm Fjordpark', 'Lindholm Strandpark',
-    'Mulighedernes Park', 'Mølleparken', 'Nordens Kridtgrav', 'Skanseparken',
-    'Sofiendal Enge klimapark', 'Sohngårdsholmparken', 'Stigsparken',
-    'Svanemølleparken i Svenstrup', 'Urtehaven i Nørresundby',
-    'Vestre Fjordpark', 'Østre Anlæg'
-]
-AALBORG_PARK_ADJACENT_EXACT = [
-    'Østerådalen', 'Østerådalen Nord', 'Østerådalen Syd', 'Golfparken', 'Vandbakken'
-]
-AALBORG_PARK_ADJACENT_FALLBACK = [
-    {'name': 'Østerådalen Nord', 'coordinates': [9.91342, 57.02087]},
-    {'name': 'Østerådalen Syd', 'coordinates': [9.8890, 56.9915]},
-    {'name': 'Golfparken', 'coordinates': [9.95498, 57.02563]},
-    {'name': 'Vandbakken', 'coordinates': [9.93371, 57.03202]},
-]
 
-AALBORG_LIBRARY_LOCATIONS = [
-    {'name': 'Hovedbiblioteket i Aalborg', 'address': 'Rendsburggade 2, 9000 Aalborg', 'coordinates': [9.9275896, 57.0472572]},
-    {'name': 'Haraldslund', 'address': 'Kastetvej 83, 9000 Aalborg', 'coordinates': [9.89904347, 57.05420492], 'servicePoint': True},
-    {'name': 'Hasseris Bibliotek', 'address': 'Thulebakken 46, 9000 Aalborg', 'coordinates': [9.88452416, 57.03559821]},
-    {'name': 'Nørresundby Bibliotek', 'address': 'Torvet 5, 9400 Nørresundby', 'coordinates': [9.9231595, 57.05896286]},
-    {'name': 'Trekanten - Bibliotek og Kulturhus', 'address': 'Sebbersundvej 2A, 9220 Aalborg Øst', 'coordinates': [10.0008729, 57.0276469]},
-    {'name': 'Vejgaard Bibliotek', 'address': 'Hadsundvej 35, 9000 Aalborg', 'coordinates': [9.95176, 57.04130]},
-    {'name': 'Svenstrup Bibliotek', 'address': 'Godthåbsvej 14B, 9230 Svenstrup J', 'coordinates': [9.8518, 56.9749]},
-    {'name': 'Vodskov Bibliotek', 'address': 'Brorsonsvej 3B, 9310 Vodskov', 'coordinates': [10.0245, 57.1088]},
-    {'name': 'Storvorde Bibliotek', 'address': 'Stationsvej 5, 9280 Storvorde', 'coordinates': [10.1017, 57.0058]},
-    {'name': 'Nibe Bibliotek', 'address': 'St Algade 4, 9240 Nibe', 'coordinates': [9.6398, 56.9820]},
-    {'name': 'Hals Bibliotek', 'address': 'Østergade 2A, 9370 Hals', 'coordinates': [10.3070, 56.9965]},
-]
+def use_city(city_id: str = DEFAULT_CITY):
+    """Point the generator at a city: its curated places, official names and minimum counts.
 
-AALBORG_HOSPITAL_FALLBACK = [
+    Categories marked authoritativeOnly use exactly the city's own list (OSM is
+    not consulted); the others combine OSM with any curated places.
+    """
+    global CITY, POIS, OFFICIAL_PARKS, PARK_ADJACENT_EXACT, PARK_FALLBACK, HOSPITAL_FALLBACK
+    global AUTHORITATIVE_ONLY, MIN_COUNTS, MIN_TOTAL, POI_BOUNDS
+    CITY = load_city(city_id)
+    POIS = CITY.config['pois']
+    cats = POIS['categories']
+    park = cats.get('park', {})
+    OFFICIAL_PARKS = park.get('officialNames', [])
+    PARK_ADJACENT_EXACT = park.get('officialExactNames', [])
+    PARK_FALLBACK = [dict(p) for p in park.get('places', [])]
     # Stable coordinates are stored with the authoritative site list so the
     # unattended updater never depends on a third-party geocoder being online.
-    # [longitude, latitude]
-    {'name': 'Aalborg Universitetshospital, Hospitalsbyen', 'address': 'Hospitalsbyen 1, 9260 Gistrup', 'coordinates': [9.99941003, 57.00966924]},
-    {'name': 'Aalborg Universitetshospital, Syd', 'address': 'Hobrovej 18-22, 9000 Aalborg', 'coordinates': [9.9082114, 57.0382516]},
-    {'name': 'Aalborg Universitetshospital, Nord', 'address': 'Reberbansgade 15, 9000 Aalborg', 'coordinates': [9.912635, 57.048857]},
-    {'name': 'Aalborg Universitetshospital, Mølleparkvej', 'address': 'Mølleparkvej 10, 9000 Aalborg', 'coordinates': [9.90532768, 57.03853921]},
-    {'name': 'Aalborg Universitetshospital, Brandevej', 'address': 'Brandevej 5, 9220 Aalborg Ø', 'coordinates': [9.97885646, 57.02588105]},
-]
+    HOSPITAL_FALLBACK = [dict(p) for p in cats.get('hospital', {}).get('places', [])]
+    AUTHORITATIVE_ONLY = {key: [{**p, 'authoritative': True} for p in c.get('places', [])]
+                          for key, c in cats.items() if c.get('authoritativeOnly')}
+    MIN_COUNTS = {key: cats.get(key, {}).get('minCount', 0) for key in CATEGORY_ORDER}
+    MIN_TOTAL = POIS['minTotal']
+    POI_BOUNDS = CITY.bounds('pois')
+    return CITY
 
-AUTHORITATIVE_ONLY = {
-    'airport': [
-        {'name': 'Aalborg Airport terminal (AAL)', 'coordinates': [9.87222767, 57.08619727], 'authoritative': True},
-    ],
-    'zoo': [
-        {'name': 'Aalborg Zoo', 'coordinates': [9.89970, 57.03804], 'authoritative': True},
-    ],
-    'golf': [
-        {'name': 'Aalborg Golf Klub', 'coordinates': [9.782950, 57.026760], 'authoritative': True},
-        {'name': 'Ørnehøj Golfklub', 'coordinates': [9.968050, 56.987570], 'authoritative': True},
-    ],
-    'cinema': [
-        {'name': 'Nordisk Film Biografer Aalborg Kennedy', 'coordinates': [9.9189535, 57.0419503], 'authoritative': True},
-        {'name': 'Biffen', 'coordinates': [9.9329399, 57.0463840], 'authoritative': True},
-        {'name': 'Nordisk Film Biografer Aalborg City Syd', 'coordinates': [9.8714578, 57.0027432], 'authoritative': True},
-    ],
-    'library': [{**x, 'authoritative': True} for x in AALBORG_LIBRARY_LOCATIONS],
-}
 
 CATEGORY_ORDER = [
     'airport', 'park', 'amusement', 'zoo', 'aquarium', 'golf',
@@ -105,13 +66,8 @@ CATEGORY_LABELS = {
     'cinema': 'Movie theater', 'hospital': 'Hospital', 'library': 'Library',
     'consulate': 'Foreign consulate'
 }
-# First-generation floor checks. Categories which can legitimately be empty have zero minima.
-MIN_COUNTS = {
-    'airport': 1, 'park': 10, 'amusement': 0, 'zoo': 1, 'aquarium': 0,
-    'golf': 0, 'museum': 3, 'cinema': 3, 'hospital': 2, 'library': 4,
-    'consulate': 0,
-}
-MIN_TOTAL = 25
+
+use_city()
 
 
 def norm_name(value: str) -> str:
@@ -129,10 +85,10 @@ def approx_area_m2(geom):
 
 def park_name_allowed(name: str) -> bool:
     n = norm_name(name)
-    exacts = {norm_name(x) for x in AALBORG_PARK_ADJACENT_EXACT}
+    exacts = {norm_name(x) for x in PARK_ADJACENT_EXACT}
     if n in exacts:
         return True
-    for official in OFFICIAL_AALBORG_PARKS:
+    for official in OFFICIAL_PARKS:
         o = norm_name(official)
         if n == o or n in o or o in n:
             return True
@@ -243,7 +199,7 @@ def parse_existing_bundle(path: Path):
     if not path.exists():
         return None
     text = path.read_text(encoding='utf-8')
-    m = re.search(r'window\.AALBORG_POI_DATA\s*=\s*(\{.*\});\s*$', text, re.S)
+    m = re.search(r'window\.' + GLOBAL_NAME + r'\s*=\s*(\{.*\});\s*$', text, re.S)
     if not m:
         return None
     try:
@@ -273,8 +229,8 @@ def collapse_hospitals(features):
     return kept
 
 
-def build_bundle(source_geojson: Path, play_area_path: Path):
-    play = load_play_area(play_area_path)
+def build_bundle(source_geojson: Path, play_area_path: Path | None = None):
+    play = load_play_area(play_area_path, city=CITY)
     source = json.loads(source_geojson.read_text(encoding='utf-8'))
     features = source.get('features', []) if source.get('type') == 'FeatureCollection' else []
 
@@ -316,9 +272,9 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
         by_category[category] = append_fallbacks([], category, fallbacks)
 
     # Parks retain the curated public recreation fallbacks used by the live app.
-    by_category['park'] = append_fallbacks(dedupe_features(by_category['park']), 'park', AALBORG_PARK_ADJACENT_FALLBACK)
+    by_category['park'] = append_fallbacks(dedupe_features(by_category['park']), 'park', PARK_FALLBACK)
 
-    # Hospitals combine OSM with Region Nordjylland's current named-site fallbacks.
+    # Hospitals combine OSM with the city's named sites (Aalborg: Region Nordjylland's).
     # The known sites carry stable coordinates, so a geocoder outage can never
     # make the weekly build fail. Geocoding remains a best-effort compatibility
     # fallback only if a future entry is added without coordinates.
@@ -326,7 +282,7 @@ def build_bundle(source_geojson: Path, play_area_path: Path):
     hospital_fallbacks = []
     unresolved_hospitals = []
     existing_hospital_names = {ft['properties'].get('__norm') for ft in by_category['hospital']}
-    for h in AALBORG_HOSPITAL_FALLBACK:
+    for h in HOSPITAL_FALLBACK:
         wanted = norm_name(h['name'])
         if wanted in existing_hospital_names:
             continue
@@ -396,7 +352,7 @@ def validate_bundle(bundle, existing=None):
     for k in CATEGORY_ORDER:
         for ft in bundle['categories'][k]['features']:
             c = (ft.get('geometry') or {}).get('coordinates') or []
-            if len(c) < 2 or not (8.5 <= c[0] <= 10.6 and 56.7 <= c[1] <= 57.4):
+            if len(c) < 2 or not (POI_BOUNDS[0] <= c[0] <= POI_BOUNDS[2] and POI_BOUNDS[1] <= c[1] <= POI_BOUNDS[3]):
                 errors.append(f'{k}: invalid/out-of-region coordinate {c}')
                 break
     if errors:
@@ -413,12 +369,12 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
             bundle['generatedAt'] = existing.get('generatedAt', bundle['generatedAt'])
 
     text = '/* Auto-generated by scripts/update_pois.py. Do not edit by hand. */\n' \
-           'window.AALBORG_POI_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
+           f'window.{GLOBAL_NAME} = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
     output.write_text(text, encoding='utf-8')
 
     counts = {k: len(bundle['categories'][k]['features']) for k in CATEGORY_ORDER}
     lines = [
-        '# Aalborg POI bundle audit', '',
+        f'# {CITY.name} POI bundle audit', '',
         f'- Generated: `{bundle["generatedAt"]}`',
         '- Source: OpenStreetMap Denmark extract from Geofabrik + the project\'s authoritative local fallbacks',
         '- License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0',
@@ -437,10 +393,14 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('source_geojson', type=Path, help='GeoJSON from `osmium export` after POI tag filtering')
-    ap.add_argument('--play-area', type=Path, default=DEFAULT_PLAY_AREA)
-    ap.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
-    ap.add_argument('--audit', type=Path, default=DEFAULT_AUDIT)
+    add_city_argument(ap)
+    ap.add_argument('--play-area', type=Path, help="default: the city's play_area.geojson")
+    ap.add_argument('--output', type=Path, help="default: the city's poi-data.js")
+    ap.add_argument('--audit', type=Path, help="default: the city's POI_AUDIT.md")
     args = ap.parse_args()
+    city = use_city(args.city)
+    args.output = args.output or city.path('poi-data.js')
+    args.audit = args.audit or city.path('POI_AUDIT.md')
 
     existing = parse_existing_bundle(args.output)
     bundle = build_bundle(args.source_geojson, args.play_area)

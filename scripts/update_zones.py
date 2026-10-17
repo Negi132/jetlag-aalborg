@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Snapshot Aalborg's four official KortInfo game-zone WFS layers.
+"""Snapshot a city's four official game-zone WFS layers (Aalborg: KortInfo).
 
 The browser prefers the generated local bundle for instant play. The live WFS
 remains an emergency fallback. Zone 2 defines the exact game area. For display,
@@ -25,27 +25,29 @@ from shapely.ops import unary_union
 from pyproj import Transformer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
-from common import PLAY_AREA, load_play_area, normalise_name
+from common import DEFAULT_CITY, add_city_argument, load_city, load_play_area, normalise_name
 
-ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / 'zone-data.js'
-AUDIT = ROOT / 'ZONE_AUDIT.md'
-PLAY_OUTPUT = PLAY_AREA
-ENDPOINT = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside'
-LAYERS = {
-    'zone1': 'ugis:TL1433667',
-    'zone2': 'ugis:TL445984',
-    'zone3': 'ugis:TL445987',
-    'zone4': 'ugis:TL445981',
-}
-MIN_COUNTS = {'zone1': 1, 'zone2': 4, 'zone3': 5, 'zone4': 5}
+GLOBAL_NAME = 'HS_ZONE_DATA'
 
-ZONE2_ALIASES = [
-    (1, 'Midtbyen', ('midtbyen',)),
-    (2, 'Nørresundby', ('norresundby',)),
-    (3, 'Vest Aalborg', ('vest aalborg', 'aalborg vest')),
-    (4, 'Øst Aalborg', ('ost aalborg', 'aalborg ost')),
-]
+
+def use_city(city_id: str = DEFAULT_CITY):
+    """Point the generator at a city: its zone service, layers, play areas and files."""
+    global CITY, OUTPUT, AUDIT, PLAY_OUTPUT, SERVICE, ENDPOINT, LAYERS, MIN_COUNTS, ZONE2_ALIASES, PLAY_AREA_KM2
+    CITY = load_city(city_id)
+    zones = CITY.config['zones']
+    OUTPUT = CITY.path('zone-data.js')
+    AUDIT = CITY.path('ZONE_AUDIT.md')
+    PLAY_OUTPUT = CITY.play_area
+    SERVICE = zones['service']
+    ENDPOINT = zones['serviceUrl']
+    LAYERS = {key: src['typeName'] for key, src in zones['sources'].items()}
+    MIN_COUNTS = dict(zones['minCounts'])
+    ZONE2_ALIASES = [(a['area'], a['name'], tuple(a['aliases'])) for a in zones['areas']]
+    PLAY_AREA_KM2 = tuple(zones['playAreaKm2'])
+    return CITY
+
+
+use_city()
 
 
 def norm_text(value):
@@ -128,11 +130,11 @@ def parse_gml(raw: bytes):
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
         preview = raw[:160].decode('utf-8', errors='replace').replace('\n', ' ')
-        raise RuntimeError(f'KortInfo reply was neither GeoJSON nor parseable GML: {preview!r}') from exc
+        raise RuntimeError(f'{SERVICE} reply was neither GeoJSON nor parseable GML: {preview!r}') from exc
 
     for el in root.iter():
         if local_name(el.tag) == 'ServiceException':
-            raise RuntimeError((''.join(el.itertext()).strip() or 'KortInfo service exception')[:240])
+            raise RuntimeError((''.join(el.itertext()).strip() or f'{SERVICE} service exception')[:240])
 
     members = [el for el in root.iter() if local_name(el.tag) in ('featureMember', 'member')]
     hosts = members or [root]
@@ -173,7 +175,7 @@ def parse_gml(raw: bytes):
                 })
 
     if not features:
-        raise RuntimeError('KortInfo returned GML but no usable feature geometry was found')
+        raise RuntimeError(f'{SERVICE} returned GML but no usable feature geometry was found')
     return {'type': 'FeatureCollection', 'features': features}
 
 
@@ -197,18 +199,18 @@ def _request_feature_collection(type_name: str, params: dict, timeout: int):
         data = parse_gml(raw)
 
     if data.get('type') != 'FeatureCollection' or not isinstance(data.get('features'), list):
-        raise RuntimeError(f'KortInfo did not return a feature collection (Content-Type: {content_type})')
+        raise RuntimeError(f'{SERVICE} did not return a feature collection (Content-Type: {content_type})')
     if not data['features']:
-        raise RuntimeError('KortInfo answered with zero features')
+        raise RuntimeError(f'{SERVICE} answered with zero features')
     return data
 
 
 def _query_bounds():
-    # Use the committed play-area fallback/cache to ask KortInfo only for
-    # features that intersect the Aalborg game vicinity. WFS BBOX filtering
-    # returns the complete matching features; it does not geometrically clip
-    # them, so this cannot create fake administrative borders.
-    west, south, east, north = 9.70, 56.94, 10.25, 57.18
+    # Use the committed play-area fallback/cache to ask the service only for
+    # features that intersect the game vicinity. WFS BBOX filtering returns
+    # the complete matching features; it does not geometrically clip them, so
+    # this cannot create fake administrative borders.
+    west, south, east, north = CITY.bounds('search')
     try:
         if PLAY_OUTPUT.exists():
             fc = json.loads(PLAY_OUTPUT.read_text(encoding='utf-8'))
@@ -337,7 +339,7 @@ def normalise_axis_order(gj):
     KortInfo can ignore srsName and send EPSG:25832 metres, or send EPSG:4326
     with latitude/longitude axis order. The browser already copes with both;
     the build-time snapshot must too because downstream generators consume
-    scripts/play_area.geojson directly.
+    the city's play_area.geojson directly.
     """
     sample = None
     for ft in gj.get('features', []):
@@ -496,7 +498,7 @@ def previous_bundle():
     if not OUTPUT.exists():
         return None
     text = OUTPUT.read_text(encoding='utf-8')
-    marker = 'window.AALBORG_ZONE_DATA = '
+    marker = f'window.{GLOBAL_NAME} = '
     if marker not in text:
         return None
     try:
@@ -516,7 +518,7 @@ def current_play_geometry():
     if not PLAY_OUTPUT.exists():
         return None
     try:
-        return load_play_area(PLAY_OUTPUT)
+        return load_play_area(PLAY_OUTPUT, city=CITY)
     except Exception:
         return None
 
@@ -524,23 +526,24 @@ def current_play_geometry():
 def validate_play_geometry(play, previous_play=None):
     """Reject obviously corrupted/over-broad Zone-2 snapshots.
 
-    The four-area Aalborg small-game union is stable. These limits are deliberately
-    generous enough for real municipal edits, while rejecting cases where KortInfo
-    ignores BBOX or a parser accidentally unions unrelated municipal polygons.
+    A city's small-game union is stable. Its limits (city.json: bounds.playArea
+    and zones.playAreaKm2) are generous enough for real municipal edits, while
+    rejecting cases where the service ignores BBOX or a parser accidentally
+    unions unrelated municipal polygons.
     """
     if play is None or play.is_empty:
         raise RuntimeError('Zone 2 play-area union is empty')
     minx, miny, maxx, maxy = play.bounds
-    hard = (9.65, 56.86, 10.32, 57.24)
+    hard = CITY.bounds('playArea')
     if minx < hard[0] or miny < hard[1] or maxx > hard[2] or maxy > hard[3]:
         raise RuntimeError(
-            'Zone 2 snapshot has implausible Aalborg bounds '
+            f'Zone 2 snapshot has implausible {CITY.name} bounds '
             f'({minx:.4f}, {miny:.4f}, {maxx:.4f}, {maxy:.4f})'
         )
     to_utm = Transformer.from_crs('EPSG:4326', 'EPSG:25832', always_xy=True)
     from shapely.ops import transform
     area_km2 = transform(to_utm.transform, play).area / 1_000_000
-    if not (60 <= area_km2 <= 250):
+    if not (PLAY_AREA_KM2[0] <= area_km2 <= PLAY_AREA_KM2[1]):
         raise RuntimeError(f'Zone 2 snapshot has implausible area {area_km2:.1f} km²')
     if previous_play is not None and not previous_play.is_empty:
         prev_km2 = transform(to_utm.transform, previous_play).area / 1_000_000
@@ -553,7 +556,9 @@ def validate_play_geometry(play, previous_play=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.parse_args()
+    add_city_argument(parser)
+    args = parser.parse_args()
+    use_city(args.city)
 
     previous = previous_bundle()
     previous_play = current_play_geometry()
@@ -570,10 +575,10 @@ def main():
         errors['zone2'] = str(exc)
         old_zone2 = previous and (previous.get('zones') or {}).get('zone2')
         if old_zone2 and PLAY_OUTPUT.exists():
-            print(f'WARNING: KortInfo Zone 2 refresh failed; retaining previous snapshot: {exc}')
+            print(f'WARNING: {SERVICE} Zone 2 refresh failed; retaining previous snapshot: {exc}')
             downloaded['zone2'] = old_zone2
         else:
-            print(f'WARNING: KortInfo Zone 2 is unavailable; keeping the committed fallback play area and continuing: {exc}')
+            print(f'WARNING: {SERVICE} Zone 2 is unavailable; keeping the committed fallback play area and continuing: {exc}')
             return
 
     # The other three layers are independent and can be fetched concurrently.
@@ -605,7 +610,7 @@ def main():
     except Exception as exc:
         # Never let a malformed municipal response overwrite the last known-good
         # play area. Returning success allows GTFS/OSM jobs to continue using the
-        # committed snapshot already present in scripts/play_area.geojson.
+        # committed snapshot already present in the city's play_area.geojson.
         print(f'WARNING: rejected Zone 2 snapshot; retaining committed play area: {exc}')
         return
     # The layer shown on the phone never needs polygons outside the actual game
@@ -619,6 +624,12 @@ def main():
     for key in ('zone1', 'zone2', 'zone3', 'zone4'):
         source_features = cleaned.get(key, [])
         if not source_features:
+            continue
+        # A layer retained from the previous snapshot is already clipped and
+        # has its remainder; preparing it again would merge that remainder away.
+        if key in errors and key in previous_borders:
+            zones[key] = previous['zones'][key]
+            borders[key] = previous_borders[key]
             continue
         display_features = clip_zone_features(source_features, play)
         display_features = add_precomputed_remainder(key, display_features, play)
@@ -671,17 +682,17 @@ def main():
         'zones': round_coords(zones),
         'borders': {k: drop_degenerate_lines(v) for k, v in round_coords(borders).items()},
     }
-    payload = '/* Generated from Aalborg Kommune KortInfo WFS. Do not edit by hand. */\n' \
-              + 'window.AALBORG_ZONE_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
+    payload = f'/* Generated from {CITY.config["kommune"]["name"]} {SERVICE} WFS. Do not edit by hand. */\n' \
+              + f'window.{GLOBAL_NAME} = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
     tmp = OUTPUT.with_suffix('.js.tmp')
     tmp.write_text(payload, encoding='utf-8')
     tmp.replace(OUTPUT)
 
     lines = [
-        '# Aalborg zone snapshot audit', '',
+        f'# {CITY.name} zone snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Source: `{ENDPOINT}`',
-        '- Zone 2 is also written to `scripts/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area and Zone 1/4 catch-all areas are precomputed on GitHub, so the browser does no clipping/union work when toggling them. Genuine border lines are cached separately from the unclipped official geometry for Measuring.', '',
+        f'- Zone 2 is also written to `{PLAY_OUTPUT.relative_to(CITY.dir.parents[1]).as_posix()}`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area and Zone 1/4 catch-all areas are precomputed on GitHub, so the browser does no clipping/union work when toggling them. Genuine border lines are cached separately from the unclipped official geometry for Measuring.', '',
         '| Layer | WFS type | Cached display polygons | Cached real-border features | Status |',
         '|---|---|---:|---:|---|',
     ]

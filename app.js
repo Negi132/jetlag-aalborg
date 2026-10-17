@@ -1,7 +1,9 @@
 /* =============================================================
-   Hide + Seek — Aalborg seeker map
+   Hide + Seek — seeker map
    Every answered question becomes a polygon of "places the hider
    could still be". We intersect them all and shade the rest away.
+   Everything city-specific comes from cities/<id>/city.json, which
+   boot.js loads as window.HS_CITY before this file runs.
    ============================================================= */
 
 'use strict';
@@ -9,12 +11,14 @@
 const FT = 0.3048;          // metres per foot
 const MI = 1609.344;        // metres per mile
 
+/* The city being played, and the list of cities to switch between. */
+const CITY = window.HS_CITY;
+const CITY_BOOT = window.HS_BOOT || { city: CITY.id, defaultCity: CITY.id, cities: [{ id: CITY.id, name: CITY.name }] };
+
 const CONFIG = {
-  center: [57.0488, 9.9217],
-  zoom: 12,
-  playRadiusMi: 6,
-  kommunekode: '851',       // Aalborg
-  komnr: 851
+  center: CITY.map.center,
+  zoom: CITY.map.zoom,
+  playRadiusMi: CITY.map.playRadiusMi
 };
 
 /* Radar values from the US deck, plus the short ones a city game needs.
@@ -39,37 +43,23 @@ const RADAR_PRESETS = [
    All of these are editable in the Layers tab, because a service can
    rename a layer and you do not want to be editing code on a bus.  */
 
-/* Aalborg's own WebGIS. Its WFS is the source for all four zone levels;
-   zone-data.js caches it, and zone2-fallback.js covers outages. */
-const KORTINFO = 'https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside';
+/* The city's zone service (Aalborg: its own KortInfo WebGIS). Its WFS is the
+   source for all four zone levels; zone-data.js caches it, and
+   zone2-fallback.js covers outages. */
+const ZONE_SERVICE = CITY.zones.service;
+const ZONE_SERVICE_URL = CITY.zones.serviceUrl;
 const SOURCE_CONFIG_VERSION = 2;
 
-const DEFAULT_SOURCES = {
-  zone1: {
-    name: 'Zone 1 · Byzone / Landzone',
-    note: 'Official Aalborg KortInfo layer TL1433667.',
-    kind: 'wfs', url: KORTINFO,
-    typeName: 'ugis:TL1433667', cql: '', nameField: '', style: 'zonekort'
-  },
-  zone2: {
-    name: 'Zone 2 · Midtbyen / Nørresundby / Vest / Øst',
-    note: 'Official Aalborg KortInfo layer TL445984. Its four named polygons define the default play area.',
-    kind: 'wfs', url: KORTINFO,
-    typeName: 'ugis:TL445984', cql: '', nameField: '', style: 'areas'
-  },
-  zone3: {
-    name: 'Zone 3 · By- og bydele',
-    note: 'Official Aalborg KortInfo layer TL445987. District names are auto-detected instead of using its Zone 2 parent field.',
-    kind: 'wfs', url: KORTINFO,
-    typeName: 'ugis:TL445987', cql: '', nameField: '', style: 'plain'
-  },
-  zone4: {
-    name: 'Zone 4 · Kommuneplanrammer',
-    note: 'Official Aalborg KortInfo layer TL445981. Uncovered or unclassified land is shown as X · Uden kommuneplanramme.',
-    kind: 'wfs', url: KORTINFO,
-    typeName: 'ugis:TL445981', cql: '', nameField: '', style: 'rammer'
-  }
-};
+const DEFAULT_SOURCES = Object.fromEntries(Object.entries(CITY.zones.sources).map(([key, src]) => [key, {
+  name: src.name,
+  note: src.note || '',
+  kind: src.kind || 'wfs',
+  url: src.url || ZONE_SERVICE_URL,
+  typeName: src.typeName || '',
+  cql: src.cql || '',
+  nameField: src.nameField || '',
+  style: src.style || 'plain'
+}]));
 
 /* ---------- categorical styling ------------------------------------
    Zone 1 needs byzone and landzone to be told apart at a glance, and
@@ -155,7 +145,8 @@ const OVERPASS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter'
 ];
-const OVERPASS_BBOX = [56.94, 9.70, 57.18, 10.25];   // S, W, N, E — greater Aalborg
+// S, W, N, E around the city (city.json keeps W, S, E, N like the generators).
+const OVERPASS_BBOX = (([w, s, e, n]) => [s, w, n, e])(CITY.bounds.search);
 
 const ROUTE_PALETTE = [
   '#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#8f5bd7', '#d97706',
@@ -165,14 +156,10 @@ const ROUTE_PALETTE = [
 const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
 const ROUTE_LINE_WEIGHT = 3.6;   // bus routes; Zone 3 borders match it
 
-/* NT's four bus categories. The routes in each come from bus-routes.js,
-   which the weekly workflow builds from Rejseplanen GTFS. */
-const BUS_CATEGORIES = {
-  bybus:    { name: 'Bybus' },
-  regional: { name: 'Regionalbus' },
-  express:  { name: 'Expresbus' },
-  local:    { name: 'Lokalbus' }
-};
+/* The bus operator's categories (Aalborg: NT's four). The routes in each come
+   from bus-routes.js, which the weekly workflow builds from Rejseplanen GTFS. */
+const BUS_OPERATOR = CITY.transit.busOperator;
+const BUS_CATEGORIES = Object.fromEntries(CITY.transit.busCategories.map((c) => [c.key, { name: c.name }]));
 
 const BUS_CATEGORY_STATE = Object.fromEntries(
   Object.keys(BUS_CATEGORIES).map((key) => [key, {
@@ -182,34 +169,23 @@ const BUS_CATEGORY_STATE = Object.fromEntries(
 );
 
 const ROUTE_SOURCES = {
-  busBybus: {
-    name: 'Bybus', meta: 'NT timetable catalogue · only the part inside the play area',
-    kind: 'bus-category', category: 'bybus'
-  },
-  busRegional: {
-    name: 'Regionalbus', meta: 'NT timetable catalogue · only the part inside the play area',
-    kind: 'bus-category', category: 'regional'
-  },
-  busExpress: {
-    name: 'Expresbus', meta: 'NT timetable catalogue · only the part inside the play area',
-    kind: 'bus-category', category: 'express'
-  },
-  busLocal: {
-    name: 'Lokalbus', meta: 'NT timetable catalogue · only the part inside the play area',
-    kind: 'bus-category', category: 'local'
-  },
+  // busBybus, busRegional, … one per bus category.
+  ...Object.fromEntries(CITY.transit.busCategories.map((c) => ['bus' + c.key[0].toUpperCase() + c.key.slice(1), {
+    name: c.name, meta: `${BUS_OPERATOR} timetable catalogue · only the part inside the play area`,
+    kind: 'bus-category', category: c.key
+  }])),
   train: { name: 'Train lines', meta: 'Rejseplanen GTFS · scheduled passenger train services · tappable', kind: 'gtfs-train',
            filter: '["route"~"^(train|light_rail)$"]' }
 };
 
 const TRANSIT_STOP_SOURCE = {
   name: 'Bus & train stops',
-  meta: 'Rejseplanen GTFS · scheduled NT bus stops and passenger rail stations'
+  meta: `Rejseplanen GTFS · scheduled ${BUS_OPERATOR} bus stops and passenger rail stations`
 };
 
 
 function bundledGtfsTransitData() {
-  const bundle = window.AALBORG_GTFS_TRANSIT;
+  const bundle = window.HS_GTFS_TRANSIT;
   return bundle && bundle.ready === true ? bundle : null;
 }
 
@@ -232,38 +208,25 @@ function bundledGtfsTransitStops() {
    place (node coordinate or Overpass' centre for an area/relation). This keeps
    the existing nearest-point/Voronoi rules deterministic while still letting
    parks, zoos, airports, golf courses, etc. be mapped as areas in OSM. */
-const OFFICIAL_AALBORG_PARKS = [
-  'Budolfihaven', 'Bundgårdsparken', 'Den Gamle Golfbane', 'Jomfru Ane Parken',
-  'Karolinelund', 'Kildeparken', 'Lindholm Fjordpark', 'Lindholm Strandpark',
-  'Mulighedernes Park', 'Mølleparken', 'Nordens Kridtgrav', 'Skanseparken',
-  'Sofiendal Enge klimapark', 'Sohngårdsholmparken', 'Stigsparken',
-  'Svanemølleparken i Svenstrup', 'Urtehaven i Nørresundby',
-  'Vestre Fjordpark', 'Østre Anlæg'
-];
-
-/* The Jet Lag card says "park", but Aalborg Kommune keeps some very park-like,
-   publicly accessible recreational green areas on its separate "Naturområder og
-   skove" page. Keep this list deliberately curated instead of accepting every
-   OSM grass/nature polygon: that avoids bringing gardens/back yards back while
-   still treating Østerådalen the way a local player reasonably would. */
-const AALBORG_PARK_ADJACENT_EXACT = [
-  'Østerådalen', 'Østerådalen Nord', 'Østerådalen Syd',
-  // Both are mapped as leisure=park in OSM but are absent from the municipality's
-  // short public "parks and green areas" list. Municipal planning/visitor material
-  // nevertheless treats them as significant public green/recreational areas.
-  'Golfparken', 'Vandbakken'
-];
-const AALBORG_PARK_ADJACENT_FALLBACK = [
-  // Representative points only; Matching currently models all places as points.
-  // Nord: around the Infohuset/Over Kæret part of the valley.
-  { name: 'Østerådalen Nord', coordinates: [9.91342, 57.02087] },
-  // Syd: representative midpoint between Indkildevej and Dall Møllevej.
-  { name: 'Østerådalen Syd', coordinates: [9.8890, 56.9915] },
-  // OSM way centres. These fallbacks make the two well-known green areas
-  // available even if Overpass is temporarily unavailable.
-  { name: 'Golfparken', coordinates: [9.95498, 57.02563] },
-  { name: 'Vandbakken', coordinates: [9.93371, 57.03202] }
-];
+/* Curated places per card come from the city's settings (pois.categories):
+   official names that count even when OSM tags differ, and fixed places that
+   need no geocoder. authoritativeOnly means that list is complete, so
+   OpenStreetMap is not consulted for the card. */
+function cityPoiSettings(key) {
+  const c = (CITY.pois && CITY.pois.categories && CITY.pois.categories[key]) || null;
+  if (!c) return {};
+  const out = {};
+  const places = c.places || [];
+  if (places.length) {
+    const authoritative = !!(c.authoritativeOnly || c.placesAuthoritative);
+    out.fallback = places.map((p) => Object.assign({}, p, authoritative ? { authoritative: true } : {}));
+  }
+  if (c.officialNames) out.officialNames = c.officialNames.slice();
+  else if (c.aliases) out.officialNames = [...places.map((p) => p.name), ...c.aliases];
+  if (c.officialExactNames) out.officialExactNames = c.officialExactNames.slice();
+  if (c.authoritativeOnly) out.authoritativeOnly = true;
+  return out;
+}
 
 /* Beyond the explicit municipal/curated names, accept a named OSM leisure=park
    automatically when it is a substantial public green space. This captures places
@@ -272,62 +235,12 @@ const AALBORG_PARK_ADJACENT_FALLBACK = [
    never subject to this size threshold. */
 const PARK_AUTO_MIN_AREA_M2 = 2500; // 0.25 hectare; still requires a real named leisure=park
 
-/* Aalborg Bibliotekerne's current organisation is ten physical libraries plus
-   Haraldslund as a service point. Keep the whole official set here, even though
-   the small Aalborg game-area filter will later discard branches outside the four
-   Zone-2 areas. Addresses are retained so a missing OSM branch can be resolved
-   through Dataforsyningen instead of silently disappearing. */
-const AALBORG_LIBRARY_LOCATIONS = [
-  { name: 'Hovedbiblioteket i Aalborg', address: 'Rendsburggade 2, 9000 Aalborg', coordinates: [9.9275896, 57.0472572] },
-  { name: 'Haraldslund', address: 'Kastetvej 83, 9000 Aalborg', coordinates: [9.89904347, 57.05420492], servicePoint: true },
-  { name: 'Hasseris Bibliotek', address: 'Thulebakken 46, 9000 Aalborg', coordinates: [9.88452416, 57.03559821] },
-  { name: 'Nørresundby Bibliotek', address: 'Torvet 5, 9400 Nørresundby', coordinates: [9.9231595, 57.05896286] },
-  { name: 'Trekanten - Bibliotek og Kulturhus', address: 'Sebbersundvej 2A, 9220 Aalborg Øst', coordinates: [10.0008729, 57.0276469] },
-  { name: 'Vejgaard Bibliotek', address: 'Hadsundvej 35, 9000 Aalborg', coordinates: [9.95176, 57.04130] },
-  // The remaining branches are outside the normal small-game area, but keep
-  // coordinates locally so the authoritative library list never needs a slow
-  // address-geocoding round trip before it can be filtered against the play area.
-  { name: 'Svenstrup Bibliotek', address: 'Godthåbsvej 14B, 9230 Svenstrup J', coordinates: [9.8518, 56.9749] },
-  { name: 'Vodskov Bibliotek', address: 'Brorsonsvej 3B, 9310 Vodskov', coordinates: [10.0245, 57.1088] },
-  { name: 'Storvorde Bibliotek', address: 'Stationsvej 5, 9280 Storvorde', coordinates: [10.1017, 57.0058] },
-  { name: 'Nibe Bibliotek', address: 'St Algade 4, 9240 Nibe', coordinates: [9.6398, 56.9820] },
-  { name: 'Hals Bibliotek', address: 'Østergade 2A, 9370 Hals', coordinates: [10.3070, 56.9965] }
-];
-
-const OFFICIAL_AALBORG_LIBRARIES = [
-  ...AALBORG_LIBRARY_LOCATIONS.map((x) => x.name),
-  // Common/OSM aliases. The aa/å normaliser below makes Vejgaard/Vejgård
-  // equivalent, but keeping the visible alias also helps older cached data.
-  'Aalborg Hovedbibliotek', 'Haraldslund Bibliotek', 'Trekanten', 'Vejgård Bibliotek'
-];
-
-/* Aalborg Bibliotekerne's physical branch/service-point list is authoritative.
-   Every entry has a local coordinate so Library Matching can render immediately
-   without waiting for OSM or an address geocoder. */
-const AALBORG_LIBRARY_FALLBACK = AALBORG_LIBRARY_LOCATIONS.map((x) => ({
-  ...x, authoritative: true
-}));
-
-/* Region Nordjylland's current Aalborg University Hospital sites. Addresses are
-   authoritative; Dataforsyningen resolves their coordinates in parallel and the
-   normal game-area filter decides which ones participate in Matching. */
-const AALBORG_HOSPITAL_FALLBACK = [
-  { name: 'Aalborg Universitetshospital, Hospitalsbyen', address: 'Hospitalsbyen 1, 9260 Gistrup', coordinates: [9.99941003, 57.00966924], authoritative: true },
-  { name: 'Aalborg Universitetshospital, Syd', address: 'Hobrovej 18-22, 9000 Aalborg', coordinates: [9.9082114, 57.0382516], authoritative: true },
-  { name: 'Aalborg Universitetshospital, Nord', address: 'Reberbansgade 15, 9000 Aalborg', coordinates: [9.912635, 57.048857], authoritative: true },
-  { name: 'Aalborg Universitetshospital, Mølleparkvej', address: 'Mølleparkvej 10, 9000 Aalborg', coordinates: [9.90532768, 57.03853921], authoritative: true },
-  { name: 'Aalborg Universitetshospital, Brandevej', address: 'Brandevej 5, 9220 Aalborg Ø', coordinates: [9.97885646, 57.02588105], authoritative: true }
-];
-
-const MATCHING_POI_DEFS = {
+/* The cards' OpenStreetMap filters. Each city adds its curated places
+   (cityPoiSettings) on top. */
+const MATCHING_POI_DEFS = Object.fromEntries(Object.entries({
   'commercial airport': {
     key: 'airport', singular: 'commercial airport', plural: 'commercial airports',
-    filters: ['["aeroway"="aerodrome"]["iata"]'],
-    // Use the passenger-terminal/address point rather than the aerodrome
-    // reference point, so the game marker represents where players actually
-    // reach the airport and lies inside the Nørresundby game area.
-    fallback: [{ name: 'Aalborg Airport terminal (AAL)', coordinates: [9.87222767, 57.08619727], authoritative: true }],
-    authoritativeOnly: true
+    filters: ['["aeroway"="aerodrome"]["iata"]']
   },
   'rail station': {
     key: 'railStation', singular: 'rail station', plural: 'rail stations',
@@ -340,64 +253,39 @@ const MATCHING_POI_DEFS = {
   },
   'park': {
     key: 'park', singular: 'park', plural: 'parks',
-    filters: ['["leisure"="park"]', '["leisure"="garden"]', '["landuse"="recreation_ground"]', '["leisure"="nature_reserve"]', '["boundary"="protected_area"]["name"]', '["natural"="wood"]["name"]', '["landuse"="forest"]["name"]'],
-    officialNames: OFFICIAL_AALBORG_PARKS,
-    officialExactNames: AALBORG_PARK_ADJACENT_EXACT,
-    fallback: AALBORG_PARK_ADJACENT_FALLBACK
+    filters: ['["leisure"="park"]', '["leisure"="garden"]', '["landuse"="recreation_ground"]', '["leisure"="nature_reserve"]', '["boundary"="protected_area"]["name"]', '["natural"="wood"]["name"]', '["landuse"="forest"]["name"]']
   },
   'amusement park': {
     key: 'amusement', singular: 'amusement park', plural: 'amusement parks',
     filters: ['["tourism"="theme_park"]']
   },
   'zoo': {
-    key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]'],
-    fallback: [{ name: 'Aalborg Zoo', coordinates: [9.89970, 57.03804], authoritative: true }],
-    authoritativeOnly: true
+    key: 'zoo', singular: 'zoo', plural: 'zoos', filters: ['["tourism"="zoo"]']
   },
   'aquarium': {
     key: 'aquarium', singular: 'aquarium', plural: 'aquariums', filters: ['["tourism"="aquarium"]']
   },
   'golf course': {
-    key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]'],
-    fallback: [
-      { name: 'Aalborg Golf Klub', coordinates: [9.782950, 57.026760], authoritative: true },
-      { name: 'Ørnehøj Golfklub', coordinates: [9.968050, 56.987570], authoritative: true }
-    ],
-    authoritativeOnly: true
+    key: 'golf', singular: 'golf course', plural: 'golf courses', filters: ['["leisure"="golf_course"]']
   },
   'museum': {
     key: 'museum', singular: 'museum', plural: 'museums', filters: ['["tourism"="museum"]']
   },
   'movie theater': {
-    key: 'cinema', singular: 'movie theater', plural: 'movie theaters', filters: ['["amenity"="cinema"]'],
-    // The three current Aalborg cinemas are stable, local game data. Keeping
-    // them locally makes this tiny category instantaneous instead of waiting
-    // tens of seconds for a city-wide Overpass request.
-    fallback: [
-      { name: 'Nordisk Film Biografer Aalborg Kennedy', coordinates: [9.9189535, 57.0419503], authoritative: true },
-      { name: 'Biffen', coordinates: [9.9329399, 57.0463840], authoritative: true },
-      { name: 'Nordisk Film Biografer Aalborg City Syd', coordinates: [9.8714578, 57.0027432], authoritative: true }
-    ],
-    authoritativeOnly: true
+    key: 'cinema', singular: 'movie theater', plural: 'movie theaters', filters: ['["amenity"="cinema"]']
   },
   'hospital': {
     key: 'hospital', singular: 'hospital', plural: 'hospitals',
-    filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]'],
-    fallback: AALBORG_HOSPITAL_FALLBACK
+    filters: ['["amenity"="hospital"]', '["healthcare"="hospital"]']
   },
   'library': {
-    key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]'],
-    officialNames: OFFICIAL_AALBORG_LIBRARIES,
-    fallback: AALBORG_LIBRARY_FALLBACK,
-    // Aalborg Bibliotekerne publishes the complete physical branch list. Do
-    // not wait for OSM to rediscover an authoritative list we already have.
-    authoritativeOnly: true
+    key: 'library', singular: 'library', plural: 'libraries', filters: ['["amenity"="library"]']
   },
   'foreign consulate': {
     key: 'consulate', singular: 'foreign consulate', plural: 'foreign consulates',
     filters: ['["office"="diplomatic"]["diplomatic"="consulate"]', '["amenity"="consulate"]']
   }
-};
+}).map(([label, def]) => [label, Object.assign(def, cityPoiSettings(def.key))]));
 
 /* ---------- state -------------------------------------------------- */
 
@@ -745,7 +633,7 @@ const BASES = {
     maxZoom: 19, attribution: 'Imagery &copy; Esri' })
 };
 BASES.light.addTo(map);
-if (window.AALBORG_POI_DATA && window.AALBORG_POI_DATA.ready === true) {
+if (window.HS_POI_DATA && window.HS_POI_DATA.ready === true) {
   map.attributionControl.addAttribution('POI data &copy; OpenStreetMap contributors');
 }
 
@@ -778,7 +666,7 @@ function setCustomPlayArea(feature, name) {
   try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [30, 30] }); } catch (_) {}
 }
 
-/* The default: the outline of the four play zones. */
+/* The default: the outline of the play zones (Zone 2). */
 function setZonesPlayArea(fit) {
   const hull = zonesPlayArea();
   if (!hull) return false;
@@ -1118,7 +1006,7 @@ const QUESTION_DECK = [
       ]},
       { title: 'Natural', cards: [
         ['Mountain', 'mountain'],
-        ['Landmass', 'landmass', 'In Aalborg this essentially asks whether the hider is in Nørresundby or south of the Limfjord.'],
+        ['Landmass', 'landmass', (CITY.landmass && CITY.landmass.cardNote) || ''],
         ['Park', 'park']
       ]},
       { title: 'Places of interest', cards: [
@@ -1196,7 +1084,7 @@ const QUESTION_DECK = [
     key: 'tentacles', number: 5, title: 'Tentacles', disabled: true,
     meta: 'Cost: draw 4, pick 2 · Time limit: 5 min',
     example: 'Of all the [places] within [distance] of me, which are you closest to? I must also be within [distance].',
-    disabledNote: 'Tentacles is available only in medium and large games. It is intentionally disabled for this Aalborg small-game website.'
+    disabledNote: 'Tentacles is available only in medium and large games. It is intentionally disabled for this small-game website.'
   },
   {
     key: 'photos', tool: 'photo', number: 6, title: 'Photos',
@@ -1289,7 +1177,7 @@ function bundledMatchingPoiGeoJson(mode) {
         ...(ft.properties || {}), __poiKind: mode.key
       })) };
   }
-  const bundle = window.AALBORG_POI_DATA;
+  const bundle = window.HS_POI_DATA;
   if (!bundle || bundle.ready !== true || !bundle.categories) return null;
   const gj = bundle.categories[mode.key];
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
@@ -1452,7 +1340,7 @@ function mergeMatchingPoiCollections(collections, mode) {
 }
 
 async function fetchMatchingPoiJson(mode) {
-  // Restore the proven whole-Aalborg request. The later game-bbox optimisation
+  // Restore the proven whole-city request. The later game-bbox optimisation
   // omitted legitimate edge features in practice. Candidates are still filtered
   // against the actual game area *after* loading, so outside places never affect
   // Matching.
@@ -1742,8 +1630,11 @@ function measuringHydroMode() {
   return null;
 }
 
+/* How the city's coastline is described (Aalborg: both Limfjord banks). */
+const COASTLINE = (CITY.hydro && CITY.hydro.coastline) || { label: 'coastline', nearest: 'nearest coastline' };
+
 function bundledHydroData() {
-  const b = window.AALBORG_HYDRO_DATA;
+  const b = window.HS_HYDRO_DATA;
   return b && b.ready === true ? b : null;
 }
 
@@ -1974,8 +1865,8 @@ function hydroBandAt(kind, coord, label = '') {
   if (kind === 'coastline') {
     // The question says "a coastline", not "the coastline on my side of
     // the fjord". Your position therefore establishes its reference distance
-    // to the nearest Limfjord shore on EITHER bank, and that same threshold is
-    // applied around ALL valid shoreline segments.
+    // to the nearest shore (in Aalborg, on EITHER Limfjord bank), and that same
+    // threshold is applied around ALL valid shoreline segments.
     const distanceFeatures = hydroCoastFeatures('all', true);
     features = distanceFeatures;
     let best = Infinity;
@@ -1985,7 +1876,7 @@ function hydroBandAt(kind, coord, label = '') {
     }
     if (!Number.isFinite(best)) return null;
     distanceM = best;
-    name = 'Limfjord coastline';
+    name = COASTLINE.label;
     side = 'all';
   } else {
     const hit = nearestWaterFeature(coord);
@@ -2161,13 +2052,20 @@ function constraintGeometry(c) {
   return geometry;
 }
 
+/* The Landmass card splits the play area into the city's "north" Zone 2
+   areas (Aalborg: Nørresundby, across the Limfjord) and the rest. */
+const LANDMASS = CITY.landmass || null;
+
 function landmassRegions() {
-  if (!S.playArea) return null;
+  if (!S.playArea || !LANDMASS) return null;
+  const northAreas = new Set(LANDMASS.northAreas || []);
+  const northNames = PLAY_ZONE_ALIASES.filter((z) => northAreas.has(z.area)).flatMap((z) => z.aliases);
   const zone2 = S.zone2Official || buildAreaZones();
   const feats = (zone2 && zone2.features) || [];
   const northParts = feats.filter((ft) => {
     const def = playZoneDef(ft);
-    return (def && def.area === 2) || normaliseZoneText(featureName(ft, null)).includes('norresundby');
+    const name = normaliseZoneText(featureName(ft, null));
+    return (def && northAreas.has(def.area)) || northNames.some((alias) => name.includes(alias));
   });
   const union = unionAll(northParts);
   const north = union ? gIntersect(S.playArea, union) : null;
@@ -2197,9 +2095,9 @@ function landmassGeometryAt(coord) {
   const regions = landmassRegions();
   if (!regions) return null;
   if (pointInsideFeature(coord, regions.north)) {
-    return { geometry: regions.north.geometry, name: 'Nørresundby / north of the Limfjord' };
+    return { geometry: regions.north.geometry, name: LANDMASS.north.name };
   }
-  return { geometry: regions.south.geometry, name: 'Aalborg / south of the Limfjord' };
+  return { geometry: regions.south.geometry, name: LANDMASS.south.name };
 }
 
 function matchingAreaAt(coord) {
@@ -2740,14 +2638,14 @@ function previewInstruction() {
     const mode = matchingPoiMode();
     if (questionPoi.loading || draft.poiLoading) return `Loading ${mode.plural} from OpenStreetMap…`;
     if (draft.poiError) return `Could not load ${mode.plural}: ${draft.poiError}`;
-    if (!matchingPoiFeatures().length) return `No ${mode.plural} were found in the Aalborg search area.`;
+    if (!matchingPoiFeatures().length) return `No ${mode.plural} were found in the ${CITY.name} search area.`;
     if (!draft.matchPoint || draft.index == null) return `${matchingPoiFeatures().length} ${mode.plural} loaded. Tap your position on the map.`;
     if (!draft.answer) return `Your nearest is ${draft.matchName}. Tap elsewhere to reposition, or choose Match / No match to preview the cut.`;
   }
   if (activeTool === 'nearest' && matchingAreaMode()) {
     const mode = matchingAreaMode();
     if (!draft.matchGeometry) {
-      if (mode.kind === 'landmass') return 'The map shows the Aalborg landmass split. Tap your position to choose your side.';
+      if (mode.kind === 'landmass') return `The map shows the ${CITY.name} landmass split. Tap your position to choose your side.`;
       return draft.matchLoading ? `Loading ${mode.label} boundaries…` : 'Tap your position on the map to identify your area.';
     }
     if (!draft.answer) return `You selected ${draft.matchName}. Choose Match or No match to preview the cut.`;
@@ -3402,10 +3300,10 @@ function measuringForm(box) {
       info.innerHTML = `Detected nearest <strong>${escapeHtml(draft.autoFeatureName)}</strong> · <strong>${escapeHtml(fmtDist(draft.borderDistanceM))}</strong> away.<br>` +
         (hydroMode.kind === 'water'
           ? `The cyan area is every playable location closer to any body of water than your current position.`
-          : `The cyan area is every playable location closer to any Limfjord coastline than your current position.`);
+          : `The cyan area is every playable location closer to any ${COASTLINE.label} than your current position.`);
     } else {
       info.textContent = bundledHydroData()
-        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? 'nearest Limfjord shoreline on either bank' : 'nearest body of water'} is selected automatically.`
+        ? `Tap your position; the ${hydroMode.kind === 'coastline' ? COASTLINE.nearest : 'nearest body of water'} is selected automatically.`
         : 'The local coastline/water bundle is not ready yet. Run the GitHub map-data workflow.';
     }
     box.appendChild(info);
@@ -3507,15 +3405,15 @@ function nearestForm(box) {
     const hint = document.createElement('p');
     hint.className = 'hint';
     hint.textContent = areaMode.kind === 'landmass'
-      ? 'For Aalborg, the Limfjord is the useful landmass split: Nørresundby versus the play area south of the fjord. Tap where you asked from.'
+      ? (LANDMASS ? LANDMASS.hint : 'Tap where you asked from.')
       : `The official ${areaMode.label} layer is used directly. Tap where you asked from and the containing area will be selected.`;
     box.appendChild(hint);
 
-    if (areaMode.kind === 'landmass') {
+    if (areaMode.kind === 'landmass' && LANDMASS) {
       const key = document.createElement('div');
       key.className = 'landmass-key';
-      key.innerHTML = '<span><i style="background:#67e8f9"></i>Nørresundby / north</span>' +
-        '<span><i style="background:#fbbf24"></i>Aalborg / south</span>';
+      key.innerHTML = `<span><i style="background:#67e8f9"></i>${escapeHtml(LANDMASS.north.short)}</span>` +
+        `<span><i style="background:#fbbf24"></i>${escapeHtml(LANDMASS.south.short)}</span>`;
       box.appendChild(key);
     }
 
@@ -3544,7 +3442,7 @@ function nearestForm(box) {
     info.className = 'map-point-status matching-poi-status';
     let state = `Loading ${poiMode.plural}…`;
     if (draft.poiError) state = `Could not load: ${draft.poiError}`;
-    else if (!questionPoi.loading && !draft.poiLoading && !feats.length) state = `No ${poiMode.plural} found in the Aalborg search area`;
+    else if (!questionPoi.loading && !draft.poiLoading && !feats.length) state = `No ${poiMode.plural} found in the ${CITY.name} search area`;
     else if (draft.matchName) state = `${draft.matchName}${draft.matchDistanceM != null ? ` · ${fmtDist(draft.matchDistanceM)} away` : ''}`;
     else if (feats.length) state = `${feats.length} ${poiMode.plural} loaded · tap your position`;
     info.innerHTML = `<div><strong>Your nearest ${escapeHtml(poiMode.singular)}</strong><small>${escapeHtml(state)}</small></div>`;
@@ -3552,7 +3450,7 @@ function nearestForm(box) {
 
     const key = document.createElement('div');
     key.className = 'poi-key';
-    key.innerHTML = `<span><i></i>${escapeHtml(poiMode.plural)}${poiMode.officialNames ? ' · official Aalborg list cross-check' : ' from OpenStreetMap'}</span>`;
+    key.innerHTML = `<span><i></i>${escapeHtml(poiMode.plural)}${poiMode.officialNames ? ` · official ${escapeHtml(CITY.name)} list cross-check` : ' from OpenStreetMap'}</span>`;
     box.appendChild(key);
 
     const hint = document.createElement('p');
@@ -4068,29 +3966,28 @@ const ZONE3_COLOR = '#ffe600';
 
 /* ---------- Zone 2 play areas ---------------------------------------- */
 
-const AALBORG_AREAS = {
-  1: { name: 'Midtbyen',     color: '#e8734d' },
-  2: { name: 'Nørresundby',  color: '#4f9bd8' },
-  3: { name: 'Vest Aalborg', color: '#5fb56a' },
-  4: { name: 'Øst Aalborg',  color: '#b878cf' }
-};
+/* The play areas are the city's Zone 2 polygons (Aalborg: Midtbyen,
+   Nørresundby, Vest Aalborg and Øst Aalborg), each with its own colour. */
+const PLAY_AREAS = Object.fromEntries(CITY.zones.areas.map((a) => [a.area, { name: a.name, color: a.color }]));
+const PLAY_AREA_NAMES = CITY.zones.areas.map((a) => a.name);
+const COUNT_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+const countWord = (n) => COUNT_WORDS[n] || String(n);
+const listNames = (names) => (names.length < 2 ? names.join('')
+  : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+const PLAY_AREA_LIST = listNames(PLAY_AREA_NAMES);           // "Midtbyen, … and Øst Aalborg"
+const PLAY_AREA_COUNT = countWord(PLAY_AREA_NAMES.length);   // "four"
 
-/* Built-in outlines of the four play areas (zone2-fallback.js). They are used
+/* Built-in outlines of the play areas (zone2-fallback.js). They are used
    only until official Zone 2 geometry is available. */
 function buildAreaZones() {
-  const fb = window.AALBORG_ZONE2_FALLBACK;
+  const fb = window.HS_ZONE2_FALLBACK;
   return fb && fb.features && fb.features.length ? turf.clone(fb) : null;
 }
 
-/* The four official Zone 2 polygons are also the default play area. The
-   source has changed names/field casing over time, so identify the areas from
-   every scalar property rather than relying on one brittle name field. */
-const PLAY_ZONE_ALIASES = [
-  { area: 1, name: 'Midtbyen', aliases: ['midtbyen'] },
-  { area: 2, name: 'Nørresundby', aliases: ['norresundby'] },
-  { area: 3, name: 'Vest Aalborg', aliases: ['vest aalborg', 'aalborg vest'] },
-  { area: 4, name: 'Øst Aalborg', aliases: ['ost aalborg', 'aalborg ost'] }
-];
+/* The official Zone 2 polygons are also the default play area. The source
+   has changed names/field casing over time, so identify the areas from every
+   scalar property rather than relying on one brittle name field. */
+const PLAY_ZONE_ALIASES = CITY.zones.areas.map((a) => ({ area: a.area, name: a.name, aliases: a.aliases.slice() }));
 
 function normaliseZoneText(value) {
   return String(value == null ? '' : value)
@@ -4133,19 +4030,19 @@ function officialPlayZoneFeatures(gj) {
   if (!prepared) return [];
   const recognised = prepared.features.filter((ft) => !!playZoneDef(ft));
   const areas = new Set(recognised.map((ft) => playZoneDef(ft).area));
-  // Keep every polygon part belonging to the four areas; some WFS/GML
+  // Keep every polygon part belonging to the play areas; some WFS/GML
   // replies represent a multipart area as several Polygon features.
   if (areas.size === PLAY_ZONE_ALIASES.length) return recognised;
-  // TL445984 is specifically the four-area Zone 2 layer. KortInfo may omit
+  // The built-in Zone 2 layer holds only the play areas. The service may omit
   // display-name properties or split MultiSurface features into several
   // Polygon members, but every polygon in this exact layer still belongs to
-  // one of the four requested areas.
+  // one of the requested areas.
   const trustedDefault = typeof S !== 'undefined' && S.sources && S.sources.zone2
-    && S.sources.zone2.url === KORTINFO
-    && String(S.sources.zone2.typeName).toLowerCase() === 'ugis:tl445984';
+    && S.sources.zone2.url === DEFAULT_SOURCES.zone2.url
+    && String(S.sources.zone2.typeName).toLowerCase() === String(DEFAULT_SOURCES.zone2.typeName).toLowerCase();
   if (trustedDefault && prepared.features.length) return prepared.features;
-  // For a custom source, accept an unnamed response only when it is exactly
-  // four polygons; otherwise require the four names to avoid widening play.
+  // For a custom source, accept an unnamed response only when it has exactly
+  // one polygon per area; otherwise require the names to avoid widening play.
   return prepared.features.length === PLAY_ZONE_ALIASES.length ? prepared.features : [];
 }
 
@@ -4155,7 +4052,7 @@ function bundledZoneGeoJson(key) {
   // A deliberately edited/custom source must still load what the player chose;
   // the snapshot is only a cache of our official built-in KortInfo defaults.
   if (src && def && (src.url !== def.url || String(src.typeName || '') !== String(def.typeName || ''))) return null;
-  const bundle = window.AALBORG_ZONE_DATA;
+  const bundle = window.HS_ZONE_DATA;
   const gj = bundle && bundle.ready === true && bundle.zones ? bundle.zones[key] : null;
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
   // v3+ snapshots are immutable, WGS84, already clipped, and have their Zone
@@ -4166,7 +4063,7 @@ function bundledZoneGeoJson(key) {
 }
 
 function bundledZonesAreRenderReady() {
-  const b = window.AALBORG_ZONE_DATA;
+  const b = window.HS_ZONE_DATA;
   return !!(b && b.ready === true && Number(b.version) >= 3 && b.displayPrepared === true);
 }
 
@@ -4199,14 +4096,14 @@ function bundledZoneBorderGeoJson(key) {
   const src = S && S.sources ? S.sources[key] : null;
   const def = DEFAULT_SOURCES[key];
   if (src && def && (src.url !== def.url || String(src.typeName || '') !== String(def.typeName || ''))) return null;
-  const bundle = window.AALBORG_ZONE_DATA;
+  const bundle = window.HS_ZONE_DATA;
   const gj = bundle && bundle.ready === true && bundle.borders ? bundle.borders[key] : null;
   if (!gj || gj.type !== 'FeatureCollection' || !Array.isArray(gj.features)) return null;
   if (Number(bundle.version) >= 3) return gj;
   try { return JSON.parse(JSON.stringify(gj)); } catch (_) { return null; }
 }
 
-const ZONE_DB_NAME = 'hide-seek-aalborg-zone-cache';
+const ZONE_DB_NAME = `hide-seek-${CITY.id}-zone-cache`;
 const ZONE_DB_STORE = 'zones';
 const ZONE_DB_VERSION = 1;
 const ZONE_DB_MAX_AGE_MS = 45 * 24 * 60 * 60 * 1000;
@@ -4286,13 +4183,13 @@ function hasOfficialZonesPlayArea() {
   return officialPlayZoneFeatures(officialZone2Data()).length > 0;
 }
 
-const AREA_STYLE = () => Object.entries(AALBORG_AREAS)
+const AREA_STYLE = () => Object.entries(PLAY_AREAS)
   .map(([k, v]) => ({ key: k, label: `${k}. ${v.name}`, color: v.color }));
 
 function areaCategory(props) {
   const def = playZoneDef(props);
   if (!def) return null;
-  const a = AALBORG_AREAS[def.area];
+  const a = PLAY_AREAS[def.area];
   return a ? { key: String(def.area), label: `${def.area}. ${a.name}`, color: a.color } : null;
 }
 
@@ -4968,20 +4865,10 @@ async function fetchTransitStopsReliable(onProgress) {
   }
 }
 
-// These are real OpenStreetMap railway objects, but they are heritage/veteran
-// railway halts on Limfjordsbanen rather than ordinary public-transport train
-// stations. Keep identically named BUS stops; only rail-classified markers are
-// suppressed.
-const EXCLUDED_REGULAR_TRAIN_STOP_NAMES = new Set([
-  // Limfjordsbanen veteran/heritage stops. Aalborg Station itself is omitted
-  // from this exclusion list because it is also a normal passenger station.
-  normaliseStopName('Østerådalen'),
-  normaliseStopName('Østeraadalen'),
-  normaliseStopName('Gug'),
-  normaliseStopName('Hadsundvej'),
-  normaliseStopName('Limfjorden'),
-  normaliseStopName('Train - Limfjorden')
-]);
+// Railway objects that are not ordinary passenger stations (Aalborg: heritage
+// halts on Limfjordsbanen). Identically named BUS stops are kept; only
+// rail-classified markers are suppressed.
+const EXCLUDED_REGULAR_TRAIN_STOP_NAMES = new Set((CITY.transit.excludedTrainStops || []).map(normaliseStopName));
 
 function parseTransitStops(json) {
   const features = [];
@@ -5289,7 +5176,7 @@ function clipRoutesToPlayArea(gj) {
 }
 
 function bundledGtfsBusCategory(category) {
-  const bundle = window.AALBORG_GTFS_BUS_ROUTES;
+  const bundle = window.HS_GTFS_BUS_ROUTES;
   if (!bundle || !Array.isArray(bundle.features)) return null;
   const features = bundle.features
     .filter((ft) => ft && ft.geometry && ft.properties && ft.properties.category === category)
@@ -5374,7 +5261,7 @@ async function toggleBusCategory(category, key, btn) {
     const summary = routeSummary(state.geojson);
     if (summary.count) {
       setStatus(`${def.name}: ${summary.count} routes intersect the play area. ` +
-        `Only the portions inside the four-zone play area are drawn.`);
+        `Only the portions inside the play area are drawn.`);
     } else {
       setStatus(`${def.name}: no bundled timetable routes intersect the current play area.`);
     }
@@ -5506,7 +5393,7 @@ async function loadOfficialZone2PlayArea(forceLive = false) {
     if (!(cached && bundledZonesAreRenderReady()) && !persistent) normaliseCoords(gj);
     gj = prepareOfficialZone2(gj);
     if (!officialPlayZoneFeatures(gj).length) {
-      throw new Error('could not identify all four Zone 2 play areas');
+      throw new Error(`could not identify all ${PLAY_AREA_COUNT} Zone 2 play areas`);
     }
     S.zone2Official = gj;
     if (!S.playAreaMeta || S.playAreaMeta.type === 'zones') {
@@ -5514,15 +5401,15 @@ async function loadOfficialZone2PlayArea(forceLive = false) {
       markPlayMode('zones');
     }
     const status = $('#officialZoneStatus');
-    if (status && cached) status.textContent = 'Official Zone 2 loaded instantly from the periodically refreshed local KortInfo snapshot.';
-    else if (status && persistent) status.textContent = 'Official Zone 2 loaded instantly from this device’s persistent KortInfo cache.';
+    if (status && cached) status.textContent = `Official Zone 2 loaded instantly from the periodically refreshed local ${ZONE_SERVICE} snapshot.`;
+    else if (status && persistent) status.textContent = `Official Zone 2 loaded instantly from this device’s persistent ${ZONE_SERVICE} cache.`;
     renderSourceRows();
     renderOfficialZoneStatus();
     return true;
   } catch (err) {
-    console.warn('KortInfo Zone 2 unavailable; using the built-in fallback:', err.message);
+    console.warn(`${ZONE_SERVICE} Zone 2 unavailable; using the built-in fallback:`, err.message);
     const status = $('#officialZoneStatus');
-    if (status) status.textContent = 'KortInfo Zone 2 could not be loaded; the built-in outlines are temporarily active. Use Reload official Zone 2 to retry.';
+    if (status) status.textContent = `${ZONE_SERVICE} Zone 2 could not be loaded; the built-in outlines are temporarily active. Use Reload official Zone 2 to retry.`;
     return false;
   } finally {
     setZoneLoading('zone2', false);
@@ -5590,23 +5477,23 @@ function renderOfficialZoneStatus() {
   const status = $('#officialZoneStatus');
   if (!status) return;
   status.textContent = hasOfficialZonesPlayArea()
-    ? 'Official Zone 2 is active. The play area is the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.'
-    : 'Official Zone 2 loads automatically. Until it does, built-in outlines of the four areas are used.';
+    ? `Official Zone 2 is active. The play area is the exact union of ${PLAY_AREA_LIST}.`
+    : `Official Zone 2 loads automatically. Until it does, built-in outlines of the ${PLAY_AREA_COUNT} areas are used.`;
 }
 
-/* Retry official Zone 2 and rebuild the play area from its four named polygons. */
+/* Retry official Zone 2 and rebuild the play area from its named polygons. */
 $('#calLive').addEventListener('click', async (e) => {
   const btn = e.target;
   btn.disabled = true;
   const was = btn.textContent;
   btn.textContent = 'Loading official Zone 2…';
-  setStatus('Loading Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from KortInfo…');
+  setStatus(`Loading ${PLAY_AREA_LIST} from ${ZONE_SERVICE}…`);
   const ok = await loadOfficialZone2PlayArea(true);
   if (ok) {
-    setStatus('Official Zone 2 loaded. The play area now follows the exact union of its four named areas.');
+    setStatus(`Official Zone 2 loaded. The play area now follows the exact union of its ${PLAY_AREA_COUNT} named areas.`);
     toast('Official Zone 2 play area loaded.');
   } else {
-    setStatus('KortInfo did not answer or all four area names could not be identified. The built-in outlines remain active.', true);
+    setStatus(`${ZONE_SERVICE} did not answer or all ${PLAY_AREA_COUNT} area names could not be identified. The built-in outlines remain active.`, true);
   }
   btn.disabled = false;
   btn.textContent = was;
@@ -5635,10 +5522,10 @@ function renderSourceRows() {
   Object.entries(S.sources).forEach(([key, src]) => {
     const rec = layerByKey('src:' + key);
     const state = zoneLoads.has(key) ? 'loading' : !rec ? 'idle' : rec.visible ? 'on' : 'off';
-    const cached = window.AALBORG_ZONE_DATA && window.AALBORG_ZONE_DATA.ready === true &&
-      window.AALBORG_ZONE_DATA.zones && window.AALBORG_ZONE_DATA.zones[key] &&
+    const cached = window.HS_ZONE_DATA && window.HS_ZONE_DATA.ready === true &&
+      window.HS_ZONE_DATA.zones && window.HS_ZONE_DATA.zones[key] &&
       src.url === DEFAULT_SOURCES[key].url && String(src.typeName || '') === String(DEFAULT_SOURCES[key].typeName || '')
-        ? window.AALBORG_ZONE_DATA.zones[key] : null;
+        ? window.HS_ZONE_DATA.zones[key] : null;
     const meta = state === 'loading' ? 'Loading boundaries…'
       : rec ? `${rec.geojson.features.length} zones${state === 'on' ? '' : ' · hidden'}`
       : cached ? `${cached.features.length} cached official polygons · tap to show`
@@ -5957,16 +5844,16 @@ $('#unitSeg').addEventListener('click', (e) => {
 });
 
 const PLAY_NOTES = {
-  zones:   'Exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from official Zone 2.',
+  zones:   `Exact union of ${PLAY_AREA_LIST} from official Zone 2.`,
   circle:  'A plain circle, if you want a smaller game.',
-  kommune: 'The whole municipality — much bigger than the four play zones.'
+  kommune: `The whole municipality — much bigger than the ${PLAY_AREA_COUNT} play zones.`
 };
 
 function markPlayMode(mode) {
   $$('#playSeg button').forEach((b) => b.classList.toggle('is-active', b.dataset.area === mode));
   $('#radiusField').hidden = mode !== 'circle';
   $('#playNote').textContent = mode === 'zones' && !hasOfficialZonesPlayArea()
-    ? 'Built-in outlines while official Zone 2 loads; same four-area mode.'
+    ? `Built-in outlines while official Zone 2 loads; same ${PLAY_AREA_COUNT}-area mode.`
     : (PLAY_NOTES[mode] || '');
 }
 
@@ -5975,10 +5862,10 @@ async function setPlayMode(mode) {
     if (setZonesPlayArea()) {
       markPlayMode('zones');
       toast(hasOfficialZonesPlayArea()
-        ? 'Play area: the four official Zone 2 areas.'
-        : 'Play area: built-in outlines while KortInfo loads.');
+        ? `Play area: the ${PLAY_AREA_COUNT} official Zone 2 areas.`
+        : `Play area: built-in outlines while ${ZONE_SERVICE} loads.`);
       if (!hasOfficialZonesPlayArea()) await loadOfficialZone2PlayArea();
-    } else toast('Could not build the four Zone 2 play areas.', true);
+    } else toast(`Could not build the ${PLAY_AREA_COUNT} Zone 2 play areas.`, true);
     return;
   }
   if (mode === 'circle') {
@@ -5988,16 +5875,16 @@ async function setPlayMode(mode) {
     return;
   }
   // Bundled in kommune-outline.js (OpenStreetMap), so this needs no network.
-  const outline = window.AALBORG_KOMMUNE_OUTLINE;
+  const outline = window.HS_KOMMUNE_OUTLINE;
   if (!outline) {
     toast('The municipality outline is missing (kommune-outline.js).', true);
     markPlayMode(S.playAreaMeta && S.playAreaMeta.type === 'zones' ? 'zones' : 'circle');
     return;
   }
   markPlayMode('kommune');
-  setCustomPlayArea(turf.clone(outline), 'Aalborg Kommune');
+  setCustomPlayArea(turf.clone(outline), CITY.kommune.name);
   S.playAreaMeta.mode = 'kommune';
-  toast('Play area: Aalborg Kommune.');
+  toast(`Play area: ${CITY.kommune.name}.`);
 }
 
 $('#playSeg').addEventListener('click', (e) => {
@@ -6047,6 +5934,7 @@ function compactPlayAreaMeta(meta) {
 function serialize() {
   return {
     v: 3,
+    city: CITY.id,
     sourceConfigVersion: SOURCE_CONFIG_VERSION,
     units: S.units,
     playAreaMeta: compactPlayAreaMeta(S.playAreaMeta),
@@ -6069,14 +5957,22 @@ function serialize() {
   };
 }
 
+/* Why a saved or shared game cannot be loaded in this city, or null. Games
+   saved before cities existed have no city and are Aalborg games. */
+function gameCityProblem(data) {
+  const city = (data && data.city) || 'aalborg';
+  return city === CITY.id ? null
+    : `That game was played in ${cityName(city)}. Choose ${cityName(city)} in the Game tab to open it.`;
+}
+
 function deserialize(data) {
-  if (!data || !data.constraints) return false;
+  if (!data || !data.constraints || gameCityProblem(data)) return false;
   S.constraints = data.constraints;
   S.seq = S.constraints.length + 1;
   S.zone2Official = null;
   if (data.units) S.units = data.units;
   // Source settings from older links were based on legacy defaults.
-  // Do not let them silently replace the four official KortInfo layers.
+  // Do not let them silently replace the official built-in zone layers.
   S.sources = JSON.parse(JSON.stringify(DEFAULT_SOURCES));
   if (data.sourceConfigVersion === SOURCE_CONFIG_VERSION && data.sources) {
     S.sources = Object.assign(S.sources, data.sources);
@@ -6091,8 +5987,8 @@ function deserialize(data) {
     S.playArea = turf.circle(m.center, m.radiusKm, { steps: 256, units: 'kilometers' });
     S.playAreaMeta = m;
     markPlayMode('circle');
-  } else if (m && m.type === 'custom' && m.mode === 'kommune' && !m.geometry && window.AALBORG_KOMMUNE_OUTLINE) {
-    S.playArea = turf.clone(window.AALBORG_KOMMUNE_OUTLINE);
+  } else if (m && m.type === 'custom' && m.mode === 'kommune' && !m.geometry && window.HS_KOMMUNE_OUTLINE) {
+    S.playArea = turf.clone(window.HS_KOMMUNE_OUTLINE);
     S.playAreaMeta = Object.assign({}, m, { geometry: S.playArea.geometry });
     markPlayMode('kommune');
   } else if (m && m.type === 'custom' && m.geometry) {
@@ -6103,7 +5999,7 @@ function deserialize(data) {
   renderSourceRows();
   renderOfficialZoneStatus();
   applyUnits();
-  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24] }); } catch (_) {}
+  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [24, 24], animate: false }); } catch (_) {}
   if (data.transitStopsVisible) toggleTransitStops();
   loadOfficialZone2PlayArea();
   return true;
@@ -6132,8 +6028,11 @@ function saveToUrl() {
 function loadFromUrl() {
   const h = location.hash;
   if (!h.startsWith('#g=')) return false;
-  try { return deserialize(JSON.parse(b64decode(h.slice(3)))); }
-  catch (_) { return false; }
+  let data;
+  try { data = JSON.parse(b64decode(h.slice(3))); } catch (_) { return false; }
+  const problem = gameCityProblem(data);
+  if (problem) { toast(problem, true); return false; }
+  try { return deserialize(data); } catch (_) { return false; }
 }
 
 $('#copyLink').addEventListener('click', async () => {
@@ -6145,7 +6044,7 @@ $('#exportBtn').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(serialize(), null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `hideseek-aalborg-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`;
+  a.download = `hideseek-${CITY.id}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -6156,7 +6055,10 @@ $('#importFile').addEventListener('change', (e) => {
   const r = new FileReader();
   r.onload = () => {
     try {
-      if (deserialize(JSON.parse(r.result))) toast('Game loaded.');
+      const data = JSON.parse(r.result);
+      const problem = gameCityProblem(data);
+      if (problem) toast(problem, true);
+      else if (deserialize(data)) toast('Game loaded.');
       else toast('That file has no game in it.', true);
     } catch (_) { toast('Could not read that file.', true); }
   };
@@ -6173,7 +6075,7 @@ $('#importFile').addEventListener('change', (e) => {
    ntfy.sh keeps a post for 12 hours (3 hours if it is over 4 KB, which a game
    rarely is because answers travel as recipes). */
 const SHARE_RELAY = 'https://ntfy.sh';
-const SHARE_TOPIC_PREFIX = 'jetlag-aalborg-';
+const SHARE_TOPIC_PREFIX = `jetlag-${CITY.id}-`;   // rooms are per city
 const SHARE_FORMAT = 'HS1';
 const SHARE_ROOM_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 
@@ -6196,7 +6098,7 @@ function normaliseRoomCode(value) {
 }
 
 const shareTopicUrl = (path = '') => `${SHARE_RELAY}/${SHARE_TOPIC_PREFIX}${share.room}${path}`;
-const inviteLink = () => `${location.origin}${location.pathname}?room=${share.room}`;
+const inviteLink = () => `${location.origin}${location.pathname}?city=${encodeURIComponent(CITY.id)}&room=${share.room}`;
 
 /* What identifies the logged answers: changes when one is logged, muted or deleted. */
 function answersSignature() {
@@ -6208,9 +6110,9 @@ function answersSignature() {
 function mapDataVersion() {
   const w = window;
   return [
-    w.AALBORG_ZONE_DATA && w.AALBORG_ZONE_DATA.generatedAt,
-    w.AALBORG_HYDRO_DATA && w.AALBORG_HYDRO_DATA.generatedAt,
-    w.AALBORG_POI_DATA && w.AALBORG_POI_DATA.generatedAt
+    w.HS_ZONE_DATA && w.HS_ZONE_DATA.generatedAt,
+    w.HS_HYDRO_DATA && w.HS_HYDRO_DATA.generatedAt,
+    w.HS_POI_DATA && w.HS_POI_DATA.generatedAt
   ].map((v) => String(v || '-').slice(0, 10)).join('/');
 }
 
@@ -6251,6 +6153,7 @@ async function decodeSharedGame(text) {
 
 function sharedGameNow() {
   return {
+    city: CITY.id,
     data: mapDataVersion(),
     posted: Date.now(),
     playAreaMeta: compactPlayAreaMeta(S.playAreaMeta),
@@ -6346,6 +6249,7 @@ async function pullSharedMap({ quietIfEmpty = false, askFirst = true } = {}) {
     if (askFirst && hasUnpostedAnswers() && S.constraints.length &&
         !confirm('Load the latest shared map? Changes on this phone that you have not posted will be replaced.')) return;
     const game = await decodeSharedGame(await readPostBody(post));
+    if (game.city && game.city !== CITY.id) throw new Error(`it is a map of ${cityName(game.city)}`);
     applySharedGame(game);
     share.appliedId = post.id;
     share.syncedSignature = answersSignature();
@@ -6376,8 +6280,8 @@ function applySharedGame(game) {
     S.playAreaMeta = m;
     markPlayMode('circle');
     refreshDerivedLayers();
-  } else if (m && m.type === 'custom' && m.mode === 'kommune' && window.AALBORG_KOMMUNE_OUTLINE) {
-    S.playArea = turf.clone(window.AALBORG_KOMMUNE_OUTLINE);
+  } else if (m && m.type === 'custom' && m.mode === 'kommune' && window.HS_KOMMUNE_OUTLINE) {
+    S.playArea = turf.clone(window.HS_KOMMUNE_OUTLINE);
     S.playAreaMeta = Object.assign({}, m, { geometry: S.playArea.geometry });
     markPlayMode('kommune');
     refreshDerivedLayers();
@@ -6527,6 +6431,68 @@ function renderShareUi() {
 $('#pullMapBtn').addEventListener('click', () => pullSharedMap());
 $('#postMapBtn').addEventListener('click', () => postSharedMap());
 
+/* ---------- city -------------------------------------------------------------
+   Each city has its own settings and map data (cities/<id>/). Switching
+   reloads the page with ?city=<id>, so only one city's data is ever loaded. */
+
+function cityName(id) {
+  const c = CITY_BOOT.cities.find((x) => x.id === id);
+  return c ? c.name : id;
+}
+
+function renderCityUi() {
+  const seg = $('#citySeg');
+  seg.innerHTML = '';
+  for (const c of CITY_BOOT.cities) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.city = c.id;
+    b.textContent = c.name;
+    b.classList.toggle('is-active', c.id === CITY.id);
+    seg.appendChild(b);
+  }
+  $('#cityNote').textContent = `Playing in ${CITY.name}. Each city has its own zones, places and transit; switching city starts a new game.`;
+}
+
+function switchCity(id) {
+  if (id === CITY.id) { toast(`Already playing in ${CITY.name}.`); return; }
+  if (S.constraints.length &&
+      !confirm(`Switch to ${cityName(id)}? That starts a new game. Copy the game link first if you want to come back to this one.`)) return;
+  if (share.room) leaveSharedRoom();
+  storageSet('hs-city', id);
+  location.assign(`${location.pathname}?city=${encodeURIComponent(id)}`);
+}
+
+$('#citySeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-city]');
+  if (b) switchCity(b.dataset.city);
+});
+
+/* Page text that names the city or its zone service. */
+function applyCityTexts() {
+  document.title = `Hide + Seek — ${CITY.name} seeker map`;
+  $('#citySub').textContent = `${CITY.name} seeker map`;
+  $('#zoneSourcesTitle').textContent = `Official ${CITY.name} zone sources`;
+  $('#zoneSourcesHint').textContent = `These ${countWord(Object.keys(DEFAULT_SOURCES).length)} ${ZONE_SERVICE} WFS ` +
+    'layers are built into the site and are the authoritative defaults. Old saved links cannot replace them ' +
+    'unless they were created by this updated version.';
+  $('#zoneDefaults').innerHTML = Object.entries(DEFAULT_SOURCES).map(([key, src]) =>
+    `<div><strong>${escapeHtml(zoneLevelName(key))}</strong><code>${escapeHtml(src.typeName)}</code></div>`).join('');
+  $('#routesHint').textContent = `Bus routes are grouped like ${BUS_OPERATOR}’s timetable list. Each bus category ` +
+    'is clipped to the play area, so only the part you can actually use in this game is drawn.';
+  $('#playSeg [data-area="zones"]').textContent = `The ${PLAY_AREA_COUNT} play zones`;
+  $('#playSeg [data-area="kommune"]').textContent = CITY.kommune.name;
+}
+
+/* Keep ?city= in the address, so reloads and copied links stay in this city. */
+function rememberCity() {
+  storageSet('hs-city', CITY.id);
+  const url = new URL(location.href);
+  if (url.searchParams.get('city') === CITY.id) return;
+  url.searchParams.set('city', CITY.id);
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+}
+
 /* ---------- boot ------------------------------------------------------------ */
 
 document.addEventListener('keydown', (e) => {
@@ -6537,7 +6503,11 @@ document.addEventListener('keydown', (e) => {
   if (activeTool) selectTool(activeTool);
 });
 
-// If the weekly KortInfo snapshot is present, use its exact Zone 2 polygons
+applyCityTexts();
+renderCityUi();
+rememberCity();
+
+// If the weekly zone snapshot is present, use its exact Zone 2 polygons
 // before the very first play-area calculation instead of briefly starting on
 // the built-in fallback.
 const bootZone2Snapshot = bundledZoneGeoJson('zone2');
@@ -6553,7 +6523,8 @@ if (!setZonesPlayArea(false)) {
   markPlayMode('circle');
 } else {
   markPlayMode('zones');
-  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [16, 16] }); } catch (_) {}
+  // Not animated: an animated fit waits for a frame, which a background tab never draws.
+  try { map.fitBounds(L.geoJSON(S.playArea).getBounds(), { padding: [16, 16], animate: false }); } catch (_) {}
 }
 renderSourceRows();
 renderLayerList();
@@ -6566,7 +6537,7 @@ renderToolForm();
 startLocationTracking();
 // Do not block first paint: the fallback union is already usable. In a real
 // browser this replaces it with the exact official Zone 2 union as soon as
-// KortInfo answers. Test environments without window.fetch keep the fallback.
+// the zone service answers. Test environments without window.fetch keep the fallback.
 if (!restoredFromUrl) loadOfficialZone2PlayArea();
 
 // Rejoin a shared map: from an invite link, or the one this phone was in.
@@ -6580,10 +6551,10 @@ if (!restoredFromUrl) loadOfficialZone2PlayArea();
 
 /* Exposed so you can poke at a live game from the browser console. */
 window.HS = {
-  map, S, CONFIG, draft, drawing, RADAR_PRESETS, previewShapeLayer,
+  map, S, CITY, CITY_BOOT, CONFIG, draft, drawing, RADAR_PRESETS, previewShapeLayer,
   recompute, addLayer, setCircularPlayArea, setCustomPlayArea,
   toggleSource, toggleRoute, setLayerVisible, layerByKey, removeLayerByKey,
-  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, KORTINFO, SOURCE_CONFIG_VERSION,
+  unionAll, usePlayAreaFromLayer, parseWfsCapabilities, browseLayers, parseGml, ZONE_SERVICE_URL, DEFAULT_SOURCES, SOURCE_CONFIG_VERSION,
   buildAreaZones, zonesPlayArea, hasOfficialZonesPlayArea,
   prepareOfficialZone2, officialPlayZoneFeatures, playZoneDef, loadOfficialZone2PlayArea, bundledZoneGeoJson, bundledZoneBorderGeoJson, clipZoneDisplayGeoJsonToPlayArea,
   overpassJson,
@@ -6604,7 +6575,7 @@ window.HS = {
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
   matchingAreaMode, matchingAreaAt, geometryFromRecipe, share, postSharedMap, pullSharedMap,
   joinSharedRoom, leaveSharedRoom, encodeSharedGame, decodeSharedGame, answersSignature, mapDataVersion, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
-  OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
+  PLAY_AREAS, PLAY_ZONE_ALIASES, LANDMASS, COASTLINE, switchCity, cityName, gameCityProblem,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
   matchingPoiNameAllowed, matchingPoiElementAllowed, overpassElementAreaM2, overpassElementRepresentativePoint, PARK_AUTO_MIN_AREA_M2, matchingPoiInsidePlayArea, filterMatchingPoisToPlayArea,

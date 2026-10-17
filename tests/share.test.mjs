@@ -53,8 +53,8 @@ check('a 16-character room code is created', /^[a-z0-9]{16}$/.test(room || ''), 
 check('the room is in the address', new URL(A.window.location.href).searchParams.get('room') === room);
 check('the map buttons appear', !A.$('#shareActions').hidden);
 check('starting posts the current map', relay.posts(topic).length === 1);
-check('the invite link is copied', A.copied.some((t) => t.endsWith(`?room=${room}`)), A.copied.join(' '));
-check('the Game tab shows the invite link to copy by hand', A.$('#shareInviteLink').value.endsWith(`?room=${room}`));
+check('the invite link is copied, naming the city', A.copied.some((t) => t.endsWith(`?city=aalborg&room=${room}`)), A.copied.join(' '));
+check('the Game tab shows the invite link to copy by hand', A.$('#shareInviteLink').value.endsWith(`?city=aalborg&room=${room}`));
 A.window.navigator.clipboard = { writeText: async () => { throw new Error('blocked'); } };
 A.click([...A.doc.querySelectorAll('#shareControls button')].find((b) => /Invite/.test(b.textContent)));
 await wait();
@@ -80,7 +80,7 @@ check('a five-answer map fits one ntfy message (under 4 KB)', posted.length < 40
 check('posts are compressed shared-map messages', posted.startsWith('HS1.'));
 
 console.log('\n== joining through the invite ==');
-const B = phone(`https://example.github.io/hideseek/?room=${room}`);
+const B = phone(`https://example.github.io/hideseek/?city=aalborg&room=${room}`);
 await wait(400);
 check('phone B boots without errors', B.errors.length === 0, B.errors.join(' | '));
 check('opening the invite joins the room', B.ev('HS.share.room') === room && !B.$('#shareActions').hidden);
@@ -179,6 +179,18 @@ console.log('\n== reopening without the game ==');
   C.click(C.$('#pullMapBtn'));
   await wait(200);
   check('Get latest restores the shared map', C.count() === 7 && !C.dot('#pullMapBtn'));
+}
+
+console.log('\n== another city ==');
+{
+  const before = A.count();
+  const body = await A.window.eval(`HS.encodeSharedGame({ city: 'aarhus', data: HS.mapDataVersion(), posted: Date.now(),
+    playAreaMeta: { type: 'zones' }, constraints: [] })`);
+  await A.window.fetch(`https://ntfy.sh/${topic}`, { method: 'POST', body });
+  await wait(100);
+  A.click(A.$('#pullMapBtn'));
+  await wait(200);
+  check('a map from another city is refused', A.count() === before && /map of aarhus/i.test(A.toastText()), A.toastText());
 }
 
 check('nothing threw on either phone', A.errors.length === 0 && B.errors.length === 0, [...A.errors, ...B.errors].join(' | '));

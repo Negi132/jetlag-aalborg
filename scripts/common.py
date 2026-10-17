@@ -1,7 +1,13 @@
-"""Helpers shared by the map-data generators in this folder."""
+"""Helpers shared by the map-data generators in this folder.
+
+Each city has a folder, cities/<id>/, holding its settings (city.json), its
+play area (play_area.geojson) and the data files the generators write. Every
+generator takes --city (default: aalborg).
+"""
 from __future__ import annotations
 
 import csv
+import functools
 import io
 import json
 import math
@@ -15,10 +21,52 @@ from shapely.geometry import shape
 from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parents[1]
-PLAY_AREA = ROOT / 'scripts' / 'play_area.geojson'
+CITIES_DIR = ROOT / 'cities'
+DEFAULT_CITY = 'aalborg'
 
-# Generous box around Aalborg; a play area outside it is a corrupted snapshot.
-AALBORG_BOUNDS = (9.65, 56.86, 10.32, 57.24)
+
+class City:
+    """A city's settings (cities/<id>/city.json) and the folder its files live in."""
+
+    def __init__(self, city_id: str):
+        self.id = city_id
+        self.dir = CITIES_DIR / city_id
+        self.config = json.loads((self.dir / 'city.json').read_text(encoding='utf-8'))
+        if self.config.get('id') != city_id:
+            raise RuntimeError(f'{self.dir / "city.json"} says it is {self.config.get("id")!r}, not {city_id!r}')
+
+    @property
+    def name(self) -> str:
+        return self.config['name']
+
+    @property
+    def play_area(self) -> Path:
+        """The official play area every generator filters by (written by update_zones.py)."""
+        return self.dir / 'play_area.geojson'
+
+    def path(self, name: str) -> Path:
+        return self.dir / name
+
+    def bounds(self, key: str):
+        """A [west, south, east, north] box from city.json's bounds."""
+        return tuple(self.config['bounds'][key])
+
+    def __repr__(self):
+        return f'City({self.id!r})'
+
+
+def city_ids():
+    return sorted(p.name for p in CITIES_DIR.iterdir() if (p / 'city.json').is_file())
+
+
+@functools.lru_cache(maxsize=None)
+def load_city(city_id: str = DEFAULT_CITY) -> City:
+    return City(city_id)
+
+
+def add_city_argument(parser):
+    parser.add_argument('--city', default=DEFAULT_CITY, choices=city_ids(),
+                        help=f'which cities/<id>/ folder to read settings from and write to (default: {DEFAULT_CITY})')
 
 
 def normalise_name(value, *, drop_parenthetical: bool = False, fold_aa: bool = False) -> str:
@@ -62,17 +110,22 @@ def geometry_from_geojson(data):
     return shape(data)
 
 
-def load_play_area(path: Path = PLAY_AREA, *, check_bounds: bool = False):
-    """The game area (union of the four Zone 2 areas) from a GeoJSON file."""
-    play = geometry_from_geojson(json.loads(Path(path).read_text(encoding='utf-8')))
+def load_play_area(path: Path | None = None, *, city: City | None = None, check_bounds: bool = False):
+    """The game area (union of the Zone 2 play areas), by default the city's play_area.geojson.
+
+    check_bounds rejects one outside the city's bounds.playArea box: a corrupted snapshot.
+    """
+    city = city or load_city()
+    path = Path(path) if path else city.play_area
+    play = geometry_from_geojson(json.loads(path.read_text(encoding='utf-8')))
     if check_bounds:
         minx, miny, maxx, maxy = play.bounds
-        lo_x, lo_y, hi_x, hi_y = AALBORG_BOUNDS
+        lo_x, lo_y, hi_x, hi_y = city.bounds('playArea')
         if minx < lo_x or miny < lo_y or maxx > hi_x or maxy > hi_y:
             raise RuntimeError(
-                'play-area snapshot is outside the expected Aalborg game vicinity: '
+                f'play-area snapshot is outside the expected {city.name} game vicinity: '
                 f'{minx:.4f},{miny:.4f},{maxx:.4f},{maxy:.4f}. '
-                'Keep the previous scripts/play_area.geojson and refresh zones later.'
+                f'Keep the previous {city.play_area.relative_to(ROOT).as_posix()} and refresh zones later.'
             )
     return play
 

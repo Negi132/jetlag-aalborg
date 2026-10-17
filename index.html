@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta name="theme-color" content="#0d141d">
-<title>Hide + Seek — Aalborg seeker map</title>
+<title>Hide + Seek seeker map</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -77,7 +77,7 @@
   <aside id="panel" class="panel">
     <header class="panel-head">
       <h1>Hide <span>+</span> Seek</h1>
-      <p class="sub">Aalborg seeker map</p>
+      <p class="sub" id="citySub">Seeker map</p>
     </header>
 
     <nav class="tabs" role="tablist">
@@ -117,23 +117,17 @@
       <div class="stack" id="zoneSources"></div>
 
       <div id="calBox" class="calbox">
-        <p class="cal-title">Official Aalborg zone sources</p>
-        <p class="hint">These four KortInfo WFS layers are built into the site and are the
+        <p class="cal-title" id="zoneSourcesTitle">Official zone sources</p>
+        <p class="hint" id="zoneSourcesHint">These four WFS layers are built into the site and are the
           authoritative defaults. Old saved links cannot replace them unless they were created by
           this updated version.</p>
-        <div class="official-zone-defaults" aria-label="Default zone sources">
-          <div><strong>Zone 1</strong><code>ugis:TL1433667</code></div>
-          <div><strong>Zone 2</strong><code>ugis:TL445984</code></div>
-          <div><strong>Zone 3</strong><code>ugis:TL445987</code></div>
-          <div><strong>Zone 4</strong><code>ugis:TL445981</code></div>
-        </div>
-        <p class="hint" id="officialZoneStatus">Zone 2 loads automatically and defines the play
-          area as the exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg.</p>
+        <div class="official-zone-defaults" id="zoneDefaults" aria-label="Default zone sources"></div>
+        <p class="hint" id="officialZoneStatus">Zone 2 loads automatically and defines the play area.</p>
         <button class="ghost-btn wide" id="calLive">Reload official Zone 2</button>
       </div>
 
       <p class="section-label">Bus &amp; train routes</p>
-      <p class="hint">Bus routes are grouped like NT’s timetable list. Each bus category is clipped to the four-zone play area, so only the part you can actually use in this game is drawn.</p>
+      <p class="hint" id="routesHint">Bus routes are grouped like the operator’s timetable list. Each bus category is clipped to the four-zone play area, so only the part you can actually use in this game is drawn.</p>
       <div class="stack" id="routeSources"></div>
 
       <p class="section-label">Bus &amp; train stops</p>
@@ -160,6 +154,12 @@
     <!-- GAME -->
     <section class="tabpane" data-pane="game">
       <div class="field">
+        <label>City</label>
+        <div class="seg" id="citySeg"></div>
+        <p class="hint" id="cityNote"></p>
+      </div>
+
+      <div class="field">
         <label>Units</label>
         <div class="seg" id="unitSeg">
           <button data-units="imperial" class="is-active">Feet / miles</button>
@@ -171,11 +171,11 @@
       <div class="field">
         <label>Play area</label>
         <div class="seg seg-stack" id="playSeg">
-          <button data-area="zones" class="is-active">The four play zones</button>
+          <button data-area="zones" class="is-active">The play zones</button>
           <button data-area="circle">Circle</button>
-          <button data-area="kommune">Aalborg Kommune</button>
+          <button data-area="kommune">The whole municipality</button>
         </div>
-        <p class="hint" id="playNote">Exact union of Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg from official Zone 2.</p>
+        <p class="hint" id="playNote"></p>
       </div>
 
       <div class="field" id="radiusField" hidden>
@@ -271,13 +271,7 @@
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.2.0/turf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/proj4@2.11.0/dist/proj4.js"></script>
-<script src="zone2-fallback.js?v=20261016c-official"></script>
-<script src="kommune-outline.js?v=20261017b-health"></script>
-<script src="bus-routes.js?v=20261017a-fixes"></script>
-<script src="transit-data.js?v=20261017a-fixes"></script>
-<script src="poi-data.js?v=20261017a-fixes"></script>
-<script src="hydro-data.js?v=20261017a-fixes"></script>
-<script src="zone-data.js?v=20261017a-fixes"></script>
-<script src="app.js?v=20261018a-sharedmap"></script>
+<!-- Loads the chosen city's settings and map data, then app.js. -->
+<script src="boot.js?v=20261018c-cities"></script>
 </body>
 </html>

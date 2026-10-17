@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build the Aalborg bus-route bundle from Rejseplanen's static GTFS feed.
+"""Build a city's bus-route bundle from Rejseplanen's static GTFS feed.
 
 The script keeps every distinct scheduled NT GTFS shape that intersects the
-Aalborg Hide + Seek play area. Geometry is cropped only to a small padded
-Aalborg envelope; app.js performs the final clip against the live official
+Hide + Seek play area. Geometry is cropped only to a small padded
+envelope; app.js performs the final clip against the live official
 Zone 2 union in the browser.
 
 Designed for GitHub Actions but also runnable locally:
@@ -23,63 +23,76 @@ from pathlib import Path
 from shapely.geometry import LineString, box
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
-from common import PLAY_AREA, feed_dates, line_parts, load_play_area, natural_key, read_csv_from_zip, rounded_line_coords
+from common import DEFAULT_CITY, add_city_argument, feed_dates, line_parts, load_city, load_play_area, natural_key, read_csv_from_zip, rounded_line_coords
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PLAY_AREA = PLAY_AREA
-DEFAULT_CATEGORIES = ROOT / "scripts" / "bus_route_categories.json"
-DEFAULT_OUTPUT = ROOT / "bus-routes.js"
-DEFAULT_AUDIT = ROOT / "BUS_ROUTE_AUDIT.md"
-
-# Deliberately conservative. A bad/partial source must never replace a good map.
-MIN_CATEGORY_COUNTS = {"bybus": 8, "regional": 3, "express": 2, "local": 1}
-MIN_TOTAL_ROUTES = 20
-MAX_TOTAL_ROUTES = 80
+GLOBAL_NAME = "HS_GTFS_BUS_ROUTES"
 
 
-def find_nt_agency(zf: zipfile.ZipFile):
+def use_city(city_id: str = DEFAULT_CITY):
+    """Point the generator at a city: its operator, categories and sanity limits.
+
+    The limits are deliberately conservative. A bad/partial source must never
+    replace a good map.
+    """
+    global CITY, TRANSIT, CATEGORY_KEYS, MIN_CATEGORY_COUNTS, MIN_TOTAL_ROUTES, MAX_TOTAL_ROUTES
+    CITY = load_city(city_id)
+    TRANSIT = CITY.config["transit"]
+    CATEGORY_KEYS = [c["key"] for c in TRANSIT["busCategories"]]
+    MIN_CATEGORY_COUNTS = {c["key"]: c.get("minRoutes", 0) for c in TRANSIT["busCategories"]}
+    MIN_TOTAL_ROUTES, MAX_TOTAL_ROUTES = TRANSIT["busRoutes"]
+    return CITY
+
+
+use_city()
+
+
+def find_bus_agency(zf: zipfile.ZipFile):
+    """The city's bus operator in agency.txt: by exact name, then by a word in its name."""
+    want = TRANSIT["busAgency"]
     text, rows = read_csv_from_zip(zf, "agency.txt")
     with text:
         agencies = list(rows)
     for row in agencies:
-        if row.get("agency_name", "").strip().upper() == "NT":
-            return row.get("agency_id", "206"), row.get("agency_name", "NT")
-    for row in agencies:
-        if "NORDJYLLAND" in row.get("agency_name", "").upper():
-            return row.get("agency_id", "206"), row.get("agency_name", "NT")
-    raise RuntimeError("Could not find NT in agency.txt")
+        if row.get("agency_name", "").strip().upper() == want["name"].upper():
+            return row.get("agency_id", want["id"]), row.get("agency_name", want["name"])
+    if want.get("nameContains"):
+        for row in agencies:
+            if want["nameContains"].upper() in row.get("agency_name", "").upper():
+                return row.get("agency_id", want["id"]), row.get("agency_name", want["name"])
+    raise RuntimeError(f"Could not find {want['name']} in agency.txt")
 
 
-def load_category_rules(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8"))
+def load_category_rules():
+    """The city's route lists per category, and a route -> category lookup."""
     out = {}
     reverse = {}
-    for category in ("bybus", "regional", "express", "local"):
-        refs = [str(x).strip().upper() for x in data.get(category, [])]
-        out[category] = refs
+    for category in TRANSIT["busCategories"]:
+        refs = [str(x).strip().upper() for x in category.get("routes", [])]
+        out[category["key"]] = refs
         for ref in refs:
-            reverse[ref] = category
+            reverse[ref] = category["key"]
     return out, reverse
 
 
 def classify_route(ref: str, reverse: dict[str, str]):
+    """(category, inferred) for a route number; category None leaves it out.
+
+    A route on the city's saved lists keeps its category. For a genuinely new
+    one, prefer showing it (with an audit warning) over silently losing its
+    geometry: the city's inferRules place it, and a rule with category null
+    drops it (Aalborg: night and special extras such as 21N).
+    """
     key = ref.strip().upper()
     if key in reverse:
         return reverse[key], False
-    # Night/special extras are present in GTFS but are not part of the four
-    # transport-form filters selected for this game on NT's timetable page.
-    if re.fullmatch(r"\d+[NE]", key):
-        return None, False
-    # For a genuinely new ordinary route, prefer showing it (with an audit
-    # warning) over silently losing its geometry. The saved NT category list
-    # remains authoritative for known local-vs-regional distinctions.
-    if key.endswith("X"):
-        return "express", True
-    m = re.fullmatch(r"(\d+)", key)
-    if m and int(m.group(1)) <= 30:
-        return "bybus", True
-    if m:
-        return "regional", True
+    for rule in TRANSIT.get("inferRules", []):
+        if not re.search(rule["pattern"], key):
+            continue
+        if "maxNumber" in rule:
+            m = re.match(r"\d+", key)
+            if not m or int(m.group(0)) > rule["maxNumber"]:
+                continue
+        return (rule["category"], True) if rule["category"] else (None, False)
     return None, False
 
 
@@ -87,7 +100,7 @@ def parse_existing_refs(output_path: Path):
     if not output_path.exists():
         return set()
     text = output_path.read_text(encoding="utf-8")
-    m = re.search(r"window\.AALBORG_GTFS_BUS_ROUTES\s*=\s*(\{.*\});\s*$", text, re.S)
+    m = re.search(r"window\." + GLOBAL_NAME + r"\s*=\s*(\{.*\});\s*$", text, re.S)
     if not m:
         return set()
     try:
@@ -97,14 +110,14 @@ def parse_existing_refs(output_path: Path):
         return set()
 
 
-def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
-    play = load_play_area(play_area_path)
+def build_bundle(gtfs: Path, play_area_path: Path | None = None):
+    play = load_play_area(play_area_path, city=CITY)
     minx, miny, maxx, maxy = play.bounds
     # Matches the envelope used for the hand-built first GTFS bundle: enough
     # context around Zone 2 for accurate runtime clipping, without shipping
     # long regional tails through North Jutland.
     envelope = box(minx - 0.015, miny - 0.010, maxx + 0.015, maxy + 0.010)
-    _, reverse_categories = load_category_rules(categories_path)
+    _, reverse_categories = load_category_rules()
 
     with zipfile.ZipFile(gtfs) as zf:
         names = set(zf.namelist())
@@ -112,7 +125,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
             if required not in names:
                 raise RuntimeError(f"GTFS archive is missing {required}")
 
-        agency_id, agency_name = find_nt_agency(zf)
+        agency_id, agency_name = find_bus_agency(zf)
         feed_start, feed_end = feed_dates(zf)
 
         route_to_ref = {}
@@ -121,7 +134,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
             for row in rows:
                 if row.get("agency_id") != agency_id:
                     continue
-                # GTFS route_type 3 is ordinary bus. NT also has flex/on-demand
+                # GTFS route_type 3 is ordinary bus. NT, for one, also has flex/on-demand
                 # route types in the same feed; those are not part of this layer.
                 if row.get("route_type") != "3":
                     continue
@@ -175,7 +188,7 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
     inferred = []
     excluded_special = []
     features = []
-    categories = {k: [] for k in ("bybus", "regional", "express", "local")}
+    categories = {k: [] for k in CATEGORY_KEYS}
     for ref in sorted(route_parts, key=natural_key):
         category, was_inferred = classify_route(ref, reverse_categories)
         if category is None:
@@ -229,8 +242,8 @@ def build_bundle(gtfs: Path, play_area_path: Path, categories_path: Path):
             "agency": agency_name,
             "agency_id": agency_id,
             "note": (
-                "All scheduled GTFS bus shape variants whose route enters the Aalborg game area. "
-                "Geometry is cropped to a padded Aalborg envelope; the app clips it to the exact "
+                f"All scheduled GTFS bus shape variants whose route enters the {CITY.name} game area. "
+                f"Geometry is cropped to a padded {CITY.name} envelope; the app clips it to the exact "
                 "live Zone 2 union before drawing."
             ),
             "categories": categories,
@@ -278,7 +291,7 @@ def render_js(bundle):
     date = bundle["metadata"].get("feed_date", "unknown")
     return (
         f"/* Generated automatically from Rejseplanen GTFS feed dated {date}. */\n"
-        f"window.AALBORG_GTFS_BUS_ROUTES = {payload};\n"
+        f"window.{GLOBAL_NAME} = {payload};\n"
     )
 
 
@@ -286,13 +299,13 @@ def render_audit(bundle, inferred, previous_refs):
     meta = bundle["metadata"]
     cats = meta["categories"]
     lines = [
-        f"# Aalborg bus route audit — Rejseplanen GTFS {meta.get('feed_date','unknown')}",
+        f"# {CITY.name} bus route audit — Rejseplanen GTFS {meta.get('feed_date','unknown')}",
         "",
         f"Generated automatically from agency {meta.get('agency_id')} = {meta.get('agency')}.",
-        "Only scheduled GTFS bus shapes that intersect the Aalborg game area are bundled; the browser performs the final exact Zone 2 clip.",
+        f"Only scheduled GTFS bus shapes that intersect the {CITY.name} game area are bundled; the browser performs the final exact Zone 2 clip.",
         "",
     ]
-    labels = [("bybus", "Bybus"), ("regional", "Regionalbus"), ("express", "Expresbus"), ("local", "Lokalbus")]
+    labels = [(c["key"], c["name"]) for c in TRANSIT["busCategories"]]
     for key, label in labels:
         refs = cats.get(key, [])
         lines += [f"## {label} — {len(refs)}", ", ".join(refs) if refs else "(none)", ""]
@@ -307,11 +320,11 @@ def render_audit(bundle, inferred, previous_refs):
             "## GTFS special/night lines not in the game categories",
             ", ".join(excluded_special),
             "",
-            "These are present in GTFS but are not part of the four NT transport-form categories selected for this game.",
+            f"These are present in GTFS but are not part of the {TRANSIT['busOperator']} transport-form categories selected for this game.",
             "",
         ]
     if inferred:
-        lines += ["## Category inference", "These new/unknown route numbers were not in the saved NT category catalogue, so the generator inferred their category rather than dropping them:"]
+        lines += ["## Category inference", "These new/unknown route numbers are not on the city's saved category lists (city.json), so the generator inferred their category rather than dropping them:"]
         lines += [f"- {ref} → {cat}" for ref, cat in inferred]
         lines.append("")
     lines += [
@@ -327,14 +340,17 @@ def render_audit(bundle, inferred, previous_refs):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("gtfs", type=Path, help="Path to Rejseplanen GTFS.zip")
-    parser.add_argument("--play-area", type=Path, default=DEFAULT_PLAY_AREA)
-    parser.add_argument("--categories", type=Path, default=DEFAULT_CATEGORIES)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--audit", type=Path, default=DEFAULT_AUDIT)
+    add_city_argument(parser)
+    parser.add_argument("--play-area", type=Path, help="default: the city's play_area.geojson")
+    parser.add_argument("--output", type=Path, help="default: the city's bus-routes.js")
+    parser.add_argument("--audit", type=Path, help="default: the city's BUS_ROUTE_AUDIT.md")
     args = parser.parse_args()
+    city = use_city(args.city)
+    args.output = args.output or city.path("bus-routes.js")
+    args.audit = args.audit or city.path("BUS_ROUTE_AUDIT.md")
 
     previous = parse_existing_refs(args.output)
-    bundle, inferred = build_bundle(args.gtfs, args.play_area, args.categories)
+    bundle, inferred = build_bundle(args.gtfs, args.play_area)
     validate(bundle, previous)
 
     js = render_js(bundle)
@@ -344,8 +360,8 @@ def main():
 
     cats = bundle["metadata"]["categories"]
     print(f"GTFS feed: {bundle['metadata']['feed_date']} to {bundle['metadata']['feed_end']}")
-    print(f"NT agency: {bundle['metadata']['agency_id']} ({bundle['metadata']['agency']})")
-    for key in ("bybus", "regional", "express", "local"):
+    print(f"Bus operator: {bundle['metadata']['agency_id']} ({bundle['metadata']['agency']})")
+    for key in CATEGORY_KEYS:
         print(f"{key:8s}: {len(cats[key]):2d}  {' '.join(cats[key])}")
     print(f"total   : {len(bundle['features']):2d}")
     if inferred:

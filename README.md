@@ -3,11 +3,16 @@
 A seeker's map for the small-game version of *Jet Lag: The Game*'s Hide + Seek, played in Aalborg.
 Log each answer the hider gives and the map shades away everywhere they can't be.
 
+The app itself is not tied to Aalborg: each city's zones, places, transit and rules live in its own
+folder, `cities/<id>/`, and the **City** setting in the **Game** tab switches between them. Aalborg is
+the only city so far.
+
 **Live site:** https://negi132.github.io/jetlag-aalborg/ — add it to your phone's home screen before
 game day; it is built for one-handed use on a bus.
 
 Everything runs in the browser: no backend, no build step, no API keys. The whole game state lives
-in the URL, so a reload never loses it and **Copy game link** hands a co-seeker the identical map.
+in the URL (`?city=aalborg#g=…`), so a reload never loses it and **Copy game link** hands a co-seeker
+the identical map.
 
 ---
 
@@ -38,6 +43,9 @@ whatever survives stays bright.
   stops. Zone layers opened automatically by a question close again afterwards.
 - **Location.** The blue marker shows your device position. It is display-only and never saved or
   shared.
+- **City.** The **Game** tab lists the cities. Switching reloads the page with that city's data and
+  starts a new game; a saved or shared game from another city is refused with a message saying
+  which city it belongs to.
 
 ### Shared map
 
@@ -55,13 +63,15 @@ posted. Posting over a newer map you have not loaded, or loading over answers yo
 asks first. Each phone still previews questions on its own; only logged answers and the play area are
 shared, while units, basemap, shading strength and your location dot stay personal.
 
-The relay is [ntfy.sh](https://ntfy.sh), a free public service (no account or key). It keeps a post
+Rooms are per city. The relay is [ntfy.sh](https://ntfy.sh), a free public service (no account or key). It keeps a post
 for 12 hours, and the weekly health check confirms it is still up. Answers travel as small recipes
 (what was asked and where) that each phone rebuilds from its own data files, so a whole game is
 usually 1–3 KB. Phones should run the same version of the site for identical maps; if they don't,
 loading a map says so. **Copy game link** still works as a fallback.
 
-### Game-specific rules built into the map
+### Aalborg's rules
+
+These are set in [`cities/aalborg/city.json`](cities/aalborg/city.json).
 
 - **Play area:** the exact union of Zone 2's four areas — Midtbyen, Nørresundby, Vest Aalborg and
   Øst Aalborg. Points of interest, stops and routes outside it are ignored.
@@ -81,21 +91,25 @@ loading a map says so. **Copy game link** still works as a fallback.
 
 | File | What it is |
 |---|---|
-| `index.html`, `styles.css`, `app.js` | The whole app. Leaflet draws the map, Turf.js does the geometry, proj4 reprojects KortInfo's UTM32 data. |
-| `bus-routes.js` | NT bus routes from Rejseplanen GTFS, tagged Bybus / Regionalbus / Expresbus / Lokalbus. |
-| `transit-data.js` | Scheduled passenger train lines plus named bus and rail stops, from GTFS. |
-| `poi-data.js` | Points of interest for Matching and Measuring, from OpenStreetMap plus curated lists. |
-| `hydro-data.js` | Generalized Limfjord banks and bodies of water, from OpenStreetMap. |
-| `zone-data.js` | Snapshot of Aalborg Kommune's four KortInfo zone layers, clipped to the play area (about 1.3 MB gzipped). |
-| `zone2-fallback.js` | Simplified official outlines of the four Zone 2 areas, used only if `zone-data.js` and KortInfo are both unavailable. |
-| `kommune-outline.js` | Aalborg Kommune's boundary (OpenStreetMap) for the "whole municipality" play area. Built by hand with `scripts/make_kommune_outline.py`; borders rarely change. |
-| `scripts/` | Python generators for the data files above (shared helpers in `common.py`), plus `play_area.geojson` (official Zone 2, written by `update_zones.py`) and filter lists. |
+| `index.html`, `styles.css`, `app.js` | The app, the same for every city. Leaflet draws the map, Turf.js does the geometry, proj4 reprojects UTM32 zone data. |
+| `boot.js` | Picks the city (`?city=`, else the last one used, else Aalborg), loads its `city.json` and data files, then `app.js`. Also the list of cities. |
+| `cities/<id>/city.json` | Everything city-specific: map centre and bounds, the zone service and its four layers, the Zone 2 play areas and colours, the Landmass split, the coastline, the bus operator and its categories, excluded rail halts, and the curated places for each card. Read by both the app and the generators. |
+| `cities/<id>/bus-routes.js` | The operator's bus routes from Rejseplanen GTFS, tagged by category (Aalborg: NT's Bybus / Regionalbus / Expresbus / Lokalbus). |
+| `cities/<id>/transit-data.js` | Scheduled passenger train lines plus named bus and rail stops, from GTFS. |
+| `cities/<id>/poi-data.js` | Points of interest for Matching and Measuring, from OpenStreetMap plus the curated lists. |
+| `cities/<id>/hydro-data.js` | Coastline and bodies of water, from OpenStreetMap (Aalborg: the generalized Limfjord banks). |
+| `cities/<id>/zone-data.js` | Snapshot of the four zone layers, clipped to the play area (Aalborg: about 1.3 MB gzipped). |
+| `cities/<id>/zone2-fallback.js` | Simplified outlines of the Zone 2 play areas, used only if `zone-data.js` and the zone service are both unavailable. |
+| `cities/<id>/kommune-outline.js` | The municipality's boundary (OpenStreetMap) for the "whole municipality" play area. Built by hand with `scripts/make_kommune_outline.py --city <id>`; borders rarely change. |
+| `cities/<id>/play_area.geojson` | Official Zone 2, written by `update_zones.py`; every other generator filters by it. |
+| `cities/<id>/*_AUDIT.md` | What the latest data refresh produced. |
+| `scripts/` | Python generators for the data files (shared helpers and the city loader in `common.py`; all take `--city`), plus OSM filter lists. |
 | `tests/` | Headless test suite (jsdom). |
-| `*_AUDIT.md` | What the latest data refresh produced. |
 
 Generated data files are committed and shipped with the site, so phones never wait on slow public
-map services during play. `app.js` still has live fallbacks for zones (KortInfo WFS, cached on
-the device for 45 days), POIs, stops and train lines (Overpass) if a bundle is missing.
+map services during play, and a phone only ever downloads its own city's files. `app.js` still has
+live fallbacks for zones (the city's WFS, cached on the device for 45 days), POIs, stops and train
+lines (Overpass) if a bundle is missing.
 
 ### Data refresh and deploy
 
@@ -103,16 +117,20 @@ the device for 45 days), POIs, stops and train lines (Overpass) if a bundle is m
 
 | Trigger | What happens |
 |---|---|
-| Push to `main` | Run tests, then deploy to GitHub Pages. If the push changes `scripts/`, the data is regenerated first, as on a scheduled run. |
-| Sunday 04:17 Copenhagen time, or **Run workflow** | Download Rejseplanen GTFS and Geofabrik's Denmark OSM extract, regenerate every data file, run tests, commit changed data as `github-actions[bot]`, deploy. |
+| Push to `main` | Run tests, then deploy to GitHub Pages. If the push changes `scripts/` or a `city.json`, the data is regenerated first, as on a scheduled run. |
+| Sunday 04:17 Copenhagen time, or **Run workflow** | Download Rejseplanen GTFS and Geofabrik's Denmark OSM extract, regenerate every city's data files, run tests, commit changed data as `github-actions[bot]`, deploy. |
+
+Every step loops over the cities (`python scripts/cities.py` lists them). One city's zone service
+being down does not stop the others.
 
 The generators refuse to overwrite good data when a source looks incomplete (route or stop counts
 collapsing, implausible zone bounds), and the test suite must pass before anything is committed or
-deployed. Only `index.html`, `styles.css` and the `.js` files are published.
+deployed. Only `index.html`, `styles.css`, the `.js` files and each city's `city.json` and data
+files are published.
 
 **Weekly monitoring.** After every scheduled or manual run, `scripts/health_check.py` confirms the data
 is fresh, the GTFS timetable is not about to expire, and every outside service still answers properly:
-the data sources, the CDN libraries, KortInfo, and each basemap. A basemap must serve real, varying
+the data sources, the CDN libraries, each city's zone service, the ntfy.sh relay and each basemap. A basemap must serve real, varying
 tiles, so a provider that starts demanding an API key (as CARTO did) is caught. If anything fails, or the
 refresh, deploy or zone snapshot fails, the run turns red and an issue labelled `map-data-health` is
 opened (or updated) with the details. The next clean run closes it. The run also re-enables its own
@@ -143,12 +161,13 @@ npm test
 | Suite | What breaks it |
 |---|---|
 | `tests/geometry.test.mjs` | Constraint maths (radar, thermometer bisector, nearest-place cells) drifting from known answers. |
-| `tests/data.test.mjs` | A generated bundle that is malformed, empty, outside the play area or missing a category, and `index.html` referencing a missing or unversioned file. |
+| `tests/data.test.mjs` | A `city.json` with missing or inconsistent settings, a generated bundle that is malformed, empty, outside the play area or missing a category, and `index.html` referencing a missing or unversioned file. |
 | `tests/ui.test.mjs` | Detailed app behaviour: parsing, labels, POI rules, previews, URL state. |
-| `tests/features.test.mjs` | Any layer toggle, Game-tab control or question card that stops working. It opens **every** card in the deck, answers it and logs it, and fails if a new card is added without a test. |
+| `tests/features.test.mjs` | Any layer toggle, Game-tab control (including the city picker) or question card that stops working. It opens **every** card in the deck, answers it and logs it, and fails if a new card is added without a test. |
 | `tests/share.test.mjs` | The shared map: two simulated phones on a fake relay post, get the latest, get warned before overwriting, and end up with identical maps. |
 
-The UI suites boot the real `index.html` and scripts in jsdom via `tests/harness.mjs`.
+The UI suites boot the real `index.html` in jsdom via `tests/harness.mjs`, which loads the same
+city settings and data files `boot.js` would.
 
 The Python generators have their own tests (shared helpers, validation rules, and the committed
 bundles passing them). They need the generators' dependencies:
@@ -162,14 +181,29 @@ CI runs both before every deploy.
 
 Things to know when changing code:
 
-- **Bump the `?v=` strings** in `index.html` when you change `app.js`, `styles.css` or
-  `zone2-fallback.js`, so phones fetch the new files instead of cached ones.
-- **Console access:** a live game is on `window.HS`, e.g. `HS.S.constraints`,
+- **Bump the versions** so phones fetch new files instead of cached ones: after changing `app.js`,
+  `boot.js` or a `city.json`, change `BUILD` in `boot.js` and `boot.js?v=` in `index.html` to the
+  same new value (the data test fails if they differ); after changing `styles.css`, its `?v=` in
+  `index.html`; after editing a city's data files by hand, that city's `data` version in `boot.js`.
+- **Console access:** a live game is on `window.HS`, e.g. `HS.S.constraints`, `HS.CITY`,
   `HS.setCircularPlayArea(HS.map.getCenter(), 4)`.
-- **Config** lives at the top of `app.js` (`CONFIG`, `RADAR_PRESETS`, `DEFAULT_SOURCES`); colours
-  are CSS custom properties at the top of `styles.css`.
+- **Config:** city-specific settings are in `cities/<id>/city.json`; game-wide ones at the top of
+  `app.js` (`RADAR_PRESETS`, colours); styling colours are CSS custom properties at the top of
+  `styles.css`.
 - **Sources:** every zone source in the Layers tab is editable (⚙), including **Browse layers** to list
   a WFS server's layers. Edits travel in the game link.
+
+### Adding a city
+
+1. Copy `cities/aalborg/city.json` to `cities/<id>/city.json` and change everything in it: `id` and
+   `name`, the map centre and bounds, the zone service and its four layers, the Zone 2 play areas,
+   the Landmass split (or remove `landmass`), the coastline, the bus operator, its categories and
+   inference rules, excluded rail halts, and the curated places.
+2. Add the city to `CITIES` in `boot.js`.
+3. Run `python scripts/update_zones.py --city <id>` (writes `zone-data.js` and `play_area.geojson`),
+   then `python scripts/make_kommune_outline.py --city <id>`, and write a `zone2-fallback.js`.
+4. Push. The workflow regenerates the city's bus, transit, POI and water files, tests and deploys.
+   A coastline method other than `two-bank-fjord` needs support in `scripts/update_hydro.py` first.
 
 ## Credits and licences
 

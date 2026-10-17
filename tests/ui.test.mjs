@@ -73,7 +73,7 @@ click(doc.querySelector('[data-tab="ask"]'));
 check('leaving and re-entering Ask collapses all question families again',
       [...doc.querySelectorAll('.question-type')].every((e) => !e.open));
 check('all four default zone sources use KortInfo', window.eval(`
-  Object.values(HS.S.sources).every(s => s.url === HS.KORTINFO && s.kind === 'wfs')
+  Object.values(HS.S.sources).every(s => s.url === HS.ZONE_SERVICE_URL && s.kind === 'wfs')
 `));
 check('default WFS layer IDs are the supplied four', window.eval(`
   ['ugis:TL1433667','ugis:TL445984','ugis:TL445987','ugis:TL445981']
@@ -105,7 +105,7 @@ window.__legacyState = {
 };
 window.eval('HS.deserialize(window.__legacyState)');
 check('legacy links cannot replace official Zone 2 defaults',
-      window.eval(`HS.S.sources.zone2.url === HS.KORTINFO && HS.S.sources.zone2.typeName === 'ugis:TL445984'`));
+      window.eval(`HS.S.sources.zone2.url === HS.ZONE_SERVICE_URL && HS.S.sources.zone2.typeName === 'ugis:TL445984'`));
 
 console.log('\n== tabs ==');
 click(doc.querySelector('[data-tab="layers"]'));
@@ -154,7 +154,7 @@ check('Rail-station Measuring builds the threshold around every scheduled statio
 click($('#toolForm .question-back'));
 
 console.log('\n== automatic coastline / water Measuring ==');
-window.AALBORG_HYDRO_DATA = {
+window.HS_HYDRO_DATA = {
   version: 5, ready: true,
   coastlines: {
     north: {type:'FeatureCollection',features:[{type:'Feature',properties:{name:'Limfjorden'},geometry:{type:'LineString',coordinates:[[9.70,57.056],[10.30,57.056]]}}]},
@@ -625,7 +625,7 @@ check('the four areas tile their outline without overlap', window.eval(`(() => {
   return Math.abs(sum - turf.area(HS.unionAll(fs))) / sum < 0.002;
 })()`));
 check('callers get a copy, not the shared fallback',
-      window.eval("HS.buildAreaZones() !== window.AALBORG_ZONE2_FALLBACK && HS.buildAreaZones().features[0] !== window.AALBORG_ZONE2_FALLBACK.features[0]"));
+      window.eval("HS.buildAreaZones() !== window.HS_ZONE2_FALLBACK && HS.buildAreaZones().features[0] !== window.HS_ZONE2_FALLBACK.features[0]"));
 
 console.log('\n== play area follows the four zones ==');
 window.eval("HS.setPlayMode('zones')");
@@ -658,8 +658,8 @@ check('four taps later there is still exactly one layer',
 window.eval("HS.removeLayerByKey('src:zone3')");
 
 console.log('\n== live boundaries from Aalborg KortInfo ==');
-check('the KortInfo endpoint is wired in', window.eval("HS.KORTINFO").includes('drift.kortinfo.net')
-      && window.eval("HS.KORTINFO").includes('Site=Aalborg'), window.eval("HS.KORTINFO"));
+check('the KortInfo endpoint is wired in', window.eval("HS.ZONE_SERVICE_URL").includes('drift.kortinfo.net')
+      && window.eval("HS.ZONE_SERVICE_URL").includes('Site=Aalborg'), window.eval("HS.ZONE_SERVICE_URL"));
 
 // KortInfo answers in GML, not GeoJSON, so that has to parse too.
 window.__gml = `<?xml version="1.0"?>

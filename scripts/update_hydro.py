@@ -29,12 +29,27 @@ from shapely.geometry import LineString, shape, mapping
 from shapely.ops import unary_union
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for `common`, even under python -I
-from common import PLAY_AREA, normalise_name
+from common import DEFAULT_CITY, add_city_argument, load_city, normalise_name
 
-ROOT = Path(__file__).resolve().parents[1]
-PLAY = PLAY_AREA
-OUTPUT = ROOT / 'hydro-data.js'
-AUDIT = ROOT / 'HYDRO_AUDIT.md'
+GLOBAL_NAME = 'HS_HYDRO_DATA'
+# Coastline methods this generator knows. two-bank-fjord: both mainland banks
+# of a fjord running west-east through the play area (Aalborg's Limfjord).
+COASTLINE_METHODS = {'two-bank-fjord'}
+
+
+def use_city(city_id: str = DEFAULT_CITY):
+    """Point the generator at a city: its play area, coastline and output files."""
+    global CITY, PLAY, OUTPUT, AUDIT, COAST, NORTH_AREAS, NORTH_ALIASES
+    CITY = load_city(city_id)
+    PLAY = CITY.play_area
+    OUTPUT = CITY.path('hydro-data.js')
+    AUDIT = CITY.path('HYDRO_AUDIT.md')
+    COAST = CITY.config['hydro']['coastline']
+    # The play areas on the north bank (the landmass card uses the same split).
+    landmass = CITY.config.get('landmass') or {}
+    NORTH_AREAS = {str(n) for n in landmass.get('northAreas', [])}
+    NORTH_ALIASES = [alias for a in CITY.config['zones']['areas'] if str(a['area']) in NORTH_AREAS for alias in a['aliases']]
+    return CITY
 
 # Local degree-scale tolerances are intentional here: everything is constrained
 # to Aalborg (~57 N). The shoreline is intentionally an approximation: roughly
@@ -75,7 +90,11 @@ def norm(value):
     return normalise_name(value, fold_aa=True)
 
 
+use_city()
+
+
 def load_play():
+    """The play area, and its parts north and south of the fjord."""
     data = json.loads(PLAY.read_text(encoding='utf-8'))
     features = data.get('features', [])
     all_geoms = []
@@ -88,7 +107,7 @@ def load_play():
         p = ft.get('properties') or {}
         n = p.get('n') or p.get('area')
         name = norm(p.get('name') or p.get('navn'))
-        if str(n) == '2' or 'norresundby' in name:
+        if str(n) in NORTH_AREAS or any(alias in name for alias in NORTH_ALIASES):
             north_geoms.append(g)
     play = unary_union(all_geoms)
     north = unary_union(north_geoms)
@@ -331,7 +350,12 @@ def simplify_water(g, tolerance=WATER_VISIBLE_SIMPLIFY_DEG):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('source_geojson', type=Path)
+    add_city_argument(ap)
     args = ap.parse_args()
+    use_city(args.city)
+    if COAST.get('method') not in COASTLINE_METHODS:
+        raise SystemExit(f"{CITY.name}: coastline method {COAST.get('method')!r} is not supported "
+                         f"(known: {', '.join(sorted(COASTLINE_METHODS))})")
 
     source = json.loads(args.source_geojson.read_text(encoding='utf-8'))
     play, north_land, south_land = load_play()
@@ -409,7 +433,7 @@ def main():
         ('north', generalized_north, visible_north_parts, distance_north_parts),
         ('south', generalized_south, visible_south_parts, distance_south_parts),
     ):
-        props = {'name': 'Limfjorden', '__hydroKind': 'coastline', '__shoreSide': side, '__generalized': True}
+        props = {'name': COAST['name'], '__hydroKind': 'coastline', '__shoreSide': side, '__generalized': True}
         for ln in lines:
             dclip = ln.intersection(distance_scope)
             for part in iter_lines(dclip):
@@ -512,8 +536,8 @@ def main():
     # The fjord itself is represented by the two generalized in-play shorelines.
     fjord_visible = unary_union([shape(ft['geometry']) for ft in visible_north_parts + visible_south_parts])
     water_features.append(water_feature(fjord_visible, {
-        'name': 'Limfjorden', '__hydroKind': 'fjord', '__waterSource': 'generalized-shoreline',
-        '__waterId': 'fjord:limfjorden', '__generalized': True
+        'name': COAST['name'], '__hydroKind': 'fjord', '__waterSource': 'generalized-shoreline',
+        '__waterId': f"fjord:{COAST['name'].lower()}", '__generalized': True
     }))
 
     # PRE-UNION the expensive Measuring target geometry. The browser still gets
@@ -548,7 +572,7 @@ def main():
         'waterDistance': fc(water_distance_features),
     }
     payload = '/* Generated from Geofabrik/OpenStreetMap water geometry. Do not edit by hand. */\n' \
-              + 'window.AALBORG_HYDRO_DATA = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
+              + f'window.{GLOBAL_NAME} = ' + json.dumps(bundle, ensure_ascii=False, separators=(',', ':')) + ';\n'
     tmp = OUTPUT.with_suffix('.js.tmp')
     tmp.write_text(payload, encoding='utf-8')
     tmp.replace(OUTPUT)
@@ -558,7 +582,7 @@ def main():
     unnamed_count = sum(1 for f in water_features if (f.get('properties') or {}).get('__unnamed'))
     quarry_count = sum(1 for f in water_features if (f.get('properties') or {}).get('__waterSource') == 'quarry-fallback')
     AUDIT.write_text('\n'.join([
-        '# Aalborg hydro snapshot audit', '',
+        f'# {CITY.name} hydro snapshot audit', '',
         f'- Generated: `{now}`',
         f'- Formal OSM coastline pieces used as source: **{len(formal_coast)}**',
         f'- Generalized northern shoreline pieces: **{len(visible_north_parts)}**',

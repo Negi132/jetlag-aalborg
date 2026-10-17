@@ -75,7 +75,7 @@ for (const [i, key] of ['zone1', 'zone2', 'zone3', 'zone4'].entries()) {
   click(zoneRows()[i]);
   await wait(60);
   const n = ev(`(HS.layerByKey('src:${key}') || {geojson:{features:[]}}).geojson.features.length`);
-  const bundled = ev(`window.AALBORG_ZONE_DATA.zones.${key}.features.length`);
+  const bundled = ev(`window.HS_ZONE_DATA.zones.${key}.features.length`);
   check(`${key} turns on from the bundled snapshot`, n > 0 && n === bundled, `${n} of ${bundled}`);
   check(`${key} is visible after turning on`, ev(`HS.layerByKey('src:${key}').visible`) === true);
   if (ZONE_EXPECT[key].legend) check(`${key} legend is shown`, ZONE_EXPECT[key].legend.test($('#legend').textContent));
@@ -223,6 +223,40 @@ click(doc.querySelector('#playSeg [data-area="zones"]'));
 await wait(60);
 check('zones mode restores the four-zone play area', ev('HS.S.playAreaMeta.type') === 'zones' && Math.abs(remainingKm2() - PLAY_KM2) < 0.5);
 
+console.log('\n== city ==');
+{
+  tab('game');
+  const cityButtons = [...doc.querySelectorAll('#citySeg button')];
+  check('the Game tab lists the cities, with Aalborg selected',
+        cityButtons.some((b) => b.textContent === 'Aalborg' && b.classList.contains('is-active')),
+        cityButtons.map((b) => b.textContent).join(', '));
+  check('the page is titled for the city', /Aalborg/.test(doc.title) && $('#citySub').textContent === 'Aalborg seeker map',
+        `${doc.title} / ${$('#citySub').textContent}`);
+  check('the address names the city, so reloads and links stay in it',
+        new URL(window.location.href).searchParams.get('city') === 'aalborg', window.location.href);
+  check('the city fills in the zone, route and play-area texts',
+        /KortInfo/.test($('#zoneSourcesHint').textContent) && $('#zoneDefaults').children.length === 4
+        && /NT’s timetable/.test($('#routesHint').textContent)
+        && $('#playSeg [data-area="kommune"]').textContent === 'Aalborg Kommune'
+        && $('#playSeg [data-area="zones"]').textContent === 'The four play zones'
+        && /Midtbyen, Nørresundby, Vest Aalborg and Øst Aalborg/.test($('#officialZoneStatus').textContent));
+  click(cityButtons.find((b) => b.dataset.city === 'aalborg'));
+  check('choosing the current city keeps the game', /Already playing in Aalborg/.test($('#toast').textContent));
+  check('saved games record the city', ev('HS.serialize().city') === 'aalborg');
+  check('a game from another city is refused with a clear message',
+        ev(`HS.deserialize({ city: 'aarhus', constraints: [] })`) === false
+        && /played in aarhus/i.test(ev(`HS.gameCityProblem({ city: 'aarhus' })`)));
+  check('games saved before cities existed load as Aalborg games', ev('HS.gameCityProblem({ constraints: [] })') === null);
+  ev("HS.S.constraints.push({ id: 'city1', type: 'radar', center: [9.9217, 57.0488], radiusM: 1609.344, answer: 'yes', active: true }); HS.recompute()");
+  let asked = '';
+  window.confirm = (text) => { asked = text; return false; };
+  ev("HS.switchCity('aarhus')");
+  window.confirm = () => true;
+  check('switching city with answers asks first, and declining keeps them',
+        /starts a new game/.test(asked) && constraintCount() === 1, asked);
+  clearLog();
+}
+
 console.log('\n== share, export, import, reset ==');
 {
   ev("HS.S.constraints.push({ id: 'share1', type: 'radar', center: [9.9217, 57.0488], radiusM: 1609.344, answer: 'yes', active: true }); HS.recompute()");
@@ -255,6 +289,14 @@ console.log('\n== share, export, import, reset ==');
   input.dispatchEvent(new window.Event('change'));
   await wait(80);
   check('Import restores the exported game', constraintCount() === 1 && ev('HS.S.constraints[0].type') === 'radar');
+
+  clearLog();
+  const other = new window.File([JSON.stringify(Object.assign({}, json, { city: 'aarhus' }))], 'aarhus.json', { type: 'application/json' });
+  Object.defineProperty(input, 'files', { value: [other], configurable: true });
+  input.dispatchEvent(new window.Event('change'));
+  await wait(80);
+  check('Import refuses a game from another city', constraintCount() === 0 && /played in aarhus/i.test($('#toast').textContent),
+        $('#toast').textContent);
 
   click($('#resetBtn'));
   await wait();

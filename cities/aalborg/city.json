@@ -1,0 +1,264 @@
+{
+  "id": "aalborg",
+  "name": "Aalborg",
+  "about": "Aalborg small game: the four official Zone 2 areas of Aalborg Kommune.",
+  "map": {
+    "center": [57.0488, 9.9217],
+    "zoom": 12,
+    "playRadiusMi": 6
+  },
+  "kommune": {
+    "name": "Aalborg Kommune",
+    "code": "851",
+    "osmRelation": 2099194
+  },
+  "bounds": {
+    "about": "All [west, south, east, north]. search: OSM extract and live Overpass lookups. playArea: a play-area snapshot outside this is treated as corrupt. stops / pois: sanity limits for generated stops and places.",
+    "search": [9.7, 56.94, 10.25, 57.18],
+    "playArea": [9.65, 56.86, 10.32, 57.24],
+    "stops": [9.4, 56.7, 10.4, 57.4],
+    "pois": [8.5, 56.7, 10.6, 57.4]
+  },
+  "zones": {
+    "service": "KortInfo",
+    "serviceUrl": "https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside",
+    "about": "Aalborg Kommune's own WebGIS. Its WFS is the source for all four zone levels; zone-data.js caches it and zone2-fallback.js covers outages.",
+    "sources": {
+      "zone1": {
+        "name": "Zone 1 · Byzone / Landzone",
+        "note": "Official Aalborg KortInfo layer TL1433667.",
+        "typeName": "ugis:TL1433667",
+        "style": "zonekort"
+      },
+      "zone2": {
+        "name": "Zone 2 · Midtbyen / Nørresundby / Vest / Øst",
+        "note": "Official Aalborg KortInfo layer TL445984. Its four named polygons define the default play area.",
+        "typeName": "ugis:TL445984",
+        "style": "areas"
+      },
+      "zone3": {
+        "name": "Zone 3 · By- og bydele",
+        "note": "Official Aalborg KortInfo layer TL445987. District names are auto-detected instead of using its Zone 2 parent field.",
+        "typeName": "ugis:TL445987",
+        "style": "plain"
+      },
+      "zone4": {
+        "name": "Zone 4 · Kommuneplanrammer",
+        "note": "Official Aalborg KortInfo layer TL445981. Uncovered or unclassified land is shown as X · Uden kommuneplanramme.",
+        "typeName": "ugis:TL445981",
+        "style": "rammer"
+      }
+    },
+    "minCounts": {
+      "zone1": 1,
+      "zone2": 4,
+      "zone3": 5,
+      "zone4": 5
+    },
+    "playAreaKm2": [60, 250],
+    "areas": [
+      {
+        "area": 1,
+        "name": "Midtbyen",
+        "color": "#e8734d",
+        "aliases": ["midtbyen"]
+      },
+      {
+        "area": 2,
+        "name": "Nørresundby",
+        "color": "#4f9bd8",
+        "aliases": ["norresundby"]
+      },
+      {
+        "area": 3,
+        "name": "Vest Aalborg",
+        "color": "#5fb56a",
+        "aliases": ["vest aalborg", "aalborg vest"]
+      },
+      {
+        "area": 4,
+        "name": "Øst Aalborg",
+        "color": "#b878cf",
+        "aliases": ["ost aalborg", "aalborg ost"]
+      }
+    ]
+  },
+  "landmass": {
+    "about": "The Landmass card splits the play area into the Zone 2 areas listed in northAreas and the rest.",
+    "northAreas": [2],
+    "north": {
+      "name": "Nørresundby / north of the Limfjord",
+      "short": "Nørresundby / north"
+    },
+    "south": {
+      "name": "Aalborg / south of the Limfjord",
+      "short": "Aalborg / south"
+    },
+    "cardNote": "In Aalborg this essentially asks whether the hider is in Nørresundby or south of the Limfjord.",
+    "hint": "For Aalborg, the Limfjord is the useful landmass split: Nørresundby versus the play area south of the fjord. Tap where you asked from."
+  },
+  "hydro": {
+    "coastline": {
+      "about": "two-bank-fjord: both mainland banks of a fjord count as one coastline; islands are ignored.",
+      "method": "two-bank-fjord",
+      "name": "Limfjorden",
+      "label": "Limfjord coastline",
+      "nearest": "nearest Limfjord shoreline on either bank"
+    }
+  },
+  "transit": {
+    "busOperator": "NT",
+    "busAgency": {
+      "name": "NT",
+      "nameContains": "NORDJYLLAND",
+      "id": "206"
+    },
+    "about": "Bus categories follow the operator's timetable list. A route missing from every list is placed by inferRules (first match wins; category null drops it) and noted in the audit.",
+    "busCategories": [
+      {
+        "key": "bybus",
+        "name": "Bybus",
+        "minRoutes": 8,
+        "routes": ["1", "FR1", "HO1", "NY1", "TH1", "2", "FR2", "HO2", "NY2", "TH2", "3", "FR3", "FR4", "5", "6", "11", "FR11", "12", "FR12", "13", "FR13", "14", "15", "16", "17", "18", "19"]
+      },
+      {
+        "key": "regional",
+        "name": "Regionalbus",
+        "minRoutes": 3,
+        "routes": ["36", "40", "42", "45", "46", "50", "52", "53", "54", "55", "56", "57", "58", "61", "64", "67", "68", "70", "72", "73", "77", "78", "80", "81", "82", "87", "90", "100", "102", "103", "104", "107", "111", "112", "113", "118", "158", "176", "200", "202", "208", "209", "212", "213", "230", "234", "235", "237", "265", "270", "274", "275", "276", "278", "311", "312", "313", "320", "321", "322", "360", "361", "362", "363", "370", "371", "372", "373", "380", "381", "382", "383", "439", "440", "442", "454", "456", "457", "460", "461", "462", "463", "464", "468", "470", "543", "701", "702", "703", "704", "705", "706", "707", "708", "709", "790", "813", "840"]
+      },
+      {
+        "key": "express",
+        "name": "Expresbus",
+        "minRoutes": 2,
+        "routes": ["60X", "940X", "950X", "951X", "954X", "958X", "970X", "971X", "973X", "974X"]
+      },
+      {
+        "key": "local",
+        "name": "Lokalbus",
+        "minRoutes": 1,
+        "routes": ["38", "271", "273", "404", "407", "409", "414", "417", "419", "422", "600", "605", "607", "608", "609", "610", "611", "615", "617", "618", "621", "625"]
+      }
+    ],
+    "inferRules": [
+      {
+        "pattern": "^\\d+[NE]$",
+        "category": null
+      },
+      {
+        "pattern": "X$",
+        "category": "express"
+      },
+      {
+        "pattern": "^\\d+$",
+        "maxNumber": 30,
+        "category": "bybus"
+      },
+      {
+        "pattern": "^\\d+$",
+        "category": "regional"
+      }
+    ],
+    "busRoutes": [20, 80],
+    "minTrainRoutes": 3,
+    "minBusStops": 250,
+    "minTrainStops": 4,
+    "maxStops": 800,
+    "excludedTrainStopsAbout": "Heritage halts on Limfjordsbanen: real OSM railway objects, but not ordinary passenger stations. Identically named bus stops are kept.",
+    "excludedTrainStops": ["Østerådalen", "Østeraadalen", "Gug", "Hadsundvej", "Limfjorden", "Train - Limfjorden"]
+  },
+  "pois": {
+    "about": "Curated places per Matching/Measuring card. places have fixed coordinates, so no geocoder is needed. authoritativeOnly: the list is complete and OSM is not consulted. officialNames: names that count even if OSM tags differ.",
+    "minTotal": 25,
+    "categories": {
+      "airport": {
+        "minCount": 1,
+        "authoritativeOnly": true,
+        "about": "The passenger terminal, not the aerodrome centre, so it lies inside the Nørresundby area.",
+        "places": [
+          {"name": "Aalborg Airport terminal (AAL)", "coordinates": [9.87222767, 57.08619727]}
+        ]
+      },
+      "park": {
+        "minCount": 10,
+        "about": "Aalborg Kommune's park list, plus park-like green areas from its \"Naturområder og skove\" page.",
+        "officialNames": ["Budolfihaven", "Bundgårdsparken", "Den Gamle Golfbane", "Jomfru Ane Parken", "Karolinelund", "Kildeparken", "Lindholm Fjordpark", "Lindholm Strandpark", "Mulighedernes Park", "Mølleparken", "Nordens Kridtgrav", "Skanseparken", "Sofiendal Enge klimapark", "Sohngårdsholmparken", "Stigsparken", "Svanemølleparken i Svenstrup", "Urtehaven i Nørresundby", "Vestre Fjordpark", "Østre Anlæg"],
+        "officialExactNames": ["Østerådalen", "Østerådalen Nord", "Østerådalen Syd", "Golfparken", "Vandbakken"],
+        "places": [
+          {"name": "Østerådalen Nord", "coordinates": [9.91342, 57.02087]},
+          {"name": "Østerådalen Syd", "coordinates": [9.889, 56.9915]},
+          {"name": "Golfparken", "coordinates": [9.95498, 57.02563]},
+          {"name": "Vandbakken", "coordinates": [9.93371, 57.03202]}
+        ]
+      },
+      "amusement": {
+        "minCount": 0
+      },
+      "zoo": {
+        "minCount": 1,
+        "authoritativeOnly": true,
+        "places": [
+          {"name": "Aalborg Zoo", "coordinates": [9.8997, 57.03804]}
+        ]
+      },
+      "aquarium": {
+        "minCount": 0
+      },
+      "golf": {
+        "minCount": 0,
+        "authoritativeOnly": true,
+        "about": "Both courses lie just outside the play area, so the Golf cards have no candidates.",
+        "places": [
+          {"name": "Aalborg Golf Klub", "coordinates": [9.78295, 57.02676]},
+          {"name": "Ørnehøj Golfklub", "coordinates": [9.96805, 56.98757]}
+        ]
+      },
+      "museum": {
+        "minCount": 3
+      },
+      "cinema": {
+        "minCount": 3,
+        "authoritativeOnly": true,
+        "places": [
+          {"name": "Nordisk Film Biografer Aalborg Kennedy", "coordinates": [9.9189535, 57.0419503]},
+          {"name": "Biffen", "coordinates": [9.9329399, 57.046384]},
+          {"name": "Nordisk Film Biografer Aalborg City Syd", "coordinates": [9.8714578, 57.0027432]}
+        ]
+      },
+      "hospital": {
+        "minCount": 2,
+        "placesAuthoritative": true,
+        "about": "Region Nordjylland's Aalborg University Hospital sites, added to what OSM has.",
+        "places": [
+          {"name": "Aalborg Universitetshospital, Hospitalsbyen", "address": "Hospitalsbyen 1, 9260 Gistrup", "coordinates": [9.99941003, 57.00966924]},
+          {"name": "Aalborg Universitetshospital, Syd", "address": "Hobrovej 18-22, 9000 Aalborg", "coordinates": [9.9082114, 57.0382516]},
+          {"name": "Aalborg Universitetshospital, Nord", "address": "Reberbansgade 15, 9000 Aalborg", "coordinates": [9.912635, 57.048857]},
+          {"name": "Aalborg Universitetshospital, Mølleparkvej", "address": "Mølleparkvej 10, 9000 Aalborg", "coordinates": [9.90532768, 57.03853921]},
+          {"name": "Aalborg Universitetshospital, Brandevej", "address": "Brandevej 5, 9220 Aalborg Ø", "coordinates": [9.97885646, 57.02588105]}
+        ]
+      },
+      "library": {
+        "minCount": 4,
+        "authoritativeOnly": true,
+        "about": "Aalborg Bibliotekerne's ten libraries plus the Haraldslund service point. aliases are other spellings of the same branches.",
+        "aliases": ["Aalborg Hovedbibliotek", "Haraldslund Bibliotek", "Trekanten", "Vejgård Bibliotek"],
+        "places": [
+          {"name": "Hovedbiblioteket i Aalborg", "address": "Rendsburggade 2, 9000 Aalborg", "coordinates": [9.9275896, 57.0472572]},
+          {"name": "Haraldslund", "address": "Kastetvej 83, 9000 Aalborg", "coordinates": [9.89904347, 57.05420492], "servicePoint": true},
+          {"name": "Hasseris Bibliotek", "address": "Thulebakken 46, 9000 Aalborg", "coordinates": [9.88452416, 57.03559821]},
+          {"name": "Nørresundby Bibliotek", "address": "Torvet 5, 9400 Nørresundby", "coordinates": [9.9231595, 57.05896286]},
+          {"name": "Trekanten - Bibliotek og Kulturhus", "address": "Sebbersundvej 2A, 9220 Aalborg Øst", "coordinates": [10.0008729, 57.0276469]},
+          {"name": "Vejgaard Bibliotek", "address": "Hadsundvej 35, 9000 Aalborg", "coordinates": [9.95176, 57.0413]},
+          {"name": "Svenstrup Bibliotek", "address": "Godthåbsvej 14B, 9230 Svenstrup J", "coordinates": [9.8518, 56.9749]},
+          {"name": "Vodskov Bibliotek", "address": "Brorsonsvej 3B, 9310 Vodskov", "coordinates": [10.0245, 57.1088]},
+          {"name": "Storvorde Bibliotek", "address": "Stationsvej 5, 9280 Storvorde", "coordinates": [10.1017, 57.0058]},
+          {"name": "Nibe Bibliotek", "address": "St Algade 4, 9240 Nibe", "coordinates": [9.6398, 56.982]},
+          {"name": "Hals Bibliotek", "address": "Østergade 2A, 9370 Hals", "coordinates": [10.307, 56.9965]}
+        ]
+      },
+      "consulate": {
+        "minCount": 0
+      }
+    }
+  }
+}

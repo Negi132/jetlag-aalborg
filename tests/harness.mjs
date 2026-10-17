@@ -69,9 +69,24 @@ export function bootApp({ url = 'https://example.github.io/hideseek/', beforeScr
   run(path.join(nodeModules, 'leaflet/dist/leaflet-src.js'));
   run(path.join(nodeModules, '@turf/turf/turf.min.js'));
   run(path.join(nodeModules, 'proj4/dist/proj4.js'));
-  // Local scripts in the same order index.html loads them.
+  // index.html loads boot.js, which picks the city and would then fetch its
+  // settings and inject its data files and app.js. Here boot.js only picks;
+  // the same files are then run directly, in the same order.
+  window.HS_BOOT_MANUAL = true;
   for (const [, src] of html.matchAll(/<script src="(?!https:)([^"?]+)[^"]*"><\/script>/g)) {
     run(path.join(ROOT, src));
+  }
+  const boot = window.HS_BOOT;
+  const local = (url) => path.join(ROOT, url.split('?')[0]);
+  if (boot) {
+    try {
+      new vm.Script(`window.HS_CITY = ${fs.readFileSync(local(boot.config), 'utf8')};`, { filename: 'city.json' })
+        .runInContext(vmContext);
+    } catch (e) { errors.push(`city.json: ${e.message}`); }
+    for (const file of boot.data) {
+      if (fs.existsSync(local(file))) run(local(file));
+    }
+    run(local(boot.app));
   }
 
   const doc = window.document;

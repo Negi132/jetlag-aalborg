@@ -22,6 +22,10 @@ import update_pois as pois  # noqa: E402
 import update_transit as transit  # noqa: E402
 import update_zones as zones  # noqa: E402
 import health_check  # noqa: E402
+import make_kommune_outline  # noqa: E402
+
+AALBORG = common.load_city('aalborg')
+DATA = AALBORG.dir
 
 # How each generator normalised names before the helpers were shared. The
 # expected values were recorded from the original per-script functions.
@@ -89,11 +93,59 @@ class SharedHelpersTest(unittest.TestCase):
                 common.load_play_area(far, check_bounds=True)
 
 
+class CityTest(unittest.TestCase):
+    """Every cities/<id>/city.json loads, and every generator can be pointed at it."""
+
+    def test_the_default_city_exists(self):
+        self.assertIn(common.DEFAULT_CITY, common.city_ids())
+
+    def test_the_kommune_outline_script_loads(self):
+        self.assertTrue(callable(make_kommune_outline.main))
+
+    def test_every_city_loads_in_every_generator(self):
+        try:
+            for city_id in common.city_ids():
+                with self.subTest(city=city_id):
+                    city = common.load_city(city_id)
+                    self.assertEqual(city.id, city_id)
+                    self.assertTrue(city.play_area.name == 'play_area.geojson')
+                    for module in (bus, transit, pois, hydro, zones):
+                        self.assertIs(module.use_city(city_id), city)
+                    self.assertEqual(sorted(zones.LAYERS), ['zone1', 'zone2', 'zone3', 'zone4'])
+                    self.assertEqual(set(pois.MIN_COUNTS), set(pois.CATEGORY_ORDER))
+                    self.assertTrue(bus.CATEGORY_KEYS)
+        finally:
+            for module in (bus, transit, pois, hydro, zones):
+                module.use_city(common.DEFAULT_CITY)
+
+    def test_a_city_file_must_name_its_own_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'elsewhere'
+            folder.mkdir()
+            (folder / 'city.json').write_text(json.dumps({'id': 'aalborg', 'name': 'X'}), encoding='utf-8')
+            real = common.CITIES_DIR
+            common.CITIES_DIR = Path(tmp)
+            try:
+                with self.assertRaises(RuntimeError):
+                    common.City('elsewhere')
+            finally:
+                common.CITIES_DIR = real
+
+    def test_aalborg_settings_match_what_was_hard_coded(self):
+        self.assertEqual(zones.LAYERS['zone2'], 'ugis:TL445984')
+        self.assertEqual(transit.BUS_AGENCY_ID, '206')
+        self.assertEqual(transit.EXCLUDED_TRAIN_NAMES, {'osteradalen', 'osteraadalen', 'gug', 'hadsundvej', 'limfjorden', 'train limfjorden'})
+        self.assertEqual(pois.MIN_COUNTS['park'], 10)
+        self.assertEqual(sorted(pois.AUTHORITATIVE_ONLY), ['airport', 'cinema', 'golf', 'library', 'zoo'])
+        self.assertEqual(bus.MIN_CATEGORY_COUNTS, {'bybus': 8, 'regional': 3, 'express': 2, 'local': 1})
+        self.assertEqual((bus.MIN_TOTAL_ROUTES, bus.MAX_TOTAL_ROUTES), (20, 80))
+
+
 class PlayAreaTest(unittest.TestCase):
-    """scripts/play_area.geojson is the official Zone 2 union every generator filters by."""
+    """cities/aalborg/play_area.geojson is the official Zone 2 union every generator filters by."""
 
     def setUp(self):
-        self.data = json.loads(common.PLAY_AREA.read_text(encoding='utf-8'))
+        self.data = json.loads(AALBORG.play_area.read_text(encoding='utf-8'))
         self.play = common.load_play_area(check_bounds=True)
 
     def test_has_the_four_named_areas(self):
@@ -184,8 +236,8 @@ class ZoneSnapshotTest(unittest.TestCase):
 
 class BusRoutesTest(unittest.TestCase):
     def setUp(self):
-        self.bundle = bundle_json(ROOT / 'bus-routes.js', 'AALBORG_GTFS_BUS_ROUTES')
-        self.categories, self.reverse = bus.load_category_rules(bus.DEFAULT_CATEGORIES)
+        self.bundle = bundle_json(DATA / 'bus-routes.js', 'HS_GTFS_BUS_ROUTES')
+        self.categories, self.reverse = bus.load_category_rules()
 
     def test_category_snapshot_has_the_four_nt_categories(self):
         self.assertEqual(sorted(self.categories), ['bybus', 'express', 'local', 'regional'])
@@ -200,17 +252,17 @@ class BusRoutesTest(unittest.TestCase):
         self.assertEqual(bus.classify_route('555', self.reverse)[0], 'regional')
 
     def test_committed_bundle_passes_validation(self):
-        bus.validate(self.bundle, bus.parse_existing_refs(ROOT / 'bus-routes.js'))
+        bus.validate(self.bundle, bus.parse_existing_refs(DATA / 'bus-routes.js'))
 
     def test_validation_refuses_a_collapsed_route_set(self):
         collapsed = dict(self.bundle, features=self.bundle['features'][:3])
         with self.assertRaises(RuntimeError):
-            bus.validate(collapsed, bus.parse_existing_refs(ROOT / 'bus-routes.js'))
+            bus.validate(collapsed, bus.parse_existing_refs(DATA / 'bus-routes.js'))
 
 
 class TransitTest(unittest.TestCase):
     def setUp(self):
-        self.bundle = transit.parse_existing(ROOT / 'transit-data.js')
+        self.bundle = transit.parse_existing(DATA / 'transit-data.js')
 
     def test_committed_bundle_is_ready_and_valid(self):
         self.assertIsNotNone(self.bundle)
@@ -233,7 +285,7 @@ class TransitTest(unittest.TestCase):
 
 class PoiTest(unittest.TestCase):
     def setUp(self):
-        self.bundle = pois.parse_existing_bundle(ROOT / 'poi-data.js')
+        self.bundle = pois.parse_existing_bundle(DATA / 'poi-data.js')
 
     def test_committed_bundle_is_ready_and_valid(self):
         self.assertIsNotNone(self.bundle)
@@ -248,7 +300,7 @@ class PoiTest(unittest.TestCase):
 
     def test_every_authoritative_fallback_has_fixed_coordinates(self):
         # No geocoding service is used, so a place without coordinates would vanish.
-        for place in pois.AALBORG_LIBRARY_LOCATIONS + pois.AALBORG_HOSPITAL_FALLBACK:
+        for place in pois.AUTHORITATIVE_ONLY['library'] + pois.HOSPITAL_FALLBACK:
             with self.subTest(place=place['name']):
                 lng, lat = place['coordinates']
                 self.assertTrue(9.4 < lng < 10.5 and 56.8 < lat < 57.3)
