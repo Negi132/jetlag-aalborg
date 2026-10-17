@@ -374,9 +374,8 @@ for (const card of ['Coastline', 'Body of water']) {
   clearLog();
 }
 
-check('water and coastline bands are shaded more than zone-border bands',
-      bandFill['Body of water'] > bandFill['1st zone border'] && bandFill.Coastline > bandFill['1st zone border'] &&
-      bandFill['Body of water'] === bandFill.Coastline, JSON.stringify(bandFill));
+check('every distance band uses the shared 0.4 preview shading',
+      Object.values(bandFill).length === 4 && Object.values(bandFill).every((f) => f === 0.4), JSON.stringify(bandFill));
 
 console.log('\n== Measuring: hand-placed targets ==');
 for (const card of ['High-speed train line', 'International border', 'Sea level', 'Mountain']) {
@@ -404,6 +403,12 @@ for (const [card, miles] of [['½ mile', 0.5], ['3 miles', 3]]) {
 }
 
 console.log('\n== Radar ==');
+await openCard('radar', '1 mile');
+tap(CENTRE);
+await wait();
+check('the radar preview circle uses the shared 0.4 shading', ev(`(() => { let f = null;
+  HS.previewShapeLayer.eachLayer((l) => { if (l instanceof L.Circle) f = l.options.fillOpacity; }); return f; })()`) === 0.4);
+closeQuestion();
 for (const [card, miles] of [['¼ mile', 0.25], ['½ mile', 0.5], ['1 mile', 1], ['3 miles', 3], ['5 miles', 5],
                              ['10 miles', 10], ['25 miles', 25], ['50 miles', 50], ['100 miles', 100]]) {
   await openCard('radar', card);

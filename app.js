@@ -2714,13 +2714,17 @@ function renderPreviewShapes() {
   }
   const P = '#67e8f9';
   const R = '#a78bfa';
+  // Shading of the main shape each question previews (radar circle, distance
+  // band, nearest-place territory, thermometer side). Faint helper shapes that
+  // overlap or cover the whole area (candidate circles, landmass halves) stay light.
+  const FILL = 0.4;
   const markerStyle = { pane: 'previewPane', radius: 5, color: P, weight: 2,
     fillColor: '#0d141d', fillOpacity: 1, interactive: false };
 
   if (activeTool === 'radar' && draft.center && draft.radiusM) {
     L.circle([draft.center[1], draft.center[0]], { pane: 'previewPane', radius: draft.radiusM,
       color: P, weight: 2.2, opacity: .95, dashArray: '7 5', fillColor: P,
-      fillOpacity: .055, interactive: false }).addTo(previewShapeLayer);
+      fillOpacity: FILL, interactive: false }).addTo(previewShapeLayer);
     L.circleMarker([draft.center[1], draft.center[0]], markerStyle).addTo(previewShapeLayer);
   }
 
@@ -2740,7 +2744,7 @@ function renderPreviewShapes() {
         const cell = matchingPoiCell();
         if (cell) L.geoJSON(cell, { pane: 'previewPane', interactive: false,
           style: { color: P, weight: 2.5, opacity: .95, dashArray: '7 5',
-                   fillColor: P, fillOpacity: .08 } }).addTo(previewShapeLayer);
+                   fillColor: P, fillOpacity: FILL } }).addTo(previewShapeLayer);
       }
     }
     const mode = matchingAreaMode();
@@ -2792,11 +2796,9 @@ function renderPreviewShapes() {
     L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
     if (draft.borderBandGeometry && !draft.answer) {
       const bandFt = turf.feature(draft.borderBandGeometry);
-      // Water and coastline bands are shaded more strongly than zone-border bands.
-      const hydroBand = !!measuringHydroMode();
       L.geoJSON(bandFt, { pane: 'previewPane', interactive: false,
         style: { color: P, weight: 2.2, opacity: .95, dashArray: '6 4',
-                 fillColor: P, fillOpacity: hydroBand ? .4 : .105 } }).addTo(previewShapeLayer);
+                 fillColor: P, fillOpacity: FILL } }).addTo(previewShapeLayer);
       const before = solveCurrentArea().possible;
       const closer = before ? gIntersect(before, bandFt) : null;
       if (before) questionPreview.metrics = {
@@ -2840,7 +2842,7 @@ function renderPreviewShapes() {
           if (draft.proximityBandGeometry) {
             L.geoJSON(turf.feature(draft.proximityBandGeometry), { pane: 'previewPane', interactive: false,
               style: { color: P, weight: 2.2, opacity: .95, dashArray: '7 5',
-                       fillColor: P, fillOpacity: .07 } }).addTo(previewShapeLayer);
+                       fillColor: P, fillOpacity: FILL } }).addTo(previewShapeLayer);
             const before = solveCurrentArea().possible;
             const closer = before ? gIntersect(before, turf.feature(draft.proximityBandGeometry)) : null;
             if (before) questionPreview.metrics = {
@@ -2888,7 +2890,7 @@ function renderPreviewShapes() {
   if (removed) {
     L.geoJSON(removed, { pane: 'previewPane', interactive: false,
       style: { color: R, weight: 1, opacity: .7, dashArray: '3 4',
-               fillColor: R, fillOpacity: .28 } }).addTo(previewShapeLayer);
+               fillColor: R, fillOpacity: FILL } }).addTo(previewShapeLayer);
   }
   if (after) {
     L.geoJSON(after, { pane: 'previewPane', interactive: false,
