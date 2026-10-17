@@ -19,7 +19,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest, so a GitHub image upgrade cannot break
+    # osmium or Python setup on a Sunday. Move to a newer image deliberately.
+    runs-on: ubuntu-24.04
     outputs:
       zone_refresh: ${{ steps.zone_snapshot.outcome }}
       health: ${{ steps.health.outcome }}
@@ -32,7 +34,7 @@ jobs:
         zone-data.js ZONE_AUDIT.md scripts/play_area.geojson
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -52,7 +54,7 @@ jobs:
           echo "Regenerate map data: $regen"
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -141,9 +143,9 @@ jobs:
       # Every deploy (push or scheduled refresh) must pass the test suite, so
       # neither a code change nor a freshly generated bundle can break the site.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - name: Install test dependencies
@@ -203,7 +205,7 @@ jobs:
           exit 1
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       # Publish only what the browser loads.
       - name: Prepare static site artifact
@@ -214,13 +216,13 @@ jobs:
           touch _site/.nojekyll
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -231,7 +233,7 @@ jobs:
     steps:
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
       - name: Check the live site
         shell: bash
@@ -248,7 +250,7 @@ jobs:
   report:
     needs: [build, deploy]
     if: always() && github.event_name != 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: write
       issues: write

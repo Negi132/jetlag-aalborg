@@ -163,6 +163,7 @@ const ROUTE_PALETTE = [
   '#ef476f', '#7b2cbf', '#3a86ff', '#bc6c25', '#219ebc', '#9b5de5'
 ];
 const ROUTE_DASHES = ['18 5', '14 6', '10 5', '20 7', '7 4'];
+const ROUTE_LINE_WEIGHT = 3.6;   // bus routes; Zone 3 borders match it
 
 /* NT's four bus categories. The routes in each come from bus-routes.js,
    which the weekly workflow builds from Rejseplanen GTFS. */
@@ -2791,9 +2792,11 @@ function renderPreviewShapes() {
     L.circleMarker([draft.seeker[1], draft.seeker[0]], markerStyle).addTo(previewShapeLayer);
     if (draft.borderBandGeometry && !draft.answer) {
       const bandFt = turf.feature(draft.borderBandGeometry);
+      // Water bands are often thin rings around small ponds, so shade them a little more.
+      const hydroKind = (measuringHydroMode() || {}).kind;
       L.geoJSON(bandFt, { pane: 'previewPane', interactive: false,
         style: { color: P, weight: 2.2, opacity: .95, dashArray: '6 4',
-                 fillColor: P, fillOpacity: .105 } }).addTo(previewShapeLayer);
+                 fillColor: P, fillOpacity: hydroKind === 'water' ? .15 : .105 } }).addTo(previewShapeLayer);
       const before = solveCurrentArea().possible;
       const closer = before ? gIntersect(before, bandFt) : null;
       if (before) questionPreview.metrics = {
@@ -4261,9 +4264,12 @@ function addLayer(name, geojson, opts = {}) {
       if (props.__routeColor) st.color = props.__routeColor;
       return st;
     }
+    // Zone 3's many small districts are hard to tell apart, so their borders
+    // are drawn as thick as the bus routes.
+    const borderWeight = rec.sourceKey === 'zone3' ? ROUTE_LINE_WEIGHT : 1.3;
     return kind === 'line'
       ? { color: c, weight: 3, opacity: .85 }
-      : { color: c, weight: 1.3, opacity: .9, fillColor: c, fillOpacity: cat ? .35 : .05 };
+      : { color: c, weight: borderWeight, opacity: .9, fillColor: c, fillOpacity: cat ? .35 : .05 };
   };
 
   rec.layer = L.geoJSON(fcol, {
@@ -4618,7 +4624,7 @@ function routeColor(ref) {
 function routeStyle(ref) {
   const h = routeHash(ref);
   return {
-    color: routeColor(ref), weight: 3.6, opacity: .9,
+    color: routeColor(ref), weight: ROUTE_LINE_WEIGHT, opacity: .9,
     dashArray: ROUTE_DASHES[h % ROUTE_DASHES.length],
     dashOffset: String((h >>> 5) % 18), lineCap: 'round', lineJoin: 'round'
   };

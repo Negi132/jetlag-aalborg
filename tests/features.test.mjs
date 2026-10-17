@@ -83,6 +83,11 @@ for (const [i, key] of ['zone1', 'zone2', 'zone3', 'zone4'].entries()) {
   await wait();
   check(`${key} hides on a second tap`, ev(`HS.layerByKey('src:${key}').visible`) === false);
 }
+const borderWeight = (key) => ev(`(() => { let w = null;
+  HS.layerByKey('src:${key}').layer.eachLayer((l) => { if (w === null) w = l.options.weight; }); return w; })()`);
+check('Zone 3 borders are as thick as the bus route lines', borderWeight('zone3') === ev("HS.routeStyle('1').weight"),
+      `${borderWeight('zone3')} vs ${ev("HS.routeStyle('1').weight")}`);
+check('the other zone levels keep thin borders', ['zone1', 'zone2', 'zone4'].every((k) => borderWeight(k) < 2));
 check('zone layers never stack copies', ev("HS.S.layers.filter((l) => /^src:zone/.test(l.key)).length") === 4);
 
 console.log('\n== zone source editor ==');
@@ -352,16 +357,22 @@ for (const card of ['1st zone border', '2nd zone border']) {
   check(`Measuring ${card}: Closer logs the border band`, r.logged === 1 && r.after < r.before);
   clearLog();
 }
+const bandFill = {};
 for (const card of ['Coastline', 'Body of water']) {
   await openCard('measuring', card);
   tap(CENTRE);
   await wait();
+  bandFill[card] = ev(`(() => { let f = null; HS.previewShapeLayer.eachLayer((g) => {
+    if (g.eachLayer) g.eachLayer((l) => { if (l.options.dashArray === '6 4') f = l.options.fillOpacity; }); }); return f; })()`);
   const distance = ev('HS.draft.borderDistanceM');
   const r = await answerAndLog(1);   // Further
   check(`Measuring ${card}: distance found and Further logged`, distance > 0 && r.logged === 1 && r.after < r.before,
         `${ev('HS.draft.autoFeatureName') || ''} ${Math.round(distance)} m`);
   clearLog();
 }
+
+check('the body-of-water distance band is shaded more than other bands',
+      bandFill['Body of water'] > bandFill.Coastline, JSON.stringify(bandFill));
 
 console.log('\n== Measuring: hand-placed targets ==');
 for (const card of ['High-speed train line', 'International border', 'Sea level', 'Mountain']) {
