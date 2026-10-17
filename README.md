@@ -109,7 +109,7 @@ Serve the folder and open http://localhost:8000:
 python -m http.server 8000
 ```
 
-Run the tests (Node 16 or newer):
+Run the tests (Node 22 or newer; CI uses Node 24):
 
 ```bash
 npm install
