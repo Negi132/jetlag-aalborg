@@ -615,7 +615,8 @@ function constraintPolygon(c) {
       return c.answer === 'closer' ? circle : invert(circle);
     }
     case 'borderDistance': {
-      const band = c.geometry ? turf.feature(c.geometry) : null;
+      const geometry = constraintGeometry(c);
+      const band = geometry ? turf.feature(geometry) : null;
       if (!band) return null;
       return c.answer === 'closer' ? band : invert(band);
     }
@@ -645,7 +646,8 @@ function constraintPolygon(c) {
       return turf.clone(play);
     case 'zone':
     case 'area': {
-      const poly = c.geometry ? turf.feature(c.geometry) : null;
+      const geometry = constraintGeometry(c);
+      const poly = geometry ? turf.feature(geometry) : null;
       if (!poly) return null;
       return c.answer === 'yes' ? poly : invert(poly);
     }
@@ -1934,11 +1936,27 @@ function nearestWaterFeature(coord) {
 
 function updateMeasuringHydroFromCoord(coord) {
   const mode = measuringHydroMode();
-  const bundle = bundledHydroData();
-  if (!mode || !bundle || !coord) return false;
+  const hit = mode && hydroBandAt(mode.kind, coord, mode.label);
+  if (!hit) return false;
+  draft.autoFeatureIndex = hit.index;
+  draft.seeker = coord.slice();
+  draft.borderDistanceM = hit.distanceM;
+  draft.borderBandGeometry = hit.geometry;
+  draft.autoFeatureName = hit.name;
+  draft.autoFeatureKind = mode.kind;
+  draft.autoFeatureSide = hit.side;
+  return true;
+}
 
-  let features = [], distanceM = null, name = mode.label, side = null;
-  if (mode.kind === 'coastline') {
+/* The coastline or body-of-water band for a seeker at `coord`: its width is
+   the seeker's distance to the nearest member of the category. Also used to
+   rebuild a logged answer from its recipe on another phone. */
+function hydroBandAt(kind, coord, label = '') {
+  const bundle = bundledHydroData();
+  if (!bundle || !coord) return null;
+
+  let features = [], distanceM = null, name = label, side = null, index = null;
+  if (kind === 'coastline') {
     // The question says "a coastline", not "the coastline on my side of
     // the fjord". Your position therefore establishes its reference distance
     // to the nearest Limfjord shore on EITHER bank, and that same threshold is
@@ -1950,14 +1968,13 @@ function updateMeasuringHydroFromCoord(coord) {
       const d = distanceToFeatureM(coord, ft);
       if (d != null && d < best) best = d;
     }
-    if (!Number.isFinite(best)) return false;
+    if (!Number.isFinite(best)) return null;
     distanceM = best;
     name = 'Limfjord coastline';
     side = 'all';
-    draft.autoFeatureIndex = null;
   } else {
     const hit = nearestWaterFeature(coord);
-    if (!hit) return false;
+    if (!hit) return null;
     const allWater = hydroWaterDistanceFeatures();
     // As with POI Measuring, "a body of water" means distance to the nearest
     // member of the category. The seeker's nearest water establishes the
@@ -1966,18 +1983,11 @@ function updateMeasuringHydroFromCoord(coord) {
     features = allWater.length ? allWater : [hit.feature];
     distanceM = hit.distanceM;
     name = (hit.feature.properties || {}).name || 'body of water';
-    draft.autoFeatureIndex = hit.index;
+    index = hit.index;
   }
 
-  const band = bufferFeatureSet(features, distanceM, mode.kind === 'water' ? 6 : 8);
-  if (!band) return false;
-  draft.seeker = coord.slice();
-  draft.borderDistanceM = distanceM;
-  draft.borderBandGeometry = band.geometry;
-  draft.autoFeatureName = name;
-  draft.autoFeatureKind = mode.kind;
-  draft.autoFeatureSide = side;
-  return true;
+  const band = bufferFeatureSet(features, distanceM, kind === 'water' ? 6 : 8);
+  return band ? { geometry: band.geometry, distanceM, name, side, index } : null;
 }
 
 function geometryLineParts(geometry) {
@@ -2055,27 +2065,97 @@ function zoneBorderBand(rec, distanceM) {
 
 function updateMeasuringBorderFromCoord(coord) {
   const mode = measuringBorderMode();
-  if (!mode) return false;
-  const rec = layerByKey('src:' + mode.sourceKey);
-  if (!rec) return false;
-  const distanceM = nearestZoneBorderDistanceM(coord, rec);
-  if (distanceM == null) return false;
-  const band = zoneBorderBand(rec, distanceM);
-  if (!band) return false;
+  if (!mode || !layerByKey('src:' + mode.sourceKey)) return false;
+  const hit = zoneBorderBandAt(mode.sourceKey, coord);
+  if (!hit) return false;
   draft.seeker = coord;
-  draft.borderDistanceM = distanceM;
-  draft.borderBandGeometry = band.geometry;
+  draft.borderDistanceM = hit.distanceM;
+  draft.borderBandGeometry = hit.geometry;
   return true;
+}
+
+/* A zone level's geometry: the loaded layer if it is on, otherwise the bundled
+   snapshot, so a received answer can be rebuilt without opening the layer. */
+const bundledZoneRecords = new Map();
+function zoneRecordFor(sourceKey) {
+  const rec = layerByKey('src:' + sourceKey);
+  if (rec) return rec;
+  if (!bundledZoneRecords.has(sourceKey)) {
+    const geojson = bundledZoneGeoJson(sourceKey);
+    bundledZoneRecords.set(sourceKey, geojson
+      ? { geojson, baseGeojson: geojson, borderGeojson: bundledZoneBorderGeoJson(sourceKey) }
+      : null);
+  }
+  return bundledZoneRecords.get(sourceKey);
+}
+
+function zoneBorderBandAt(sourceKey, coord) {
+  const rec = zoneRecordFor(sourceKey);
+  if (!rec || !coord) return null;
+  const distanceM = nearestZoneBorderDistanceM(coord, rec);
+  if (distanceM == null) return null;
+  const band = zoneBorderBand(rec, distanceM);
+  return band ? { geometry: band.geometry, distanceM } : null;
+}
+
+function zoneAreaAt(sourceKey, coord) {
+  const rec = zoneRecordFor(sourceKey);
+  const ft = rec && (rec.geojson.features || []).find((f) => pointInsideFeature(coord, f));
+  return ft ? { geometry: ft.geometry } : null;
+}
+
+/* ---------- answer recipes ------------------------------------------------
+   Distance bands and zone matches are large shapes, but every phone has the
+   same data files. Such answers carry a small recipe (what was measured and
+   where) and are rebuilt locally, which keeps game links and shared maps tiny. */
+const roundCoord = (c) => (Array.isArray(c) ? [Math.round(c[0] * 1e6) / 1e6, Math.round(c[1] * 1e6) / 1e6] : c);
+
+function geometryFromRecipe(r) {
+  if (!r) return null;
+  try {
+    switch (r.kind) {
+      case 'zoneBorder': return (zoneBorderBandAt(`zone${r.level}`, r.seeker) || {}).geometry || null;
+      case 'coastline':
+      case 'water': return (hydroBandAt(r.kind, r.seeker) || {}).geometry || null;
+      case 'poiBand': {
+        const band = bufferFeatureSet((r.points || []).map((p) => turf.point(p)), r.distanceM);
+        return band ? band.geometry : null;
+      }
+      case 'poiCell': {
+        const cell = voronoiCell(r.points || [], r.index);
+        const clipped = cell && S.playArea ? gIntersect(S.playArea, cell) : null;
+        return clipped ? clipped.geometry : null;
+      }
+      case 'zoneArea': return (zoneAreaAt(r.sourceKey, r.point) || {}).geometry || null;
+      case 'landmass': return (landmassGeometryAt(r.point) || {}).geometry || null;
+      default: return null;
+    }
+  } catch (_) { return null; }
+}
+
+/* A logged answer's shape. Recipe answers are rebuilt for the current play
+   area (and rebuilt again if it changes, e.g. when official Zone 2 replaces
+   the fallback outlines after loading), so every phone gets the same shape. */
+const recipeGeometryCache = new WeakMap();
+function constraintGeometry(c) {
+  if (!c.recipe) return c.geometry || null;
+  const hit = recipeGeometryCache.get(c);
+  if (hit && hit.playArea === S.playArea) return hit.geometry;
+  const geometry = geometryFromRecipe(c.recipe) || c.geometry || null;
+  recipeGeometryCache.set(c, { playArea: S.playArea, geometry });
+  return geometry;
 }
 
 function landmassRegions() {
   if (!S.playArea) return null;
-  const feats = matchingSourceFeatures({ sourceKey: 'zone2' });
+  const zone2 = S.zone2Official || buildAreaZones();
+  const feats = (zone2 && zone2.features) || [];
   const northParts = feats.filter((ft) => {
     const def = playZoneDef(ft);
     return (def && def.area === 2) || normaliseZoneText(featureName(ft, null)).includes('norresundby');
   });
-  const north = unionAll(northParts);
+  const union = unionAll(northParts);
+  const north = union ? gIntersect(S.playArea, union) : null;
   if (!north) return null;
   const south = gDifference(S.playArea, north);
   return south ? { north, south } : null;
@@ -3286,7 +3366,8 @@ function measuringForm(box) {
     actions(box, draft.seeker && draft.borderBandGeometry && draft.answer, () =>
       commit({ type: 'borderDistance', geometry: draft.borderBandGeometry,
                distanceM: draft.borderDistanceM, zoneLevel: borderMode.level,
-               borderName: borderMode.label, answer: draft.answer }));
+               borderName: borderMode.label, answer: draft.answer,
+               recipe: { kind: 'zoneBorder', level: borderMode.level, seeker: roundCoord(draft.seeker) } }));
     return;
   }
 
@@ -3321,7 +3402,8 @@ function measuringForm(box) {
                borderName: hydroMode.kind === 'water'
                  ? `body of water (nearest: ${draft.autoFeatureName || 'water'})`
                  : (draft.autoFeatureName || hydroMode.label),
-               answer: draft.answer }));
+               answer: draft.answer,
+               recipe: { kind: hydroMode.kind, seeker: roundCoord(draft.seeker) } }));
     return;
   }
 
@@ -3359,7 +3441,9 @@ function measuringForm(box) {
                borderName: `nearest ${poiMode.singular}`,
                targetName: draft.targetName || poiMode.singular,
                candidateCount: feats.length,
-               answer: draft.answer }));
+               answer: draft.answer,
+               recipe: { kind: 'poiBand', distanceM: draft.targetDistanceM,
+                         points: feats.map((ft) => roundCoord(ft.geometry.coordinates)) } }));
     return;
   }
 
@@ -3430,7 +3514,10 @@ function nearestForm(box) {
     actions(box, !!(draft.matchGeometry && draft.answer), () => commit({
       type: 'zone', geometry: draft.matchGeometry, zoneName: draft.matchName || areaMode.label,
       categoryName: selectedQuestion ? selectedQuestion.label : areaMode.label,
-      matching: true, answer: draft.answer
+      matching: true, answer: draft.answer,
+      recipe: areaMode.kind === 'landmass'
+        ? { kind: 'landmass', point: roundCoord(draft.matchPoint) }
+        : { kind: 'zoneArea', sourceKey: areaMode.sourceKey, point: roundCoord(draft.matchPoint) }
     }));
     return;
   }
@@ -3491,7 +3578,8 @@ function nearestForm(box) {
       commit({
         type: 'zone', geometry: cell.geometry, zoneName: draft.matchName || poiMode.singular,
         categoryName: selectedQuestion ? selectedQuestion.label : poiMode.singular,
-        matching: true, answer: draft.answer
+        matching: true, answer: draft.answer,
+        recipe: { kind: 'poiCell', index: draft.index, points: draft.points.map(roundCoord) }
       });
     });
     return;
@@ -5933,12 +6021,20 @@ $('#resetBtn').addEventListener('click', () => {
 
 /* ---------- save / share -------------------------------------------------- */
 
+/* The municipality outline is bundled, so links only need to say "kommune". */
+function compactPlayAreaMeta(meta) {
+  if (meta && meta.type === 'custom' && meta.mode === 'kommune') {
+    return { type: 'custom', mode: 'kommune', name: meta.name };
+  }
+  return meta;
+}
+
 function serialize() {
   return {
     v: 3,
     sourceConfigVersion: SOURCE_CONFIG_VERSION,
     units: S.units,
-    playAreaMeta: S.playAreaMeta,
+    playAreaMeta: compactPlayAreaMeta(S.playAreaMeta),
     base: S.baseKey,
     fog: S.fogOpacity,
     transitStopsVisible: !!S.transitStops.visible,
@@ -5946,6 +6042,7 @@ function serialize() {
     constraints: S.constraints.map((c) => {
       const o = Object.assign({}, c);
       delete o.error;
+      if (o.recipe) delete o.geometry;   // rebuilt from the recipe when loaded
       if (o.geometry) {
         try {
           o.geometry = turf.simplify(turf.feature(o.geometry),
@@ -5979,6 +6076,10 @@ function deserialize(data) {
     S.playArea = turf.circle(m.center, m.radiusKm, { steps: 256, units: 'kilometers' });
     S.playAreaMeta = m;
     markPlayMode('circle');
+  } else if (m && m.type === 'custom' && m.mode === 'kommune' && !m.geometry && window.AALBORG_KOMMUNE_OUTLINE) {
+    S.playArea = turf.clone(window.AALBORG_KOMMUNE_OUTLINE);
+    S.playAreaMeta = Object.assign({}, m, { geometry: S.playArea.geometry });
+    markPlayMode('kommune');
   } else if (m && m.type === 'custom' && m.geometry) {
     S.playArea = turf.feature(m.geometry);
     S.playAreaMeta = m;
@@ -6114,7 +6215,7 @@ window.HS = {
   renderToolForm, selectTool, switchTab, questionPreview,
   startLocationTracking, showMe,
   previewConstraintFromDraft, syncQuestionPreview, constrainToRadius, previewDragHandle, solveCurrentArea,
-  matchingAreaMode, matchingAreaAt, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
+  matchingAreaMode, matchingAreaAt, geometryFromRecipe, setMatchingAreaFromCoord, matchingPoiMode, measuringPoiMode, activeQuestionPoiMode, MATCHING_POI_DEFS, bundledMatchingPoiGeoJson,
   OFFICIAL_AALBORG_LIBRARIES, AALBORG_LIBRARY_FALLBACK, AALBORG_LIBRARY_LOCATIONS,
   normalisePoiName, normaliseAuthorityPlaceName, resolveMatchingPoiFallbacks,
   matchingPoiOverpassQuery, activeGameBbox, parseMatchingPois, ensureMatchingPoiSource, releaseQuestionPoiLayer,
