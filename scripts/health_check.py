@@ -164,8 +164,23 @@ def check_services(report: Report):
     for name, url in live_services().items():
         def get(url=url):
             status, ctype, body = fetch(url)
-            return status == 200 and len(body) > 100, f'HTTP {status}, {len(body)} bytes'
+            return live_service_ok(status, body)
         report.attempt(f'Live service: {name}', get)
+
+
+def live_service_ok(status: int, body: bytes):
+    """(ok, detail) for a live service's reply.
+
+    A health endpoint (ntfy.sh's /v1/health) answers with a tiny JSON
+    {"healthy": true}, so judge it by that; anything else must send real content.
+    """
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and 'healthy' in data:
+        return status == 200 and data['healthy'] is True, f'HTTP {status}, healthy={data["healthy"]}'
+    return status == 200 and len(body) > 100, f'HTTP {status}, {len(body)} bytes'
 
 
 def main():

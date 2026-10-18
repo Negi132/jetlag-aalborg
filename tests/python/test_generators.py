@@ -326,6 +326,14 @@ class HealthCheckTest(unittest.TestCase):
         health_check.check_freshness(report, max_age_days=-1)   # everything counts as too old
         self.assertGreaterEqual(len(report.problems), 4)
 
+    def test_health_endpoints_are_judged_by_their_answer(self):
+        ok = health_check.live_service_ok
+        self.assertTrue(ok(200, b'{"healthy":true,"role":"active"}')[0])    # ntfy.sh, 33 bytes
+        self.assertFalse(ok(200, b'{"healthy":false}')[0])
+        self.assertFalse(ok(503, b'{"healthy":true}')[0])
+        self.assertTrue(ok(200, b'<WFS_Capabilities>' + b' ' * 200)[0])
+        self.assertFalse(ok(200, b'<html></html>')[0])                     # too short to be real
+
     def test_a_crashing_check_is_reported_not_raised(self):
         report = health_check.Report()
         report.attempt('boom', lambda: 1 / 0)
