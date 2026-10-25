@@ -1,6 +1,6 @@
 # Aalborg POI bundle audit
 
-- Generated: `2026-10-16T22:13:11Z`
+- Checked: `2026-10-25T08:39:11Z` · data last changed: `2026-10-16T22:13:11Z`
 - Source: OpenStreetMap Denmark extract from Geofabrik + the project's authoritative local fallbacks
 - License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0
 - Scope: representative points inside the Hide + Seek play-area snapshot; the commercial-airport point is the passenger terminal rather than the aerodrome centroid
