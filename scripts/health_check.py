@@ -90,8 +90,25 @@ class Report:
         return '\n'.join(lines) + '\n'
 
 
+def bundle_age(data: dict, now: datetime):
+    """(days since the weekly job last rebuilt and validated a bundle, detail text).
+
+    checkedAt moves on every successful rebuild. generatedAt only moves when the
+    data changed, so data that is simply stable (the same parks for months) is
+    not stale. Bundles from before checkedAt existed fall back to generatedAt.
+    """
+    parse = lambda v: datetime.fromisoformat(str(v).replace('Z', '+00:00'))
+    checked = parse(data.get('checkedAt') or data['generatedAt'])
+    changed = parse(data['generatedAt'])
+    age = (now - checked).total_seconds() / 86400
+    detail = f'checked {checked:%Y-%m-%d} ({age:.1f} days ago)'
+    if changed.date() != checked.date():
+        detail += f', data unchanged since {changed:%Y-%m-%d}'
+    return age, detail
+
+
 def check_freshness(report: Report, max_age_days: int):
-    """Every city's generated bundles are recent, and its timetable is not about to expire."""
+    """Every city's bundles were rebuilt recently, and its timetable is not about to expire."""
     now = datetime.now(timezone.utc)
     for city_id in city_ids():
         city = load_city(city_id)
@@ -105,9 +122,8 @@ def check_freshness(report: Report, max_age_days: int):
                 data = bundle(path, global_name)
                 if not data.get('ready'):
                     return False, 'bundle is not marked ready'
-                generated = datetime.fromisoformat(str(data['generatedAt']).replace('Z', '+00:00'))
-                age = (now - generated).total_seconds() / 86400
-                return age <= max_age_days, f'generated {generated:%Y-%m-%d} ({age:.1f} days ago, limit {max_age_days})'
+                age, detail = bundle_age(data, now)
+                return age <= max_age_days, f'{detail}, limit {max_age_days}'
             report.attempt(f'Fresh data: {city_id}/{file}', one)
 
         def feeds(city=city):

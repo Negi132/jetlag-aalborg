@@ -232,7 +232,7 @@ def build_bundle(gtfs: Path, play_area_path: Path | None = None):
 
     generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     return {
-        'version': 1, 'ready': True, 'generatedAt': generated,
+        'version': 1, 'ready': True, 'generatedAt': generated, 'checkedAt': generated,
         'feedStart': feed_start, 'feedEnd': feed_end,
         'source': 'Rejseplanen static GTFS',
         'trainRoutes': {'type': 'FeatureCollection', 'features': train_features},
@@ -267,6 +267,7 @@ def validate(bundle, existing=None):
 
 
 def write_outputs(bundle, output: Path, audit: Path, existing=None):
+    # Unchanged data keeps its generatedAt; checkedAt always records this run.
     if existing and existing.get('ready'):
         if existing.get('trainRoutes') == bundle.get('trainRoutes') and existing.get('stops') == bundle.get('stops'):
             bundle['generatedAt'] = existing.get('generatedAt', bundle['generatedAt'])
@@ -277,7 +278,7 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
     train_names = [f['properties']['name'] for f in stops if f['properties']['__stopKind'] == 'train']
     lines = [
         f'# {CITY.name} transit bundle audit', '',
-        f'- Generated: `{bundle["generatedAt"]}`',
+        f'- Checked: `{bundle["checkedAt"]}` · data last changed: `{bundle["generatedAt"]}`',
         f'- GTFS validity: `{bundle["feedStart"]}` → `{bundle["feedEnd"]}`',
         '- Source: Rejseplanen static GTFS', '',
         f'- Train services intersecting the play area: **{len(routes)}**',

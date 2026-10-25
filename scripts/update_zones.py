@@ -675,7 +675,7 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 3, 'ready': True, 'generatedAt': now,
+        'version': 3, 'ready': True, 'generatedAt': now, 'checkedAt': now,
         'source': ENDPOINT,
         'displayPrepared': True,
         'layers': LAYERS,

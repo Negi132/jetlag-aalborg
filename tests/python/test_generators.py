@@ -321,6 +321,36 @@ class HealthCheckTest(unittest.TestCase):
         health_check.check_freshness(report, max_age_days=3650)
         self.assertEqual(report.problems, [], report.markdown())
 
+    def test_freshness_reads_when_a_bundle_was_last_checked(self):
+        # The 2026-10-25 false alarm: parks unchanged for 9 days, rebuilt that morning.
+        now = health_check.datetime(2026, 10, 25, 8, 30, tzinfo=health_check.timezone.utc)
+        stable = {'generatedAt': '2026-10-16T22:13:11Z', 'checkedAt': '2026-10-25T08:25:00Z'}
+        age, detail = health_check.bundle_age(stable, now)
+        self.assertLess(age, 1)
+        self.assertIn('data unchanged since 2026-10-16', detail)
+        legacy = {'generatedAt': '2026-10-16T22:13:11Z'}     # before checkedAt existed
+        self.assertGreater(health_check.bundle_age(legacy, now)[0], 8)
+
+    def test_unchanged_pois_keep_their_data_date_but_record_the_check(self):
+        old = pois.parse_existing_bundle(DATA / 'poi-data.js')
+        fresh = json.loads(json.dumps(old))
+        fresh['generatedAt'] = fresh['checkedAt'] = '2030-01-01T00:00:00Z'
+        with tempfile.TemporaryDirectory() as tmp:
+            pois.write_outputs(fresh, Path(tmp) / 'poi-data.js', Path(tmp) / 'POI_AUDIT.md', old)
+            written = pois.parse_existing_bundle(Path(tmp) / 'poi-data.js')
+        self.assertEqual(written['generatedAt'], old['generatedAt'])
+        self.assertEqual(written['checkedAt'], '2030-01-01T00:00:00Z')
+
+    def test_unchanged_transit_keeps_its_data_date_but_records_the_check(self):
+        old = transit.parse_existing(DATA / 'transit-data.js')
+        fresh = json.loads(json.dumps(old))
+        fresh['generatedAt'] = fresh['checkedAt'] = '2030-01-01T00:00:00Z'
+        with tempfile.TemporaryDirectory() as tmp:
+            transit.write_outputs(fresh, Path(tmp) / 'transit-data.js', Path(tmp) / 'TRANSIT_AUDIT.md', old)
+            written = transit.parse_existing(Path(tmp) / 'transit-data.js')
+        self.assertEqual(written['generatedAt'], old['generatedAt'])
+        self.assertEqual(written['checkedAt'], '2030-01-01T00:00:00Z')
+
     def test_stale_data_is_reported(self):
         report = health_check.Report()
         health_check.check_freshness(report, max_age_days=-1)   # everything counts as too old

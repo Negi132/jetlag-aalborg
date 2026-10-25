@@ -565,7 +565,7 @@ def main():
 
     now = datetime.now(timezone.utc).isoformat()
     bundle = {
-        'version': 8, 'ready': True, 'generatedAt': now,
+        'version': 8, 'ready': True, 'generatedAt': now, 'checkedAt': now,
         'coastlines': {'north': fc(visible_north_parts), 'south': fc(visible_south_parts)},
         'coastlineDistance': {'north': fc(distance_north_parts), 'south': fc(distance_south_parts)},
         'waterBodies': fc(water_features),

@@ -319,7 +319,8 @@ def build_bundle(source_geojson: Path, play_area_path: Path | None = None):
     return {
         'version': 1,
         'ready': True,
-        'generatedAt': generated_at,
+        'generatedAt': generated_at,   # when the data last changed (kept if unchanged)
+        'checkedAt': generated_at,     # when this job last rebuilt and validated it
         'source': 'OpenStreetMap via Geofabrik Denmark extract; authoritative local fallbacks retained',
         'license': 'OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0',
         'categories': {
@@ -361,8 +362,9 @@ def validate_bundle(bundle, existing=None):
 
 
 def write_outputs(bundle, output: Path, audit: Path, existing=None):
-    # Keep generatedAt stable when the actual POI payload is unchanged, so the
-    # weekly job does not create meaningless commits solely because time passed.
+    # Keep generatedAt stable when the actual POI payload is unchanged: phones
+    # compare it to tell whether they run the same data. checkedAt still moves,
+    # and is what the health check's freshness rule reads.
     if existing and existing.get('ready'):
         old_payload = existing.get('categories')
         if old_payload == bundle.get('categories'):
@@ -375,7 +377,7 @@ def write_outputs(bundle, output: Path, audit: Path, existing=None):
     counts = {k: len(bundle['categories'][k]['features']) for k in CATEGORY_ORDER}
     lines = [
         f'# {CITY.name} POI bundle audit', '',
-        f'- Generated: `{bundle["generatedAt"]}`',
+        f'- Checked: `{bundle["checkedAt"]}` · data last changed: `{bundle["generatedAt"]}`',
         '- Source: OpenStreetMap Denmark extract from Geofabrik + the project\'s authoritative local fallbacks',
         '- License: OpenStreetMap data © OpenStreetMap contributors, ODbL 1.0',
         '- Scope: representative points inside the Hide + Seek play-area snapshot; the commercial-airport point is the passenger terminal rather than the aerodrome centroid', '',
