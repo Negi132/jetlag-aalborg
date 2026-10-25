@@ -1,6 +1,6 @@
 # Aalborg transit bundle audit
 
-- Checked: `2026-10-25T08:37:44Z` · data last changed: `2026-10-25T08:23:13Z`
+- Checked: `2026-10-25T08:43:28Z` · data last changed: `2026-10-25T08:23:13Z`
 - GTFS validity: `2026-10-19` → `2027-01-13`
 - Source: Rejseplanen static GTFS
 
