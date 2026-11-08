@@ -1,6 +1,6 @@
 # Aalborg zone snapshot audit
 
-- Generated: `2026-11-01T10:24:32.706247+00:00`
+- Generated: `2026-11-08T10:15:29.011691+00:00`
 - Source: `https://drift.kortinfo.net/Wfs.aspx?Site=Aalborg&Page=kortHjemmeside`
 - Zone 2 is also written to `cities/aalborg/play_area.geojson`, so every other generator uses the same exact official game boundary. Display polygons are clipped to the play area and Zone 1/4 catch-all areas are precomputed on GitHub, so the browser does no clipping/union work when toggling them. Genuine border lines are cached separately from the unclipped official geometry for Measuring.
 
@@ -8,5 +8,5 @@
 |---|---|---:|---:|---|
 | Zone1 | `ugis:TL1433667` | 76 | 107 | fresh/retained cache |
 | Zone2 | `ugis:TL445984` | 4 | 4 | fresh/retained cache |
-| Zone3 | `ugis:TL445987` | 33 | 48 | fresh/retained cache |
-| Zone4 | `ugis:TL445981` | 571 | 755 | fresh/retained cache |
+| Zone3 | `ugis:TL445987` | 33 | 47 | fresh/retained cache |
+| Zone4 | `ugis:TL445981` | 573 | 762 | fresh/retained cache |

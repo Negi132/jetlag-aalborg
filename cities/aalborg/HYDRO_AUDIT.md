@@ -1,6 +1,6 @@
 # Aalborg hydro snapshot audit
 
-- Generated: `2026-11-01T10:37:09.810333+00:00`
+- Generated: `2026-11-08T10:16:59.105622+00:00`
 - Formal OSM coastline pieces used as source: **22**
 - Generalized northern shoreline pieces: **2**
 - Generalized southern shoreline pieces: **2**
